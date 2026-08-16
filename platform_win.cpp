@@ -45,7 +45,6 @@
 #include <optional>
 
 #include "platform.h"
-#include "resource.h"
 
 using namespace std::string_view_literals;
 
@@ -127,7 +126,7 @@ pf::file_path tmp_folder()
 //  Globals 
 
 static HINSTANCE resource_instance = nullptr;
-static HWND g_hWnd = nullptr;
+HWND g_hWnd = nullptr; // shared with platform_win_audio.cpp
 static LARGE_INTEGER g_perfFreq;
 static LARGE_INTEGER g_perfStart;
 static HMENU g_hMenu = nullptr;
@@ -195,22 +194,28 @@ static void build_runtime_accelerators()
 {
 	std::vector<ACCEL> accels;
 
+	const auto add = [&accels](const pf::key_binding& kb, const int id)
+	{
+		if (kb.empty() || id == 0) return;
+
+		ACCEL a = {};
+		a.cmd = static_cast<WORD>(id);
+		a.fVirt = FVIRTKEY | FNOINVERT;
+		if (kb.modifiers & pf::key_mod::ctrl) a.fVirt |= FCONTROL;
+		if (kb.modifiers & pf::key_mod::shift) a.fVirt |= FSHIFT;
+		if (kb.modifiers & pf::key_mod::alt) a.fVirt |= FALT;
+		a.key = static_cast<WORD>(kb.key);
+		accels.push_back(a);
+	};
+
 	std::function<void(const std::vector<pf::menu_command>&)> collect;
 	collect = [&](const std::vector<pf::menu_command>& items)
 	{
 		for (const auto& item : items)
 		{
-			if (!item.accel.empty() && item.id != 0)
-			{
-				ACCEL a = {};
-				a.cmd = static_cast<WORD>(item.id);
-				a.fVirt = FVIRTKEY | FNOINVERT;
-				if (item.accel.modifiers & pf::key_mod::ctrl) a.fVirt |= FCONTROL;
-				if (item.accel.modifiers & pf::key_mod::shift) a.fVirt |= FSHIFT;
-				if (item.accel.modifiers & pf::key_mod::alt) a.fVirt |= FALT;
-				a.key = static_cast<WORD>(item.accel.key);
-				accels.push_back(a);
-			}
+			add(item.accel, item.id);
+			add(item.accel_alt, item.id);
+
 			if (!item.children.empty())
 				collect(item.children);
 		}
@@ -290,6 +295,7 @@ static std::optional<pf::keyboard_message_type> map_keyboard_message(const UINT 
 	switch (uMsg)
 	{
 	case WM_KEYDOWN: return pf::keyboard_message_type::key_down;
+	case WM_KEYUP: return pf::keyboard_message_type::key_up;
 	case WM_CHAR: return pf::keyboard_message_type::char_input;
 	default: return std::nullopt;
 	}
@@ -709,10 +715,13 @@ public:
 #define GET_Y_LPARAM(lParam)	((int)(short)HIWORD(lParam))
 #endif
 
+static std::vector<pf::file_path> decode_dropped_files(HDROP hDrop);
+
 class win_impl final : public win, public pf::window_frame
 {
 	pf::frame_reactor_ptr _reactor;
 	pf::window_frame_ptr _self_ref; // cleared on WM_DESTROY
+	uint16_t _pending_lead = 0; // first half of a WM_CHAR surrogate pair
 
 	// Cached back buffer for flicker-free painting
 	HDC _hdc_back = nullptr;
@@ -960,6 +969,23 @@ public:
 		return MessageBoxW(m_hWnd, pf::utf8_to_utf16(text).c_str(), pf::utf8_to_utf16(title).c_str(), style);
 	}
 
+	void present_pixels(const uint32_t* pixels, const int cx, const int cy) override
+	{
+		if (!pixels || cx <= 0 || cy <= 0) return;
+
+		BITMAPINFO bmi = {};
+		bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bmi.bmiHeader.biWidth = cx;
+		bmi.bmiHeader.biHeight = -cy; // top-down
+		bmi.bmiHeader.biPlanes = 1;
+		bmi.bmiHeader.biBitCount = 32;
+		bmi.bmiHeader.biCompression = BI_RGB;
+
+		const HDC hdc = GetDC(m_hWnd);
+		SetDIBitsToDevice(hdc, 0, 0, cx, cy, 0, 0, 0, cy, pixels, &bmi, DIB_RGB_COLORS);
+		ReleaseDC(m_hWnd, hdc);
+	}
+
 	void set_menu(std::vector<pf::menu_command> menu_def) override
 	{
 		pf::platform_set_menu(std::move(menu_def));
@@ -1108,10 +1134,21 @@ public:
 
 			if (_hdc_back)
 			{
-				win_draw_context draw_ctx(_hdc_back, clip);
-				auto self = _self_ref;
-				_reactor->handle_paint(self, draw_ctx);
-				BitBlt(hdc, 0, 0, cx, cy, _hdc_back, 0, 0, SRCCOPY);
+				// Clip to the dirty rect so a partial repaint (a blinking caret) costs
+				// only the pixels it touches, even though views redraw their whole viewport.
+				const int saved = SaveDC(_hdc_back);
+				IntersectClipRect(_hdc_back, clip.left, clip.top, clip.right, clip.bottom);
+
+				{
+					win_draw_context draw_ctx(_hdc_back, clip);
+					auto self = _self_ref;
+					_reactor->handle_paint(self, draw_ctx);
+				}
+
+				RestoreDC(_hdc_back, saved);
+
+				BitBlt(hdc, clip.left, clip.top, clip.width(), clip.height(),
+				       _hdc_back, clip.left, clip.top, SRCCOPY);
 			}
 			else
 			{
@@ -1154,7 +1191,12 @@ public:
 			{
 				const auto self = _self_ref;
 				if (self)
-					_reactor->handle_message(self, pf::message_type::dpi_changed, wParam, lParam);
+				{
+					pf::message_params params;
+					params.dpi_scale = LOWORD(wParam) / 96.0;
+					params.suggested_bounds = {rc->left, rc->top, rc->right, rc->bottom};
+					_reactor->handle_message(self, pf::message_type::dpi_changed, params);
+				}
 				SetWindowPos(hWnd, nullptr,
 				             rc->left, rc->top,
 				             rc->right - rc->left, rc->bottom - rc->top,
@@ -1178,7 +1220,23 @@ public:
 			const auto self = _self_ref;
 			if (self)
 			{
-				const auto result = _reactor->handle_message(self, *mt, wParam, lParam);
+				pf::message_params params;
+				std::vector<pf::file_path> dropped;
+
+				switch (uMsg)
+				{
+				case WM_TIMER:
+					params.timer_id = static_cast<uint32_t>(wParam);
+					break;
+				case WM_DROPFILES:
+					dropped = decode_dropped_files(reinterpret_cast<HDROP>(wParam));
+					params.dropped_paths = dropped;
+					break;
+				default:
+					break;
+				}
+
+				const auto result = _reactor->handle_message(self, *mt, params);
 
 				if (uMsg == WM_DESTROY)
 				{
@@ -1201,9 +1259,38 @@ public:
 				pf::keyboard_params params;
 
 				if (*kmt == pf::keyboard_message_type::key_down)
+				{
 					params.vk = static_cast<unsigned int>(wParam);
+					params.repeat = (lParam & 1LL << 30) != 0; // previous key state
+				}
+				else if (*kmt == pf::keyboard_message_type::key_up)
+				{
+					params.vk = static_cast<unsigned int>(wParam);
+				}
 				else
-					params.ch = static_cast<char>(wParam);
+				{
+					// WM_CHAR delivers UTF-16 code units; a supplementary character arrives as two messages.
+					const auto unit = static_cast<uint16_t>(wParam);
+
+					if (pf::is_lead_surrogate(unit))
+					{
+						_pending_lead = unit;
+						return 0;
+					}
+
+					if (pf::is_trail_surrogate(unit))
+					{
+						if (_pending_lead == 0)
+							return 0;
+						params.ch = static_cast<char32_t>(0x10000u + ((_pending_lead - 0xD800u) << 10) + (unit - 0xDC00u));
+						_pending_lead = 0;
+					}
+					else
+					{
+						_pending_lead = 0;
+						params.ch = static_cast<char32_t>(unit);
+					}
+				}
 
 				return _reactor->handle_keyboard(self, *kmt, params);
 			}
@@ -1530,6 +1617,52 @@ std::string pf::format_key_binding(const key_binding& kb)
 
 //  Font handles, native DC wrapper, URL resolver 
 
+// A screen-compatible DC kept alive per thread. Acquiring a DC and realizing a
+// font dominated text measurement, which runs once per text node per style pass.
+struct measure_dc
+{
+	HDC hdc = CreateCompatibleDC(nullptr);
+	HFONT original = nullptr;
+	HFONT current = nullptr;
+	std::wstring buffer;
+
+	~measure_dc()
+	{
+		if (hdc)
+		{
+			if (original) SelectObject(hdc, original);
+			DeleteDC(hdc);
+		}
+	}
+
+	HDC with_font(const HFONT f)
+	{
+		if (!hdc) return nullptr;
+		if (f != current)
+		{
+			const auto prev = static_cast<HFONT>(SelectObject(hdc, f));
+			if (!original) original = prev;
+			current = f;
+		}
+		return hdc;
+	}
+
+	void release_font(const HFONT f)
+	{
+		if (hdc && f == current)
+		{
+			SelectObject(hdc, original);
+			current = nullptr;
+		}
+	}
+};
+
+static measure_dc& shared_measure_dc()
+{
+	thread_local measure_dc instance;
+	return instance;
+}
+
 pf::font_handle pf::create_font_handle(const font_def& def, font_metrics_data* out_metrics)
 {
 	const auto wface = utf8_to_utf16(def.face);
@@ -1569,33 +1702,32 @@ pf::font_handle pf::create_font_handle(const font_def& def, font_metrics_data* o
 
 void pf::delete_font_handle(const font_handle h)
 {
-	if (h) DeleteObject(std::bit_cast<HFONT>(h));
+	if (!h) return;
+	// GDI refuses to delete a font that is still selected into a DC.
+	shared_measure_dc().release_font(std::bit_cast<HFONT>(h));
+	DeleteObject(std::bit_cast<HFONT>(h));
 }
 
 pf::isize pf::measure_text_with_font(const font_handle h, const std::string_view text)
 {
 	if (!h) return {0, 0};
-	const HDC hdc = GetDC(nullptr);
+	auto& m = shared_measure_dc();
+	const HDC hdc = m.with_font(std::bit_cast<HFONT>(h));
 	if (!hdc) return {0, 0};
-	const auto old = static_cast<HFONT>(SelectObject(hdc, std::bit_cast<HFONT>(h)));
-	const auto wtext = utf8_to_utf16(text);
+	utf8_to_utf16(text, m.buffer);
 	SIZE sz = {0, 0};
-	GetTextExtentPoint32W(hdc, wtext.c_str(), static_cast<int>(wtext.size()), &sz);
-	SelectObject(hdc, old);
-	ReleaseDC(nullptr, hdc);
+	GetTextExtentPoint32W(hdc, m.buffer.c_str(), static_cast<int>(m.buffer.size()), &sz);
 	return {sz.cx, sz.cy};
 }
 
 int pf::line_height_for_font(const font_handle h)
 {
 	if (!h) return 0;
-	const HDC hdc = GetDC(nullptr);
+	auto& m = shared_measure_dc();
+	const HDC hdc = m.with_font(std::bit_cast<HFONT>(h));
 	if (!hdc) return 0;
-	const auto old = static_cast<HFONT>(SelectObject(hdc, std::bit_cast<HFONT>(h)));
 	TEXTMETRICW tm = {};
 	GetTextMetricsW(hdc, &tm);
-	SelectObject(hdc, old);
-	ReleaseDC(nullptr, hdc);
 	return tm.tmHeight;
 }
 
@@ -1640,6 +1772,72 @@ std::string pf::resolve_url(const std::string_view base, const std::string_view 
 	if (result.starts_with("file://"))
 		result.erase(0, 7);
 	return result;
+}
+
+uint32_t pf::charset_to_codepage(const std::string_view charset)
+{
+	struct entry
+	{
+		const char* name;
+		uint32_t cp;
+	};
+
+	// Only the labels that actually show up on the web. Anything absent is
+	// treated as UTF-8 by the caller.
+	static constexpr entry table[] = {
+		{"utf-8", CP_UTF8}, {"utf8", CP_UTF8}, {"us-ascii", CP_UTF8}, {"ascii", CP_UTF8},
+		{"iso-8859-1", 28591}, {"latin1", 28591}, {"l1", 28591}, {"iso8859-1", 28591},
+		{"windows-1250", 1250}, {"windows-1251", 1251}, {"windows-1252", 1252},
+		{"windows-1253", 1253}, {"windows-1254", 1254}, {"windows-1255", 1255},
+		{"windows-1256", 1256}, {"windows-1257", 1257}, {"windows-1258", 1258},
+		{"cp1250", 1250}, {"cp1251", 1251}, {"cp1252", 1252},
+		{"iso-8859-2", 28592}, {"iso-8859-3", 28593}, {"iso-8859-4", 28594},
+		{"iso-8859-5", 28595}, {"iso-8859-6", 28596}, {"iso-8859-7", 28597},
+		{"iso-8859-8", 28598}, {"iso-8859-9", 28599}, {"iso-8859-13", 28603},
+		{"iso-8859-15", 28605},
+		{"koi8-r", 20866}, {"koi8-u", 21866},
+		{"shift_jis", 932}, {"shift-jis", 932}, {"sjis", 932}, {"ms_kanji", 932},
+		{"euc-jp", 20932}, {"iso-2022-jp", 50220},
+		{"gb2312", 936}, {"gbk", 936}, {"gb18030", 54936}, {"big5", 950},
+		{"euc-kr", 949}, {"ks_c_5601-1987", 949},
+		{"windows-874", 874}, {"tis-620", 874},
+	};
+
+	for (const auto& [name, cp] : table)
+	{
+		if (icmp(charset, name) == 0) return cp;
+	}
+	return 0;
+}
+
+std::string pf::transcode_to_utf8(const std::string_view bytes, const uint32_t codepage)
+{
+	if (codepage == 0 || codepage == CP_UTF8 || bytes.empty())
+		return std::string(bytes);
+
+	// MultiByteToWideChar rejects the UTF-16 code pages, so reinterpret those.
+	if (codepage == 1200 || codepage == 1201)
+	{
+		const size_t units = bytes.size() / 2;
+		std::wstring wide(units, L'\0');
+
+		for (size_t i = 0; i < units; ++i)
+		{
+			const auto lo = static_cast<uint8_t>(bytes[i * 2]);
+			const auto hi = static_cast<uint8_t>(bytes[i * 2 + 1]);
+			wide[i] = static_cast<wchar_t>(codepage == 1200 ? lo | hi << 8 : hi | lo << 8);
+		}
+
+		return utf16_to_utf8(wide);
+	}
+
+	const auto len = static_cast<int>(bytes.size());
+	const int wide_len = MultiByteToWideChar(codepage, 0, bytes.data(), len, nullptr, 0);
+	if (wide_len <= 0) return std::string(bytes);
+
+	std::wstring wide(wide_len, L'\0');
+	MultiByteToWideChar(codepage, 0, bytes.data(), len, wide.data(), wide_len);
+	return utf16_to_utf8(wide);
 }
 
 //  Cursor position (global) â”€
@@ -1791,20 +1989,9 @@ void pf::platform_show_error(const std::string_view message, const std::string_v
 void pf::debug_trace(const std::string& msg)
 {
 #ifdef _DEBUG
-	const auto wmsg = pf::utf8_to_utf16(msg);
-	OutputDebugStringW(wmsg.c_str());
-	struct log_file
-	{
-		FILE* f = nullptr;
-		log_file() { _wfopen_s(&f, L"debug_trace.log", L"w"); }
-		~log_file() { if (f) fclose(f); }
-	};
-	static log_file log;
-	if (log.f)
-	{
-		fwprintf(log.f, L"%s", wmsg.c_str());
-		fflush(log.f);
-	}
+	OutputDebugStringW(pf::utf8_to_utf16(msg).c_str());
+#else
+	(void)msg;
 #endif
 }
 
@@ -1826,8 +2013,23 @@ namespace
 			FILE* dummy = nullptr;
 			_wfreopen_s(&dummy, L"CONOUT$", L"w", stdout);
 			_wfreopen_s(&dummy, L"CONOUT$", L"w", stderr);
+
+			// AttachConsole leaves the std handles null, which would send every
+			// write down write_stdout's fallback path.
+			const auto out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			                             nullptr, OPEN_EXISTING, 0, nullptr);
+			if (out != INVALID_HANDLE_VALUE)
+			{
+				SetStdHandle(STD_OUTPUT_HANDLE, out);
+				SetStdHandle(STD_ERROR_HANDLE, out);
+			}
 		}
 	}
+}
+
+void pf::attach_console()
+{
+	ensure_cli_stdout_bound();
 }
 
 void pf::write_stdout(const std::string_view text)
@@ -1964,6 +2166,14 @@ static void run_ui_tasks()
 	}
 }
 
+void pf::pump_ui_tasks(const int timeout_ms)
+{
+	if (ui_event_h)
+		WaitForSingleObject(ui_event_h, static_cast<DWORD>(timeout_ms));
+
+	run_ui_tasks();
+}
+
 static DWORD WINAPI async_thread_proc(LPVOID /*param*/)
 {
 	for (;;)
@@ -2095,6 +2305,562 @@ cleanup:
 	return result;
 }
 
+// ── Path containment ───────────────────────────────────────────────────────────
+
+namespace
+{
+	std::wstring full_path_of(const std::wstring& wide)
+	{
+		std::wstring full(MAX_PATH, L'\0');
+		auto len = GetFullPathNameW(wide.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
+
+		if (len >= full.size())
+		{
+			full.resize(len + 1);
+			len = GetFullPathNameW(wide.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
+		}
+
+		if (len == 0 || len >= full.size())
+			return wide;
+
+		full.resize(len);
+		return full;
+	}
+
+	// Resolves links, which GetFullPathName does not
+	bool final_path_of(const std::wstring& wide, std::wstring& result)
+	{
+		const auto handle = CreateFileW(wide.c_str(), 0,
+		                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+
+		if (handle == INVALID_HANDLE_VALUE)
+			return false;
+
+		std::wstring buffer(MAX_PATH, L'\0');
+		auto len = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+		                                     FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+
+		if (len >= buffer.size())
+		{
+			buffer.resize(len + 1);
+			len = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+			                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+		}
+
+		CloseHandle(handle);
+
+		if (len == 0 || len >= buffer.size())
+			return false;
+
+		buffer.resize(len);
+
+		if (std::wstring_view(buffer).starts_with(L"\\\\?\\"))
+			buffer.erase(0, 4);
+
+		result = buffer;
+		return true;
+	}
+}
+
+pf::file_path pf::canonical_path(const file_path& path)
+{
+	if (path.empty())
+		return {};
+
+	// GetFullPathName resolves '..' and makes the path absolute, but does not follow links
+	const auto full = utf16_to_utf8(full_path_of(utf8_to_utf16(path.view())));
+
+	// A path that does not exist yet still has to compare against one that does, so the
+	// nearest existing ancestor is resolved and the remaining names put back on.
+	std::vector<std::string> tail;
+	file_path current{full};
+
+	for (auto depth = 0; depth < 64; ++depth)
+	{
+		if (std::wstring resolved; final_path_of(utf8_to_utf16(current.view()), resolved))
+		{
+			auto result = file_path(utf16_to_utf8(resolved));
+
+			for (auto name = tail.rbegin(); name != tail.rend(); ++name)
+				result = result.combine(*name);
+
+			return result;
+		}
+
+		const auto parent = current.folder();
+		const auto name = current.name();
+
+		if (name.empty() || parent.empty() || parent == current)
+			break;
+
+		tail.push_back(name);
+		current = parent;
+	}
+
+	return file_path{full};
+}
+
+bool pf::is_path_within(const file_path& root, const file_path& path)
+{
+	if (root.empty() || path.empty())
+		return false;
+
+	const auto canonical_root = canonical_path(root);
+	const auto canonical_target = canonical_path(path);
+
+	auto r = canonical_root.view();
+	const auto p = canonical_target.view();
+
+	while (!r.empty() && (r.back() == '\\' || r.back() == '/'))
+		r.remove_suffix(1);
+
+	if (r.empty() || p.size() < r.size())
+		return false;
+
+	if (icmp(p.substr(0, r.size()), r) != 0)
+		return false;
+
+	if (p.size() == r.size())
+		return true;
+
+	const auto separator = p[r.size()];
+	return separator == '\\' || separator == '/';
+}
+
+// ── Child processes ────────────────────────────────────────────────────────────
+
+std::string pf::quote_command_arg(const std::string_view arg)
+{
+	if (!arg.empty() && arg.find_first_of(" \t\n\v\"") == std::string_view::npos)
+		return std::string(arg);
+
+	std::string result;
+	result.reserve(arg.size() + 2);
+	result += '"';
+
+	for (auto i = arg.begin();; ++i)
+	{
+		size_t backslashes = 0;
+
+		while (i != arg.end() && *i == '\\')
+		{
+			++i;
+			++backslashes;
+		}
+
+		if (i == arg.end())
+		{
+			// Backslashes before the closing quote must not escape it
+			result.append(backslashes * 2, '\\');
+			break;
+		}
+
+		if (*i == '"')
+		{
+			result.append(backslashes * 2 + 1, '\\');
+		}
+		else
+		{
+			result.append(backslashes, '\\');
+		}
+
+		result += *i;
+	}
+
+	result += '"';
+	return result;
+}
+
+bool pf::has_shell_metacharacter(const std::string_view text)
+{
+	return text.find_first_of("&|<>^%!\"\r\n") != std::string_view::npos;
+}
+
+pf::file_path pf::find_executable(const std::string_view name)
+{
+	if (name.empty())
+		return {};
+
+	const auto read_env = [](const wchar_t* key) -> std::wstring
+	{
+		std::wstring value(4096, L'\0');
+		auto len = GetEnvironmentVariableW(key, value.data(), static_cast<DWORD>(value.size()));
+
+		if (len >= value.size())
+		{
+			value.resize(len);
+			len = GetEnvironmentVariableW(key, value.data(), static_cast<DWORD>(value.size()));
+		}
+
+		value.resize(len < value.size() ? len : 0);
+		return value;
+	};
+
+	// PATH is passed explicitly so the current directory is never searched — otherwise
+	// opening an untrusted folder could put an executable of this name ahead of the real one.
+	const auto search_path = read_env(L"PATH");
+
+	if (search_path.empty())
+		return {};
+
+	const auto try_path = [&](const std::wstring& candidate) -> file_path
+	{
+		wchar_t buffer[MAX_PATH * 2] = {};
+		const auto len = SearchPathW(search_path.c_str(), candidate.c_str(), nullptr,
+		                             static_cast<DWORD>(std::size(buffer)), buffer, nullptr);
+		if (len == 0 || len >= std::size(buffer))
+			return {};
+		return file_path(utf16_to_utf8(std::wstring_view(buffer, len)));
+	};
+
+	const auto wide_name = utf8_to_utf16(name);
+
+	// A bare name is only resolved through PATHEXT. Windows cannot execute an extensionless
+	// file, and shim folders often contain one next to the real .exe.
+	const auto last_separator = name.find_last_of("\\/");
+	const auto tail = last_separator == std::string_view::npos ? name : name.substr(last_separator + 1);
+
+	if (tail.find('.') != std::string_view::npos)
+		return try_path(wide_name);
+
+	auto path_ext = read_env(L"PATHEXT");
+
+	if (path_ext.empty())
+		path_ext = L".COM;.EXE;.BAT;.CMD";
+
+	size_t pos = 0;
+
+	while (pos < path_ext.size())
+	{
+		auto end = path_ext.find(L';', pos);
+		if (end == std::wstring::npos)
+			end = path_ext.size();
+
+		const auto ext = path_ext.substr(pos, end - pos);
+		pos = end + 1;
+
+		if (ext.empty())
+			continue;
+
+		if (auto found = try_path(wide_name + ext); !found.empty())
+			return found;
+	}
+
+	return {};
+}
+
+namespace
+{
+	// Shared with the reader threads so a callback queued for the UI thread can be
+	// dropped when the process object has already gone away.
+	struct child_shared_state
+	{
+		std::atomic<bool> cancelled{false};
+		pf::child_process_callbacks callbacks;
+	};
+
+	using child_shared_state_ptr = std::shared_ptr<child_shared_state>;
+
+	struct child_reader_args
+	{
+		HANDLE pipe = nullptr;
+		HANDLE process = nullptr; // only the stdout reader reports the exit code
+		bool is_stderr = false;
+		child_shared_state_ptr state;
+	};
+
+	void post_child_line(const child_shared_state_ptr& state, const bool is_stderr, std::string line)
+	{
+		pf::run_ui([state, is_stderr, line = std::move(line)]
+		{
+			if (state->cancelled)
+				return;
+
+			const auto& callback = is_stderr ? state->callbacks.on_stderr_line : state->callbacks.on_stdout_line;
+
+			if (callback)
+				callback(line);
+		});
+	}
+
+	DWORD WINAPI child_reader_proc(LPVOID param)
+	{
+		const std::unique_ptr<child_reader_args> args(static_cast<child_reader_args*>(param));
+
+		pf::line_splitter splitter;
+		char buffer[4096];
+
+		const auto emit = [&](const std::string_view line)
+		{
+			post_child_line(args->state, args->is_stderr, std::string(line));
+		};
+
+		for (;;)
+		{
+			DWORD read = 0;
+
+			if (!ReadFile(args->pipe, buffer, sizeof(buffer), &read, nullptr) || read == 0)
+				break;
+
+			splitter.feed(std::string_view(buffer, read), emit);
+		}
+
+		splitter.flush(emit);
+
+		if (args->process)
+		{
+			WaitForSingleObject(args->process, INFINITE);
+
+			DWORD exit_code = 0;
+			GetExitCodeProcess(args->process, &exit_code);
+			CloseHandle(args->process);
+
+			auto state = args->state;
+			pf::run_ui([state, exit_code]
+			{
+				if (state->cancelled)
+					return;
+
+				if (state->callbacks.on_exit)
+					state->callbacks.on_exit(static_cast<int>(exit_code));
+			});
+		}
+
+		return 0;
+	}
+
+	class win_child_process final : public pf::child_process
+	{
+	public:
+		HANDLE _process = nullptr;
+		HANDLE _stdin_write = nullptr;
+		HANDLE _stdout_read = nullptr;
+		HANDLE _stderr_read = nullptr;
+		HANDLE _stdout_thread = nullptr;
+		HANDLE _stderr_thread = nullptr;
+		child_shared_state_ptr _state;
+
+		~win_child_process() override
+		{
+			if (_state)
+				_state->cancelled = true;
+
+			terminate();
+			close_input();
+
+			// Killing the process breaks both pipes, so the readers return and can be joined
+			join_thread(_stdout_thread);
+			join_thread(_stderr_thread);
+
+			close_handle(_stdout_read);
+			close_handle(_stderr_read);
+			close_handle(_process);
+		}
+
+		bool write_line(const std::string_view text) override
+		{
+			if (!_stdin_write)
+				return false;
+
+			std::string payload(text);
+			payload += '\n';
+
+			size_t written_total = 0;
+
+			while (written_total < payload.size())
+			{
+				DWORD written = 0;
+
+				if (!WriteFile(_stdin_write, payload.data() + written_total,
+				               static_cast<DWORD>(payload.size() - written_total), &written, nullptr) ||
+					written == 0)
+					return false;
+
+				written_total += written;
+			}
+
+			return true;
+		}
+
+		void close_input() override
+		{
+			close_handle(_stdin_write);
+		}
+
+		void terminate() override
+		{
+			if (_process && is_running())
+				TerminateProcess(_process, 1);
+		}
+
+		[[nodiscard]] bool is_running() const override
+		{
+			return _process && WaitForSingleObject(_process, 0) == WAIT_TIMEOUT;
+		}
+
+	private:
+		static void close_handle(HANDLE& h)
+		{
+			if (h)
+			{
+				CloseHandle(h);
+				h = nullptr;
+			}
+		}
+
+		static void join_thread(HANDLE& h)
+		{
+			if (h)
+			{
+				WaitForSingleObject(h, 5000);
+				CloseHandle(h);
+				h = nullptr;
+			}
+		}
+	};
+
+	bool create_child_pipe(HANDLE& read_end, HANDLE& write_end, const bool inherit_read)
+	{
+		SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+
+		if (!CreatePipe(&read_end, &write_end, &sa, 0))
+			return false;
+
+		// Only the child's end is inheritable, so it cannot outlive the child
+		const auto ours = inherit_read ? write_end : read_end;
+		return SetHandleInformation(ours, HANDLE_FLAG_INHERIT, 0) != 0;
+	}
+}
+
+pf::child_process_ptr pf::spawn_child_process(const file_path& exe,
+                                              const std::span<const std::string> args,
+                                              const file_path& working_dir,
+                                              child_process_callbacks callbacks)
+{
+	if (exe.empty())
+		return nullptr;
+
+	const auto extension = to_lower(exe.extension());
+	const auto is_batch = extension == "bat" || extension == "cmd";
+
+	std::string command_line;
+
+	if (is_batch)
+	{
+		// A batch file has to run under cmd.exe, where quoting alone does not contain an
+		// argument, so anything cmd would interpret is refused rather than escaped.
+		for (const auto& arg : args)
+		{
+			if (has_shell_metacharacter(arg))
+				return nullptr;
+		}
+
+		if (has_shell_metacharacter(exe.view()))
+			return nullptr;
+
+		command_line = "cmd.exe /c " + quote_command_arg(exe.view());
+	}
+	else
+	{
+		command_line = quote_command_arg(exe.view());
+	}
+
+	for (const auto& arg : args)
+	{
+		command_line += ' ';
+		command_line += quote_command_arg(arg);
+	}
+
+	HANDLE stdin_read = nullptr;
+	HANDLE stdin_write = nullptr;
+	HANDLE stdout_read = nullptr;
+	HANDLE stdout_write = nullptr;
+	HANDLE stderr_read = nullptr;
+	HANDLE stderr_write = nullptr;
+
+	const auto close_all = [&]
+	{
+		for (auto* h : {&stdin_read, &stdin_write, &stdout_read, &stdout_write, &stderr_read, &stderr_write})
+		{
+			if (*h) CloseHandle(*h);
+			*h = nullptr;
+		}
+	};
+
+	if (!create_child_pipe(stdin_read, stdin_write, true) ||
+		!create_child_pipe(stdout_read, stdout_write, false) ||
+		!create_child_pipe(stderr_read, stderr_write, false))
+	{
+		close_all();
+		return nullptr;
+	}
+
+	STARTUPINFOW si = {sizeof(STARTUPINFOW)};
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdInput = stdin_read;
+	si.hStdOutput = stdout_write;
+	si.hStdError = stderr_write;
+
+	PROCESS_INFORMATION pi = {};
+
+	auto wide_command_line = utf8_to_utf16(command_line);
+	const auto wide_working_dir = utf8_to_utf16(working_dir.view());
+
+	const auto created = CreateProcessW(nullptr, wide_command_line.data(), nullptr, nullptr, TRUE,
+	                                    CREATE_NO_WINDOW, nullptr,
+	                                    wide_working_dir.empty() ? nullptr : wide_working_dir.c_str(),
+	                                    &si, &pi);
+
+	// The child owns its ends now; holding them open would hide the pipe closing
+	CloseHandle(stdin_read);
+	stdin_read = nullptr;
+	CloseHandle(stdout_write);
+	stdout_write = nullptr;
+	CloseHandle(stderr_write);
+	stderr_write = nullptr;
+
+	if (!created)
+	{
+		close_all();
+		return nullptr;
+	}
+
+	CloseHandle(pi.hThread);
+
+	auto state = std::make_shared<child_shared_state>();
+	state->callbacks = std::move(callbacks);
+
+	auto process = std::make_unique<win_child_process>();
+	process->_process = pi.hProcess;
+	process->_stdin_write = stdin_write;
+	process->_stdout_read = stdout_read;
+	process->_stderr_read = stderr_read;
+	process->_state = state;
+
+	HANDLE exit_watch = nullptr;
+	DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &exit_watch,
+	                0, FALSE, DUPLICATE_SAME_ACCESS);
+
+	auto* stdout_args = new child_reader_args{stdout_read, exit_watch, false, state};
+	process->_stdout_thread = CreateThread(nullptr, 0, child_reader_proc, stdout_args, 0, nullptr);
+
+	if (!process->_stdout_thread)
+	{
+		delete stdout_args;
+		if (exit_watch) CloseHandle(exit_watch);
+	}
+
+	auto* stderr_args = new child_reader_args{stderr_read, nullptr, true, state};
+	process->_stderr_thread = CreateThread(nullptr, 0, child_reader_proc, stderr_args, 0, nullptr);
+
+	if (!process->_stderr_thread)
+		delete stderr_args;
+
+	return process;
+}
+
+
 //  File I/O â”€
 
 
@@ -2106,8 +2872,7 @@ bool pf::platform_move_file_replace(const char* source, const char* dest)
 
 std::string pf::platform_temp_file_path(const char* prefix)
 {
-	wchar_t dir[MAX_PATH + 1] = {0};
-	GetTempPathW(MAX_PATH, dir);
+	wchar_t dir[MAX_PATH + 1] = {0};	GetTempPathW(MAX_PATH, dir);
 	wchar_t result[MAX_PATH + 1] = {0};
 	GetTempFileNameW(dir, utf8_to_utf16(prefix).c_str(), 0, result);
 	return utf16_to_utf8(result);
@@ -2156,6 +2921,11 @@ bool pf::platform_rename_file(const file_path& old_path, const file_path& new_pa
 	                 utf8_to_utf16(new_path.view()).c_str()) != 0;
 }
 
+bool pf::platform_delete_file(const file_path& path)
+{
+	return DeleteFileW(utf8_to_utf16(path.view()).c_str()) != 0;
+}
+
 bool pf::platform_create_directory(const file_path& path)
 {
 	return CreateDirectoryW(utf8_to_utf16(path.view()).c_str(), nullptr) != 0;
@@ -2168,17 +2938,22 @@ bool pf::platform_copy_file(const file_path& source, const file_path& dest, cons
 	                 fail_if_exists ? TRUE : FALSE) != 0;
 }
 
-std::vector<pf::file_path> pf::dropped_file_paths(const uintptr_t drop_handle)
+static std::vector<pf::file_path> decode_dropped_files(const HDROP hDrop)
 {
-	std::vector<file_path> paths;
-	const auto hDrop = std::bit_cast<HDROP>(drop_handle);
+	std::vector<pf::file_path> paths;
 	const auto count = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
 
 	for (UINT i = 0; i < count; ++i)
 	{
-		wchar_t buf[MAX_PATH] = {};
-		if (DragQueryFileW(hDrop, i, buf, MAX_PATH))
-			paths.emplace_back(utf16_to_utf8(buf));
+		const auto len = DragQueryFileW(hDrop, i, nullptr, 0);
+		if (len == 0) continue;
+
+		std::wstring buf(len + 1, L'\0');
+		const auto copied = DragQueryFileW(hDrop, i, buf.data(), len + 1);
+		if (copied == 0) continue;
+
+		buf.resize(copied);
+		paths.emplace_back(pf::utf16_to_utf8(buf));
 	}
 
 	DragFinish(hDrop);
@@ -2269,6 +3044,11 @@ void pf::config_write(const std::string_view section, const std::string_view key
 		utf8_to_utf16(ini_path.view()).c_str());
 }
 
+void pf::config_flush()
+{
+	// config_write goes straight to the ini file, so there is nothing buffered.
+}
+
 bool pf::is_directory(const file_path& path)
 {
 	const auto attribs = GetFileAttributesW(utf8_to_utf16(path.view()).c_str());
@@ -2328,6 +3108,42 @@ pf::file_path pf::save_file_path(const std::string_view title, const file_path& 
 	if (GetSaveFileNameW(&ofn))
 		return file_path{utf16_to_utf8(szFile)};
 	return {};
+}
+
+pf::file_path pf::pick_folder_path(const std::string_view title)
+{
+	IFileOpenDialog* dialog = nullptr;
+	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+	                            IID_PPV_ARGS(&dialog))) || !dialog)
+		return {};
+
+	file_path result;
+	DWORD options = 0;
+
+	if (SUCCEEDED(dialog->GetOptions(&options)) &&
+		SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)))
+	{
+		if (!title.empty())
+			dialog->SetTitle(utf8_to_utf16(title).c_str());
+
+		if (SUCCEEDED(dialog->Show(g_hWnd)))
+		{
+			IShellItem* item = nullptr;
+			if (SUCCEEDED(dialog->GetResult(&item)) && item)
+			{
+				PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path)
+				{
+					result = file_path{utf16_to_utf8(path)};
+					CoTaskMemFree(path);
+				}
+				item->Release();
+			}
+		}
+	}
+
+	dialog->Release();
+	return result;
 }
 
 //  Platform locale 
@@ -2425,7 +3241,7 @@ public:
 		if (_diagnostics.empty())
 			_diagnostics = "Spell checker initialized.";
 
-		_custom_dic_path = tmp_folder().combine("alpha.dic").view();
+		_custom_dic_path = tmp_folder().combine(s_config_app_name, "dic").view();
 
 		// Load custom dictionary words
 		std::ifstream f(pf::utf8_to_utf16(_custom_dic_path));
@@ -2660,10 +3476,20 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	if (g_hMenu)
 		SetMenu(g_hWnd, g_hMenu);
 
-	ShowWindow(g_hWnd, g_nCmdShow);
+	if (init_result.offscreen_gui)
+	{
+		// Park it far outside any monitor so it still paints and lays out, but
+		// never appears and never takes focus.
+		SetWindowPos(g_hWnd, HWND_BOTTOM, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+		ShowWindow(g_hWnd, SW_SHOWNOACTIVATE);
+	}
+	else
+	{
+		ShowWindow(g_hWnd, g_nCmdShow);
+	}
 	UpdateWindow(g_hWnd);
 
-	const int result = pf::platform_run();
+	const int result = init_result.main_loop ? init_result.main_loop() : pf::platform_run();
 
 	CoUninitialize();
 	return result;
@@ -4020,7 +4846,7 @@ namespace
 			win_address_bar* owner = nullptr;
 
 			uint32_t handle_message(pf::window_frame_ptr, pf::message_type m,
-			                        uintptr_t, intptr_t) override
+			                        const pf::message_params&) override
 			{
 				if (m == pf::message_type::erase_background) return 1;
 				return 0;

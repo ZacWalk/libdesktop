@@ -1,0 +1,3 @@
+/* Sample data embedded by platform_add_app(EMBED ...) and read back by the
+   embedded-resource tests. */
+body { color: red; }

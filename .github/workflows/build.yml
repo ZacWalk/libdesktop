@@ -1,0 +1,27 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # dd.ps1 locates Visual Studio, enters the MSVC environment and falls back
+      # to the CMake and Ninja that ship with it, so there is nothing to install.
+      - name: Build Debug
+        shell: pwsh
+        run: .\dd.ps1 build -Config Debug
+
+      - name: Build and test Release
+        shell: pwsh
+        run: .\dd.ps1 test
