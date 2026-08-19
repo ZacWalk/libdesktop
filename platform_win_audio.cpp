@@ -268,6 +268,87 @@ namespace
 			if (was_running) play(_looping);
 		}
 	};
+
+	class win_audio_stream final : public pf::audio_stream
+	{
+		std::shared_ptr<audio_device> _device;
+		IXAudio2SourceVoice* _voice = nullptr;
+
+		// XAudio2 never copies sample data, so each queued block has to stay
+		// put until the voice is done with it. A ring of exactly max_blocks
+		// slots makes that automatic: while fewer than max are queued the
+		// oldest slot — the next one in ring order — has already been played.
+		std::vector<std::vector<int16_t>> _blocks;
+		int _next = 0;
+		bool _started = false;
+
+	public:
+		win_audio_stream(std::shared_ptr<audio_device> device, IXAudio2SourceVoice* voice,
+		                 const int max_blocks)
+			: _device(std::move(device)), _voice(voice), _blocks(max_blocks)
+		{
+		}
+
+		~win_audio_stream() override
+		{
+			if (_voice)
+			{
+				_voice->Stop(0);
+				_voice->FlushSourceBuffers();
+				_voice->DestroyVoice();
+			}
+		}
+
+		win_audio_stream(const win_audio_stream&) = delete;
+		win_audio_stream& operator=(const win_audio_stream&) = delete;
+
+		[[nodiscard]] int queued_blocks() const override
+		{
+			XAUDIO2_VOICE_STATE state;
+			_voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+			return static_cast<int>(state.BuffersQueued);
+		}
+
+		[[nodiscard]] bool can_write() const override
+		{
+			return queued_blocks() < static_cast<int>(_blocks.size());
+		}
+
+		bool write(const std::span<const int16_t> samples) override
+		{
+			if (samples.empty() || !can_write()) return false;
+
+			auto& block = _blocks[_next];
+			block.assign(samples.begin(), samples.end());
+
+			XAUDIO2_BUFFER buffer = {};
+			buffer.pAudioData = reinterpret_cast<const BYTE*>(block.data());
+			buffer.AudioBytes = static_cast<UINT32>(block.size() * sizeof(int16_t));
+
+			if (FAILED(_voice->SubmitSourceBuffer(&buffer))) return false;
+			_next = (_next + 1) % static_cast<int>(_blocks.size());
+
+			if (!_started)
+			{
+				_voice->Start(0);
+				_started = true;
+			}
+			return true;
+		}
+
+		void set_volume(const float gain) override
+		{
+			_voice->SetVolume(gain);
+		}
+
+		void stop() override
+		{
+			_voice->Stop(0);
+			_voice->FlushSourceBuffers();
+			_started = false;
+			_next = 0;
+		}
+	};
 }
 
 bool pf::sound_init()
@@ -330,4 +411,27 @@ pf::sound_buffer_ptr pf::create_sound_buffer(const std::span<const uint8_t> wav)
 
 	std::vector<uint8_t> samples(contents->data, contents->data + contents->data_size);
 	return std::make_shared<win_sound_buffer>(s_device, voice, std::move(samples), *contents->format);
+}
+
+pf::audio_stream_ptr pf::create_audio_stream(const uint32_t sample_rate, const int channels,
+                                             const int max_blocks)
+{
+	if (!s_device || sample_rate == 0 || channels < 1 || max_blocks < 1) return nullptr;
+
+	WAVEFORMATEX format = {};
+	format.wFormatTag = WAVE_FORMAT_PCM;
+	format.nChannels = static_cast<WORD>(channels);
+	format.nSamplesPerSec = sample_rate;
+	format.wBitsPerSample = 16;
+	format.nBlockAlign = static_cast<WORD>(channels * 2);
+	format.nAvgBytesPerSec = sample_rate * format.nBlockAlign;
+
+	IXAudio2SourceVoice* voice = nullptr;
+	if (FAILED(s_device->engine->CreateSourceVoice(&voice, &format)))
+	{
+		debug_trace("create_audio_stream: CreateSourceVoice failed\n");
+		return nullptr;
+	}
+
+	return std::make_shared<win_audio_stream>(s_device, voice, max_blocks);
 }

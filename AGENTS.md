@@ -1,8 +1,8 @@
 # AGENTS.md
 
 platform-h is the platform layer shared by every application in this workspace
-(`list0`, `potato`, `rethinkify-app`, `stuntcarracer`). It is a library with no
-application of its own.
+(`list0`, `ovrwin`, `potato`, `rethinkify-app`, `spq`, `stuntcarracer`). It is a
+library with no application of its own.
 
 ## Non-negotiables
 
@@ -17,7 +17,7 @@ application of its own.
 3. **App-specific knowledge stays out.** No app names, no resource identifiers,
    no game constants. `config_set_app_name` exists precisely so the layer never
    has to know who is calling.
-4. **A change here breaks four repos.** Adding to `window_frame` or
+4. **A change here breaks six repos.** Adding to `window_frame` or
    `frame_reactor` is a breaking change for every app and their test stubs.
    Build all of them before you consider a change done — see below.
 5. **Add a test with a capability.** `tests/platform_tests.cpp` is a console
@@ -46,7 +46,7 @@ application of its own.
 To check nothing downstream broke, from the workspace root:
 
 ```pwsh
-foreach ($r in 'platform-h','list0','potato','rethinkify-app','stuntcarracer') {
+foreach ($r in 'platform-h','list0','ovrwin','potato','rethinkify-app','spq','stuntcarracer') {
     Push-Location $r; cmake --build --preset release; Pop-Location
 }
 ```

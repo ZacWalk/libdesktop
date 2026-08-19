@@ -722,6 +722,7 @@ namespace pf
 	{
 		constexpr unsigned int LButton = 0x01;
 		constexpr unsigned int RButton = 0x02;
+		constexpr unsigned int MButton = 0x04;
 		constexpr unsigned int Back = 0x08;
 		constexpr unsigned int Tab = 0x09;
 		constexpr unsigned int Return = 0x0D;
@@ -729,6 +730,8 @@ namespace pf
 		constexpr unsigned int Control = 0x11;
 		constexpr unsigned int Escape = 0x1B;
 		constexpr unsigned int Alt = 0x12;
+		constexpr unsigned int Pause = 0x13;
+		constexpr unsigned int CapsLock = 0x14;
 		constexpr unsigned int Space = 0x20;
 		constexpr unsigned int Prior = 0x21;
 		constexpr unsigned int Next = 0x22;
@@ -740,6 +743,17 @@ namespace pf
 		constexpr unsigned int Down = 0x28;
 		constexpr unsigned int Insert = 0x2D;
 		constexpr unsigned int Delete = 0x2E;
+
+		// Numeric keypad. Only reported when Num Lock is on; otherwise the
+		// keypad sends the navigation keys above.
+		constexpr unsigned int Numpad0 = 0x60;
+		constexpr unsigned int Numpad9 = 0x69;
+		constexpr unsigned int Multiply = 0x6A;
+		constexpr unsigned int Add = 0x6B;
+		constexpr unsigned int Subtract = 0x6D;
+		constexpr unsigned int Decimal = 0x6E;
+		constexpr unsigned int Divide = 0x6F;
+
 		constexpr unsigned int F1 = 0x70;
 		constexpr unsigned int F2 = 0x71;
 		constexpr unsigned int F3 = 0x72;
@@ -750,6 +764,24 @@ namespace pf
 		constexpr unsigned int F8 = 0x77;
 		constexpr unsigned int F9 = 0x78;
 		constexpr unsigned int F10 = 0x79;
+		constexpr unsigned int F11 = 0x7A;
+		constexpr unsigned int F12 = 0x7B;
+
+		constexpr unsigned int NumLock = 0x90;
+		constexpr unsigned int ScrollLock = 0x91;
+
+		// Punctuation, named for the US layout the codes are defined against.
+		constexpr unsigned int Semicolon = 0xBA;
+		constexpr unsigned int Equals = 0xBB;
+		constexpr unsigned int Comma = 0xBC;
+		constexpr unsigned int Minus = 0xBD;
+		constexpr unsigned int Period = 0xBE;
+		constexpr unsigned int Slash = 0xBF;
+		constexpr unsigned int Backtick = 0xC0;
+		constexpr unsigned int LeftBracket = 0xDB;
+		constexpr unsigned int Backslash = 0xDC;
+		constexpr unsigned int RightBracket = 0xDD;
+		constexpr unsigned int Quote = 0xDE;
 	}
 
 	// Key modifier flags for accelerator bindings
@@ -1231,6 +1263,9 @@ namespace pf
 	file_path open_file_path(std::string_view title, std::string_view filters);
 	file_path save_file_path(std::string_view title, const file_path& default_path, std::string_view filters);
 
+	// Folder picker. Empty when the user cancels.
+	file_path pick_folder_path(std::string_view title);
+
 	// File iteration
 	struct file_attributes_t
 	{
@@ -1525,6 +1560,36 @@ namespace pf
 
 	// Takes the bytes of a RIFF/WAVE file, typically an embedded resource.
 	sound_buffer_ptr create_sound_buffer(std::span<const uint8_t> wav);
+
+	// Continuous playback of 16-bit PCM the caller generates as it goes — a
+	// synthesiser, a decoder, an emulated sound chip. The queue is also a
+	// clock: the device drains it at exactly the sample rate, so a producer
+	// that waits for room runs at real time without consulting the wall clock.
+	struct audio_stream
+	{
+		virtual ~audio_stream() = default;
+
+		// Blocks handed over and not yet finished playing.
+		[[nodiscard]] virtual int queued_blocks() const = 0;
+
+		// True while the queue has room for another write.
+		[[nodiscard]] virtual bool can_write() const = 0;
+
+		// Copies one block of interleaved samples and queues it. False when
+		// the queue is full, in which case nothing was consumed.
+		virtual bool write(std::span<const int16_t> samples) = 0;
+
+		// Linear amplitude: 0 is silent, 1 is the samples unattenuated.
+		virtual void set_volume(float gain) = 0;
+
+		// Drops whatever is queued and silences the stream.
+		virtual void stop() = 0;
+	};
+
+	using audio_stream_ptr = std::shared_ptr<audio_stream>;
+
+	// max_blocks bounds both latency and how far ahead the producer may run.
+	audio_stream_ptr create_audio_stream(uint32_t sample_rate, int channels, int max_blocks = 4);
 
 	// ── Async HTTP ────────────────────────────────────────────────────────────
 	//

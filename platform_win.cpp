@@ -3110,6 +3110,42 @@ pf::file_path pf::save_file_path(const std::string_view title, const file_path& 
 	return {};
 }
 
+pf::file_path pf::pick_folder_path(const std::string_view title)
+{
+	IFileOpenDialog* dialog = nullptr;
+	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+	                            IID_PPV_ARGS(&dialog))) || !dialog)
+		return {};
+
+	file_path result;
+	DWORD options = 0;
+
+	if (SUCCEEDED(dialog->GetOptions(&options)) &&
+		SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)))
+	{
+		if (!title.empty())
+			dialog->SetTitle(utf8_to_utf16(title).c_str());
+
+		if (SUCCEEDED(dialog->Show(g_hWnd)))
+		{
+			IShellItem* item = nullptr;
+			if (SUCCEEDED(dialog->GetResult(&item)) && item)
+			{
+				PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path)
+				{
+					result = file_path{utf16_to_utf8(path)};
+					CoTaskMemFree(path);
+				}
+				item->Release();
+			}
+		}
+	}
+
+	dialog->Release();
+	return result;
+}
+
 //  Platform locale 
 
 std::string pf::platform_language()

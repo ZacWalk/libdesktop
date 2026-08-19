@@ -27,9 +27,9 @@ somewhere other than Windows, it does not belong here.
 | Menus      | Menu tree with accelerators, built at runtime |
 | Input      | Mouse, keyboard (`key_down` / `key_up` / `char_input`), focus, caret |
 | Clipboard  | Copy / paste text |
-| Files      | Paths, enumeration, open/save dialogs, config ini, `is_path_within` |
+| Files      | Paths, enumeration, open/save/folder dialogs, config ini, `is_path_within` |
 | Networking | `web_request` / `web_response`, plus an async HTTP client |
-| Audio      | `sound_buffer` — linear gain, normalised pan, playback rate |
+| Audio      | `sound_buffer` for a sample held in memory; `audio_stream` for PCM the app generates as it goes |
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
 | Threading  | `run_async`, `run_ui` (marshal to the UI thread) |
@@ -137,6 +137,7 @@ drive CMake directly: `cmake --preset release && cmake --build --preset release`
 
 The suite in `tests/` is a console program covering the parts that can be
 checked without a window: text conversion, paths, geometry, embedded resources,
-line splitting, argument quoting, path containment, and audio playback at zero
-volume (XAudio2 needs no window). It skips the audio cases when the machine has
-no output device.
+line splitting, argument quoting, path containment, and audio at zero volume
+(XAudio2 needs no window) — both a sample buffer and the stream queue that apps
+pace themselves against. It skips the audio cases when the machine has no
+output device.

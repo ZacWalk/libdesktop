@@ -212,6 +212,37 @@ namespace
 		return wav;
 	}
 
+	// The queue is the app's clock, so what matters is that it fills, refuses
+	// an over-write, and drains again on its own.
+	void test_audio_stream()
+	{
+		constexpr int block_frames = 735; // one 60 Hz frame at 44.1 kHz
+		constexpr int max_blocks = 3;
+
+		const auto stream = pf::create_audio_stream(44100, 1, max_blocks);
+		CHECK(stream != nullptr);
+		if (!stream) return;
+
+		stream->set_volume(0.0f);
+		CHECK_EQ(stream->queued_blocks(), 0);
+		CHECK(stream->can_write());
+		CHECK(!stream->write({})); // nothing to queue is not a write
+
+		const std::vector<int16_t> silence(block_frames, 0);
+		for (int i = 0; i < max_blocks; ++i)
+			CHECK(stream->write(silence));
+
+		CHECK(!stream->can_write());
+		CHECK(!stream->write(silence));
+
+		// Three 16.7 ms blocks cannot outlast this, so room must reappear.
+		pf::platform_sleep(200);
+		CHECK(stream->can_write());
+
+		stream->stop();
+		CHECK_EQ(stream->queued_blocks(), 0);
+	}
+
 	// XAudio2 needs no window, so playback is testable headlessly. Everything
 	// runs at zero volume: a test suite must not make a noise.
 	void test_audio()
@@ -254,6 +285,8 @@ namespace
 			pf::platform_sleep(60);
 			sound->stop();
 		}
+
+		test_audio_stream();
 
 		pf::sound_shutdown();
 	}
