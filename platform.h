@@ -104,9 +104,12 @@ namespace pf
 	std::wstring u32_to_wstr(std::u32string_view str);
 	std::u32string wstr_to_u32(std::wstring_view str);
 
+	// The Latin-1 letters are folded explicitly because towlower depends on the process
+	// locale, which an app is not required to set — leaving accented text unfolded by default.
 	constexpr uint32_t to_lower(const uint32_t c)
 	{
 		if (c < 128) return c >= U'A' && c <= U'Z' ? c - U'A' + U'a' : c;
+		if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20;
 		if (c > USHRT_MAX) return c;
 		return towlower(c);
 	}
@@ -114,6 +117,7 @@ namespace pf
 	constexpr uint32_t to_upper(const uint32_t c)
 	{
 		if (c < 128) return c >= U'a' && c <= U'z' ? c - U'a' + U'A' : c;
+		if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return c - 0x20;
 		if (c > USHRT_MAX) return c;
 		return towupper(c);
 	}
@@ -321,6 +325,24 @@ namespace pf
 
 		return result;
 	}
+
+	// line_splitter — Reassembles newline-delimited records from arbitrary read chunks.
+	// A record longer than the limit is discarded and reading resyncs at the next newline,
+	// so a stream that never sends one cannot grow the buffer without bound.
+	struct line_splitter
+	{
+		static constexpr size_t default_max_line_bytes = 1024 * 1024;
+
+		std::string buffer;
+		bool discarding = false;
+		size_t max_line_bytes = default_max_line_bytes;
+		size_t discarded_count = 0;
+
+		void feed(std::string_view chunk, const std::function<void(std::string_view)>& emit);
+
+		// Emits whatever remains when the stream ends without a final newline
+		void flush(const std::function<void(std::string_view)>& emit);
+	};
 
 	constexpr int icmp(const std::string_view ll, const std::string_view rr)
 	{
@@ -721,6 +743,7 @@ namespace pf
 		constexpr unsigned int F1 = 0x70;
 		constexpr unsigned int F2 = 0x71;
 		constexpr unsigned int F3 = 0x72;
+		constexpr unsigned int F4 = 0x73;
 		constexpr unsigned int F5 = 0x74;
 		constexpr unsigned int F6 = 0x75;
 		constexpr unsigned int F7 = 0x76;
@@ -869,6 +892,16 @@ namespace pf
 		unsigned int vk = 0; // virtual key code (for key_down / key_up)
 		char32_t ch = 0; // codepoint (for char_input), surrogate pairs already combined
 		bool repeat = false; // key_down produced by auto-repeat rather than a fresh press
+	};
+
+	// Decoded payload for the messages that carry data. The platform layer does the
+	// decoding, so nothing above it sees raw OS parameters.
+	struct message_params
+	{
+		uint32_t timer_id = 0; // timer
+		double dpi_scale = 1.0; // dpi_changed
+		irect suggested_bounds; // dpi_changed — zero-sized when the OS suggested none
+		std::span<const file_path> dropped_paths; // drop_files
 	};
 
 	// Extract signed mouse coordinates from packed lParam (handles negative values on multi-monitor)
@@ -1114,8 +1147,8 @@ namespace pf
 	struct frame_reactor
 	{
 		virtual ~frame_reactor() = default;
-		virtual uint32_t handle_message(window_frame_ptr window, message_type message, uintptr_t wParam,
-		                                intptr_t lParam) = 0;
+		virtual uint32_t handle_message(window_frame_ptr window, message_type message,
+		                                const message_params& params) = 0;
 
 		virtual uint32_t handle_mouse(window_frame_ptr window, mouse_message_type message,
 		                              const mouse_params& params)
@@ -1295,8 +1328,12 @@ namespace pf
 	bool platform_create_directory(const file_path& path);
 	bool platform_copy_file(const file_path& source, const file_path& dest, bool fail_if_exists);
 
-	// Drag and drop
-	std::vector<file_path> dropped_file_paths(uintptr_t drop_handle);
+	// Absolute, with links followed where the target exists, so two paths can be compared safely
+	file_path canonical_path(const file_path& path);
+
+	// True when 'path' is 'root' or sits underneath it. Compares canonical forms, so neither
+	// '..' nor a junction can be used to reach outside 'root'.
+	bool is_path_within(const file_path& root, const file_path& path);
 
 	// Clipboard
 	bool platform_clipboard_has_text();
@@ -1335,6 +1372,50 @@ namespace pf
 	// background tasks
 	void run_async(std::function<void()> task);
 	void run_ui(std::function<void()> task);
+
+	// Waits up to 'timeout_ms' for queued UI work and runs it. Only for command-line modes,
+	// which have no message loop; the GUI drains the same queue from platform_run.
+	void pump_ui_tasks(int timeout_ms);
+
+	// ── Child processes ────────────────────────────────────────────────────────────────────
+	// Used to host a tool that speaks a line-based protocol over its standard streams.
+
+	struct child_process
+	{
+		virtual ~child_process() = default;
+
+		// Appends a newline, so 'text' must not contain one
+		virtual bool write_line(std::string_view text) = 0;
+		virtual void close_input() = 0;
+		virtual void terminate() = 0;
+		[[nodiscard]] virtual bool is_running() const = 0;
+	};
+
+	using child_process_ptr = std::unique_ptr<child_process>;
+
+	// Every callback is delivered on the UI thread, and none fires after the process is destroyed
+	struct child_process_callbacks
+	{
+		std::function<void(std::string_view)> on_stdout_line;
+		std::function<void(std::string_view)> on_stderr_line;
+		std::function<void(int)> on_exit;
+	};
+
+	// Returns nullptr when the process could not be started
+	child_process_ptr spawn_child_process(const file_path& exe,
+	                                      std::span<const std::string> args,
+	                                      const file_path& working_dir,
+	                                      child_process_callbacks callbacks);
+
+	// Searches PATH, applying PATHEXT when 'name' has no extension. Empty when not found.
+	file_path find_executable(std::string_view name);
+
+	// Quotes one argument by the CommandLineToArgvW rules, so it cannot be split or injected
+	std::string quote_command_arg(std::string_view arg);
+
+	// True when a string holds a character cmd.exe would act on. A batch file is run through
+	// cmd.exe, where quoting alone does not make an argument safe, so such arguments are refused.
+	bool has_shell_metacharacter(std::string_view text);
 
 	// network
 	bool is_online();

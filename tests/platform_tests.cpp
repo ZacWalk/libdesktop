@@ -273,6 +273,103 @@ namespace
 		CHECK_STR(pf::resolve_url("https://example.com/a/b.html", "https://other.com/x.css"),
 		          "https://other.com/x.css");
 	}
+
+	std::vector<std::string> split_stream(const std::vector<std::string_view>& chunks,
+	                                      const size_t max_line_bytes = pf::line_splitter::default_max_line_bytes)
+	{
+		pf::line_splitter splitter;
+		splitter.max_line_bytes = max_line_bytes;
+
+		std::vector<std::string> lines;
+		const auto emit = [&lines](const std::string_view line) { lines.emplace_back(line); };
+
+		for (const auto& chunk : chunks)
+			splitter.feed(chunk, emit);
+
+		splitter.flush(emit);
+		return lines;
+	}
+
+	// A pipe read boundary can fall anywhere, including inside a multi-byte character.
+	void test_line_splitter()
+	{
+		const auto split = split_stream({"on", "e\ntw", "o\nthr", "ee\n"});
+		CHECK_EQ(split.size(), 3u);
+		CHECK_STR(split[0], "one");
+		CHECK_STR(split[1], "two");
+		CHECK_STR(split[2], "three");
+
+		const auto by_byte = split_stream({"a", "b", "\n", "c", "\n"});
+		CHECK_EQ(by_byte.size(), 2u);
+		CHECK_STR(by_byte[0], "ab");
+
+		const auto utf8 = split_stream({"caf\xC3", "\xA9\n"});
+		CHECK_EQ(utf8.size(), 1u);
+		CHECK_STR(utf8[0], "caf\xC3\xA9");
+
+		const auto crlf = split_stream({"one\r\ntwo\r\n"});
+		CHECK_EQ(crlf.size(), 2u);
+		CHECK_STR(crlf[0], "one");
+
+		const auto blanks = split_stream({"\n\na\n"});
+		CHECK_EQ(blanks.size(), 3u);
+		CHECK_STR(blanks[0], "");
+		CHECK_STR(blanks[2], "a");
+
+		// A stream that ends without a newline still yields its last record.
+		const auto partial = split_stream({"tail"});
+		CHECK_EQ(partial.size(), 1u);
+		CHECK_STR(partial[0], "tail");
+
+		CHECK_EQ(split_stream({""}).size(), 0u);
+
+		// A stream that never sends a newline must not grow the buffer without bound.
+		const std::string huge(64, 'x');
+		const auto dropped = split_stream({huge, huge, "\nafter\n"}, 32);
+		CHECK_EQ(dropped.size(), 1u);
+		CHECK_STR(dropped[0], "after");
+
+		// The record is dropped whole, never truncated into a partial one.
+		const auto joined = split_stream({"12345678\nshort\n"}, 6);
+		CHECK_EQ(joined.size(), 1u);
+		CHECK_STR(joined[0], "short");
+	}
+
+	void test_child_process_arguments()
+	{
+		CHECK_STR(pf::quote_command_arg("simple"), "simple");
+		CHECK_STR(pf::quote_command_arg(""), "\"\"");
+		CHECK_STR(pf::quote_command_arg("a b"), "\"a b\"");
+		CHECK_STR(pf::quote_command_arg("a\"b"), "\"a\\\"b\"");
+		CHECK_STR(pf::quote_command_arg("C:\\path\\file"), "C:\\path\\file");
+		CHECK_STR(pf::quote_command_arg("C:\\my path\\"), "\"C:\\my path\\\\\"");
+		CHECK_STR(pf::quote_command_arg("a\\\"b"), "\"a\\\\\\\"b\"");
+
+		CHECK(!pf::has_shell_metacharacter("--acp"));
+		CHECK(!pf::has_shell_metacharacter("C:\\path\\file.txt"));
+		CHECK(pf::has_shell_metacharacter("a & b"));
+		CHECK(pf::has_shell_metacharacter("a | b"));
+		CHECK(pf::has_shell_metacharacter("%PATH%"));
+		CHECK(pf::has_shell_metacharacter("a > b"));
+		CHECK(pf::has_shell_metacharacter("a\nb"));
+	}
+
+	// Neither '..' nor a differently-cased prefix may be used to escape the root.
+	void test_path_containment()
+	{
+		const pf::file_path root("c:\\root\\folder");
+
+		CHECK(pf::is_path_within(root, root));
+		CHECK(pf::is_path_within(root, pf::file_path("c:\\root\\folder\\a\\b.txt")));
+		CHECK(pf::is_path_within(root, pf::file_path("C:\\ROOT\\FOLDER\\a.txt")));
+		CHECK(pf::is_path_within(root, pf::file_path("c:\\root\\folder\\a\\..\\b.txt")));
+
+		CHECK(!pf::is_path_within(root, pf::file_path("c:\\root\\folder2\\a.txt")));
+		CHECK(!pf::is_path_within(root, pf::file_path("c:\\root\\folder\\..\\other\\a.txt")));
+		CHECK(!pf::is_path_within(root, pf::file_path("c:\\root")));
+		CHECK(!pf::is_path_within(root, {}));
+		CHECK(!pf::is_path_within({}, pf::file_path("c:\\root\\folder\\a.txt")));
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -298,6 +395,9 @@ int main()
 	test_embedded_resources();
 	test_audio();
 	test_backend_helpers();
+	test_line_splitter();
+	test_child_process_arguments();
+	test_path_containment();
 
 	std::printf("platform tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

@@ -28,8 +28,8 @@ application of its own.
 | File | Contents |
 |---|---|
 | `platform.h` | The whole `pf::` surface. Declarations, plus inline text/geometry helpers |
-| `platform_common.cpp` | Backend-independent implementation (the embedded-resource registry) |
-| `platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, WinINet/WinHTTP, dialogs, clipboard, spell check |
+| `platform_common.cpp` | Backend-independent implementation (the embedded-resource registry, `line_splitter`) |
+| `platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, WinINet/WinHTTP, dialogs, clipboard, spell check, child processes |
 | `platform_win_audio.cpp` | XAudio2 backend, isolated from the rest |
 | `cmake/platform_app.cmake` | `platform_add_app()` — the function apps use to declare themselves |
 | `cmake/embed_resources.cmake` | Turns data files into a generated C++ byte-array TU |

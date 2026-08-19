@@ -44,3 +44,83 @@ std::string_view pf::embedded_resource_text(const std::string_view name)
 
 	return {};
 }
+
+// ── line_splitter ──────────────────────────────────────────────────────────────
+
+namespace
+{
+	std::string_view without_trailing_cr(const std::string_view line)
+	{
+		return !line.empty() && line.back() == '\r' ? line.substr(0, line.size() - 1) : line;
+	}
+}
+
+void pf::line_splitter::feed(const std::string_view chunk, const std::function<void(std::string_view)>& emit)
+{
+	size_t pos = 0;
+
+	while (pos < chunk.size())
+	{
+		const auto newline = chunk.find('\n', pos);
+
+		if (newline == std::string_view::npos)
+		{
+			const auto tail = chunk.substr(pos);
+
+			if (discarding)
+				return;
+
+			if (buffer.size() + tail.size() > max_line_bytes)
+			{
+				buffer.clear();
+				discarding = true;
+				++discarded_count;
+				return;
+			}
+
+			buffer.append(tail);
+			return;
+		}
+
+		const auto piece = chunk.substr(pos, newline - pos);
+		pos = newline + 1;
+
+		if (discarding)
+		{
+			discarding = false;
+			continue;
+		}
+
+		if (buffer.empty())
+		{
+			if (piece.size() > max_line_bytes)
+			{
+				++discarded_count;
+				continue;
+			}
+
+			emit(without_trailing_cr(piece));
+			continue;
+		}
+
+		if (buffer.size() + piece.size() > max_line_bytes)
+		{
+			buffer.clear();
+			++discarded_count;
+			continue;
+		}
+
+		buffer.append(piece);
+		emit(without_trailing_cr(buffer));
+		buffer.clear();
+	}
+}
+
+void pf::line_splitter::flush(const std::function<void(std::string_view)>& emit)
+{
+	if (!discarding && !buffer.empty())
+		emit(without_trailing_cr(buffer));
+
+	buffer.clear();
+	discarding = false;
+}

@@ -5,8 +5,9 @@
 A small C++20 platform layer for desktop applications: one OS-free header,
 `platform.h`, and a backend that implements it. Everything the applications in
 this workspace need from an operating system — windows, drawing, fonts, menus,
-input, clipboard, files, HTTP, audio, timers, threading — is declared behind the
-`pf::` namespace, so the application code never sees a `HWND`.
+input, clipboard, files, HTTP, audio, timers, threading, child processes — is
+declared behind the `pf::` namespace, so the application code never sees a
+`HWND`.
 
 There is currently one backend, Win32/MSVC.
 
@@ -26,12 +27,13 @@ somewhere other than Windows, it does not belong here.
 | Menus      | Menu tree with accelerators, built at runtime |
 | Input      | Mouse, keyboard (`key_down` / `key_up` / `char_input`), focus, caret |
 | Clipboard  | Copy / paste text |
-| Files      | Paths, enumeration, open/save dialogs, config ini |
+| Files      | Paths, enumeration, open/save dialogs, config ini, `is_path_within` |
 | Networking | `web_request` / `web_response`, plus an async HTTP client |
 | Audio      | `sound_buffer` — linear gain, normalised pan, playback rate |
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
 | Threading  | `run_async`, `run_ui` (marshal to the UI thread) |
+| Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg` |
 
 ### Backends
 
@@ -57,6 +59,16 @@ void app_destroy();
 The platform owns the message loop and calls these at the appropriate times. An
 application that needs its own frame loop — a game — returns a `main_loop`
 callable in `app_init_result` and pumps messages with `pf::platform_events()`.
+
+### Child processes
+
+`spawn_child_process()` starts a tool and moves bytes to and from its standard
+streams: three pipes, a reader thread each for stdout and stderr, whole lines
+reassembled with `pf::line_splitter`, and every callback marshalled to the UI
+thread. It has no idea what those lines mean — a protocol belongs in the app.
+`find_executable()` resolves a bare name through `PATH` and `PATHEXT` without
+ever searching the current directory, and `quote_command_arg()` quotes by the
+`CommandLineToArgvW` rules so an argument cannot be split or injected.
 
 ## Consuming it from an app
 
@@ -125,5 +137,6 @@ drive CMake directly: `cmake --preset release && cmake --build --preset release`
 
 The suite in `tests/` is a console program covering the parts that can be
 checked without a window: text conversion, paths, geometry, embedded resources,
-and audio playback at zero volume (XAudio2 needs no window). It skips the audio
-cases when the machine has no output device.
+line splitting, argument quoting, path containment, and audio playback at zero
+volume (XAudio2 needs no window). It skips the audio cases when the machine has
+no output device.
