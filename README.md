@@ -1,5 +1,7 @@
 # platform-h
 
+[![Build](https://github.com/ZacWalk/platform-h/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/platform-h/actions/workflows/build.yml)
+
 A small C++20 platform layer for desktop applications: one OS-free header,
 `platform.h`, and a backend that implements it. Everything the applications in
 this workspace need from an operating system — windows, drawing, fonts, menus,
