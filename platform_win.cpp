@@ -45,7 +45,6 @@
 #include <optional>
 
 #include "platform.h"
-#include "resource.h"
 
 using namespace std::string_view_literals;
 
@@ -127,7 +126,7 @@ pf::file_path tmp_folder()
 //  Globals 
 
 static HINSTANCE resource_instance = nullptr;
-static HWND g_hWnd = nullptr;
+HWND g_hWnd = nullptr; // shared with platform_win_audio.cpp
 static LARGE_INTEGER g_perfFreq;
 static LARGE_INTEGER g_perfStart;
 static HMENU g_hMenu = nullptr;
@@ -195,22 +194,28 @@ static void build_runtime_accelerators()
 {
 	std::vector<ACCEL> accels;
 
+	const auto add = [&accels](const pf::key_binding& kb, const int id)
+	{
+		if (kb.empty() || id == 0) return;
+
+		ACCEL a = {};
+		a.cmd = static_cast<WORD>(id);
+		a.fVirt = FVIRTKEY | FNOINVERT;
+		if (kb.modifiers & pf::key_mod::ctrl) a.fVirt |= FCONTROL;
+		if (kb.modifiers & pf::key_mod::shift) a.fVirt |= FSHIFT;
+		if (kb.modifiers & pf::key_mod::alt) a.fVirt |= FALT;
+		a.key = static_cast<WORD>(kb.key);
+		accels.push_back(a);
+	};
+
 	std::function<void(const std::vector<pf::menu_command>&)> collect;
 	collect = [&](const std::vector<pf::menu_command>& items)
 	{
 		for (const auto& item : items)
 		{
-			if (!item.accel.empty() && item.id != 0)
-			{
-				ACCEL a = {};
-				a.cmd = static_cast<WORD>(item.id);
-				a.fVirt = FVIRTKEY | FNOINVERT;
-				if (item.accel.modifiers & pf::key_mod::ctrl) a.fVirt |= FCONTROL;
-				if (item.accel.modifiers & pf::key_mod::shift) a.fVirt |= FSHIFT;
-				if (item.accel.modifiers & pf::key_mod::alt) a.fVirt |= FALT;
-				a.key = static_cast<WORD>(item.accel.key);
-				accels.push_back(a);
-			}
+			add(item.accel, item.id);
+			add(item.accel_alt, item.id);
+
 			if (!item.children.empty())
 				collect(item.children);
 		}
@@ -290,6 +295,7 @@ static std::optional<pf::keyboard_message_type> map_keyboard_message(const UINT 
 	switch (uMsg)
 	{
 	case WM_KEYDOWN: return pf::keyboard_message_type::key_down;
+	case WM_KEYUP: return pf::keyboard_message_type::key_up;
 	case WM_CHAR: return pf::keyboard_message_type::char_input;
 	default: return std::nullopt;
 	}
@@ -713,6 +719,7 @@ class win_impl final : public win, public pf::window_frame
 {
 	pf::frame_reactor_ptr _reactor;
 	pf::window_frame_ptr _self_ref; // cleared on WM_DESTROY
+	uint16_t _pending_lead = 0; // first half of a WM_CHAR surrogate pair
 
 	// Cached back buffer for flicker-free painting
 	HDC _hdc_back = nullptr;
@@ -960,6 +967,23 @@ public:
 		return MessageBoxW(m_hWnd, pf::utf8_to_utf16(text).c_str(), pf::utf8_to_utf16(title).c_str(), style);
 	}
 
+	void present_pixels(const uint32_t* pixels, const int cx, const int cy) override
+	{
+		if (!pixels || cx <= 0 || cy <= 0) return;
+
+		BITMAPINFO bmi = {};
+		bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bmi.bmiHeader.biWidth = cx;
+		bmi.bmiHeader.biHeight = -cy; // top-down
+		bmi.bmiHeader.biPlanes = 1;
+		bmi.bmiHeader.biBitCount = 32;
+		bmi.bmiHeader.biCompression = BI_RGB;
+
+		const HDC hdc = GetDC(m_hWnd);
+		SetDIBitsToDevice(hdc, 0, 0, cx, cy, 0, 0, 0, cy, pixels, &bmi, DIB_RGB_COLORS);
+		ReleaseDC(m_hWnd, hdc);
+	}
+
 	void set_menu(std::vector<pf::menu_command> menu_def) override
 	{
 		pf::platform_set_menu(std::move(menu_def));
@@ -1201,9 +1225,38 @@ public:
 				pf::keyboard_params params;
 
 				if (*kmt == pf::keyboard_message_type::key_down)
+				{
 					params.vk = static_cast<unsigned int>(wParam);
+					params.repeat = (lParam & 1LL << 30) != 0; // previous key state
+				}
+				else if (*kmt == pf::keyboard_message_type::key_up)
+				{
+					params.vk = static_cast<unsigned int>(wParam);
+				}
 				else
-					params.ch = static_cast<char>(wParam);
+				{
+					// WM_CHAR delivers UTF-16 code units; a supplementary character arrives as two messages.
+					const auto unit = static_cast<uint16_t>(wParam);
+
+					if (pf::is_lead_surrogate(unit))
+					{
+						_pending_lead = unit;
+						return 0;
+					}
+
+					if (pf::is_trail_surrogate(unit))
+					{
+						if (_pending_lead == 0)
+							return 0;
+						params.ch = static_cast<char32_t>(0x10000u + ((_pending_lead - 0xD800u) << 10) + (unit - 0xDC00u));
+						_pending_lead = 0;
+					}
+					else
+					{
+						_pending_lead = 0;
+						params.ch = static_cast<char32_t>(unit);
+					}
+				}
 
 				return _reactor->handle_keyboard(self, *kmt, params);
 			}
@@ -1530,6 +1583,52 @@ std::string pf::format_key_binding(const key_binding& kb)
 
 //  Font handles, native DC wrapper, URL resolver 
 
+// A screen-compatible DC kept alive per thread. Acquiring a DC and realizing a
+// font dominated text measurement, which runs once per text node per style pass.
+struct measure_dc
+{
+	HDC hdc = CreateCompatibleDC(nullptr);
+	HFONT original = nullptr;
+	HFONT current = nullptr;
+	std::wstring buffer;
+
+	~measure_dc()
+	{
+		if (hdc)
+		{
+			if (original) SelectObject(hdc, original);
+			DeleteDC(hdc);
+		}
+	}
+
+	HDC with_font(const HFONT f)
+	{
+		if (!hdc) return nullptr;
+		if (f != current)
+		{
+			const auto prev = static_cast<HFONT>(SelectObject(hdc, f));
+			if (!original) original = prev;
+			current = f;
+		}
+		return hdc;
+	}
+
+	void release_font(const HFONT f)
+	{
+		if (hdc && f == current)
+		{
+			SelectObject(hdc, original);
+			current = nullptr;
+		}
+	}
+};
+
+static measure_dc& shared_measure_dc()
+{
+	thread_local measure_dc instance;
+	return instance;
+}
+
 pf::font_handle pf::create_font_handle(const font_def& def, font_metrics_data* out_metrics)
 {
 	const auto wface = utf8_to_utf16(def.face);
@@ -1569,33 +1668,32 @@ pf::font_handle pf::create_font_handle(const font_def& def, font_metrics_data* o
 
 void pf::delete_font_handle(const font_handle h)
 {
-	if (h) DeleteObject(std::bit_cast<HFONT>(h));
+	if (!h) return;
+	// GDI refuses to delete a font that is still selected into a DC.
+	shared_measure_dc().release_font(std::bit_cast<HFONT>(h));
+	DeleteObject(std::bit_cast<HFONT>(h));
 }
 
 pf::isize pf::measure_text_with_font(const font_handle h, const std::string_view text)
 {
 	if (!h) return {0, 0};
-	const HDC hdc = GetDC(nullptr);
+	auto& m = shared_measure_dc();
+	const HDC hdc = m.with_font(std::bit_cast<HFONT>(h));
 	if (!hdc) return {0, 0};
-	const auto old = static_cast<HFONT>(SelectObject(hdc, std::bit_cast<HFONT>(h)));
-	const auto wtext = utf8_to_utf16(text);
+	utf8_to_utf16(text, m.buffer);
 	SIZE sz = {0, 0};
-	GetTextExtentPoint32W(hdc, wtext.c_str(), static_cast<int>(wtext.size()), &sz);
-	SelectObject(hdc, old);
-	ReleaseDC(nullptr, hdc);
+	GetTextExtentPoint32W(hdc, m.buffer.c_str(), static_cast<int>(m.buffer.size()), &sz);
 	return {sz.cx, sz.cy};
 }
 
 int pf::line_height_for_font(const font_handle h)
 {
 	if (!h) return 0;
-	const HDC hdc = GetDC(nullptr);
+	auto& m = shared_measure_dc();
+	const HDC hdc = m.with_font(std::bit_cast<HFONT>(h));
 	if (!hdc) return 0;
-	const auto old = static_cast<HFONT>(SelectObject(hdc, std::bit_cast<HFONT>(h)));
 	TEXTMETRICW tm = {};
 	GetTextMetricsW(hdc, &tm);
-	SelectObject(hdc, old);
-	ReleaseDC(nullptr, hdc);
 	return tm.tmHeight;
 }
 
@@ -1640,6 +1738,72 @@ std::string pf::resolve_url(const std::string_view base, const std::string_view 
 	if (result.starts_with("file://"))
 		result.erase(0, 7);
 	return result;
+}
+
+uint32_t pf::charset_to_codepage(const std::string_view charset)
+{
+	struct entry
+	{
+		const char* name;
+		uint32_t cp;
+	};
+
+	// Only the labels that actually show up on the web. Anything absent is
+	// treated as UTF-8 by the caller.
+	static constexpr entry table[] = {
+		{"utf-8", CP_UTF8}, {"utf8", CP_UTF8}, {"us-ascii", CP_UTF8}, {"ascii", CP_UTF8},
+		{"iso-8859-1", 28591}, {"latin1", 28591}, {"l1", 28591}, {"iso8859-1", 28591},
+		{"windows-1250", 1250}, {"windows-1251", 1251}, {"windows-1252", 1252},
+		{"windows-1253", 1253}, {"windows-1254", 1254}, {"windows-1255", 1255},
+		{"windows-1256", 1256}, {"windows-1257", 1257}, {"windows-1258", 1258},
+		{"cp1250", 1250}, {"cp1251", 1251}, {"cp1252", 1252},
+		{"iso-8859-2", 28592}, {"iso-8859-3", 28593}, {"iso-8859-4", 28594},
+		{"iso-8859-5", 28595}, {"iso-8859-6", 28596}, {"iso-8859-7", 28597},
+		{"iso-8859-8", 28598}, {"iso-8859-9", 28599}, {"iso-8859-13", 28603},
+		{"iso-8859-15", 28605},
+		{"koi8-r", 20866}, {"koi8-u", 21866},
+		{"shift_jis", 932}, {"shift-jis", 932}, {"sjis", 932}, {"ms_kanji", 932},
+		{"euc-jp", 20932}, {"iso-2022-jp", 50220},
+		{"gb2312", 936}, {"gbk", 936}, {"gb18030", 54936}, {"big5", 950},
+		{"euc-kr", 949}, {"ks_c_5601-1987", 949},
+		{"windows-874", 874}, {"tis-620", 874},
+	};
+
+	for (const auto& [name, cp] : table)
+	{
+		if (icmp(charset, name) == 0) return cp;
+	}
+	return 0;
+}
+
+std::string pf::transcode_to_utf8(const std::string_view bytes, const uint32_t codepage)
+{
+	if (codepage == 0 || codepage == CP_UTF8 || bytes.empty())
+		return std::string(bytes);
+
+	// MultiByteToWideChar rejects the UTF-16 code pages, so reinterpret those.
+	if (codepage == 1200 || codepage == 1201)
+	{
+		const size_t units = bytes.size() / 2;
+		std::wstring wide(units, L'\0');
+
+		for (size_t i = 0; i < units; ++i)
+		{
+			const auto lo = static_cast<uint8_t>(bytes[i * 2]);
+			const auto hi = static_cast<uint8_t>(bytes[i * 2 + 1]);
+			wide[i] = static_cast<wchar_t>(codepage == 1200 ? lo | hi << 8 : hi | lo << 8);
+		}
+
+		return utf16_to_utf8(wide);
+	}
+
+	const auto len = static_cast<int>(bytes.size());
+	const int wide_len = MultiByteToWideChar(codepage, 0, bytes.data(), len, nullptr, 0);
+	if (wide_len <= 0) return std::string(bytes);
+
+	std::wstring wide(wide_len, L'\0');
+	MultiByteToWideChar(codepage, 0, bytes.data(), len, wide.data(), wide_len);
+	return utf16_to_utf8(wide);
 }
 
 //  Cursor position (global) â”€
@@ -1826,8 +1990,23 @@ namespace
 			FILE* dummy = nullptr;
 			_wfreopen_s(&dummy, L"CONOUT$", L"w", stdout);
 			_wfreopen_s(&dummy, L"CONOUT$", L"w", stderr);
+
+			// AttachConsole leaves the std handles null, which would send every
+			// write down write_stdout's fallback path.
+			const auto out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			                             nullptr, OPEN_EXISTING, 0, nullptr);
+			if (out != INVALID_HANDLE_VALUE)
+			{
+				SetStdHandle(STD_OUTPUT_HANDLE, out);
+				SetStdHandle(STD_ERROR_HANDLE, out);
+			}
 		}
 	}
+}
+
+void pf::attach_console()
+{
+	ensure_cli_stdout_bound();
 }
 
 void pf::write_stdout(const std::string_view text)
@@ -2106,8 +2285,7 @@ bool pf::platform_move_file_replace(const char* source, const char* dest)
 
 std::string pf::platform_temp_file_path(const char* prefix)
 {
-	wchar_t dir[MAX_PATH + 1] = {0};
-	GetTempPathW(MAX_PATH, dir);
+	wchar_t dir[MAX_PATH + 1] = {0};	GetTempPathW(MAX_PATH, dir);
 	wchar_t result[MAX_PATH + 1] = {0};
 	GetTempFileNameW(dir, utf8_to_utf16(prefix).c_str(), 0, result);
 	return utf16_to_utf8(result);
@@ -2154,6 +2332,11 @@ bool pf::platform_rename_file(const file_path& old_path, const file_path& new_pa
 {
 	return MoveFileW(utf8_to_utf16(old_path.view()).c_str(),
 	                 utf8_to_utf16(new_path.view()).c_str()) != 0;
+}
+
+bool pf::platform_delete_file(const file_path& path)
+{
+	return DeleteFileW(utf8_to_utf16(path.view()).c_str()) != 0;
 }
 
 bool pf::platform_create_directory(const file_path& path)
@@ -2267,6 +2450,11 @@ void pf::config_write(const std::string_view section, const std::string_view key
 		utf8_to_utf16(key).c_str(),
 		utf8_to_utf16(value).c_str(),
 		utf8_to_utf16(ini_path.view()).c_str());
+}
+
+void pf::config_flush()
+{
+	// config_write goes straight to the ini file, so there is nothing buffered.
 }
 
 bool pf::is_directory(const file_path& path)
@@ -2425,7 +2613,7 @@ public:
 		if (_diagnostics.empty())
 			_diagnostics = "Spell checker initialized.";
 
-		_custom_dic_path = tmp_folder().combine("alpha.dic").view();
+		_custom_dic_path = tmp_folder().combine(s_config_app_name, "dic").view();
 
 		// Load custom dictionary words
 		std::ifstream f(pf::utf8_to_utf16(_custom_dic_path));
@@ -2660,10 +2848,20 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	if (g_hMenu)
 		SetMenu(g_hWnd, g_hMenu);
 
-	ShowWindow(g_hWnd, g_nCmdShow);
+	if (init_result.offscreen_gui)
+	{
+		// Park it far outside any monitor so it still paints and lays out, but
+		// never appears and never takes focus.
+		SetWindowPos(g_hWnd, HWND_BOTTOM, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+		ShowWindow(g_hWnd, SW_SHOWNOACTIVATE);
+	}
+	else
+	{
+		ShowWindow(g_hWnd, g_nCmdShow);
+	}
 	UpdateWindow(g_hWnd);
 
-	const int result = pf::platform_run();
+	const int result = init_result.main_loop ? init_result.main_loop() : pf::platform_run();
 
 	CoUninitialize();
 	return result;

@@ -4,6 +4,8 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -11,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <bit>
 #include <charconv>
 #include <stdexcept>
@@ -20,6 +23,8 @@
 
 namespace pf
 {
+	constexpr uint32_t REPLACEMENT_CHAR = 0xfffdu;
+	constexpr uint32_t MAX_CODE_POINT = 0x10ffffu;
 	constexpr uint32_t LEAD_SURROGATE_MIN = 0xd800u;
 	constexpr uint32_t LEAD_SURROGATE_MAX = 0xdbffu;
 	constexpr uint32_t TRAIL_SURROGATE_MIN = 0xdc00u;
@@ -176,25 +181,35 @@ namespace pf
 		return {std::bit_cast<const char*>(val.data()), val.size()};
 	}
 
-	inline std::wstring utf8_to_utf16(const std::string_view s)
+	inline void utf8_to_utf16(const std::string_view s, std::wstring& result)
 	{
-		std::wstring result;
-		result.reserve(s.size());
+		result.clear();
+		result.reserve(std::max(result.capacity(), s.size()));
 		auto i = s.begin();
 		while (i < s.end())
 		{
-			const auto cp = pop_utf8_char(i, s.end());
+			auto cp = pop_utf8_char(i, s.end());
+
+			// Surrogate halves and out-of-range values have no valid UTF-16 form
+			if (cp > MAX_CODE_POINT || is_lead_surrogate(cp) || is_trail_surrogate(cp))
+				cp = REPLACEMENT_CHAR;
 
 			if (cp > 0xffff)
 			{
-				result += static_cast<uint16_t>((cp >> 10) + LEAD_OFFSET);
-				result += static_cast<uint16_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
+				result += static_cast<wchar_t>((cp >> 10) + LEAD_OFFSET);
+				result += static_cast<wchar_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
 			}
 			else
 			{
-				result += static_cast<uint16_t>(cp);
+				result += static_cast<wchar_t>(cp);
 			}
 		}
+	}
+
+	inline std::wstring utf8_to_utf16(const std::string_view s)
+	{
+		std::wstring result;
+		utf8_to_utf16(s, result);
 		return result;
 	}
 
@@ -238,29 +253,22 @@ namespace pf
 		{
 			uint32_t cp = mask16(*start++);
 
+			// Unpaired surrogates are substituted rather than rejected: NTFS permits
+			// them in file names and the clipboard can contain them.
 			if (is_lead_surrogate(cp))
 			{
-				if (start != end)
+				if (start != end && is_trail_surrogate(mask16(*start)))
 				{
-					const uint32_t trail_surrogate = mask16(*start++);
-
-					if (is_trail_surrogate(trail_surrogate))
-					{
-						cp = (cp << 10) + trail_surrogate + SURROGATE_OFFSET;
-					}
-					else
-					{
-						throw std::invalid_argument("Invalid input string");
-					}
+					cp = (cp << 10) + mask16(*start++) + SURROGATE_OFFSET;
 				}
 				else
 				{
-					throw std::invalid_argument("Invalid input string");
+					cp = REPLACEMENT_CHAR;
 				}
 			}
 			else if (is_trail_surrogate(cp))
 			{
-				throw std::invalid_argument("Invalid input string");
+				cp = REPLACEMENT_CHAR;
 			}
 
 			char32_to_utf8(inserter, cp);
@@ -273,6 +281,14 @@ namespace pf
 		utf16_to_utf8(s, result);
 		return result;
 	};
+
+	// Short enough to stay inside the small-string buffer, so this does not allocate.
+	inline std::string utf8_encode(const char32_t cp)
+	{
+		std::string result;
+		char32_to_utf8(std::back_inserter(result), static_cast<uint32_t>(cp));
+		return result;
+	}
 
 	inline std::string to_lower(const std::string_view s)
 	{
@@ -574,6 +590,8 @@ namespace pf
 
 		[[nodiscard]] file_path combine(const std::string_view part) const
 		{
+			if (_path.empty()) return file_path{part};
+
 			auto result = _path;
 
 			if (!part.empty())
@@ -745,6 +763,7 @@ namespace pf
 		std::function<bool()> is_checked;
 		std::vector<menu_command> children;
 		key_binding accel;
+		key_binding accel_alt; // second binding for the same command; only accel is shown in the menu
 
 		menu_command() = default;
 
@@ -753,10 +772,11 @@ namespace pf
 		             std::function<void()> act,
 		             std::function<bool()> en = nullptr,
 		             std::function<bool()> chk = nullptr,
-		             const key_binding kb = {})
+		             const key_binding kb = {},
+		             const key_binding kb_alt = {})
 			: text(std::move(t)), id(cmd_id), action(std::move(act)),
 			  is_enabled(std::move(en)), is_checked(std::move(chk)),
-			  accel(kb)
+			  accel(kb), accel_alt(kb_alt)
 		{
 		}
 
@@ -839,14 +859,16 @@ namespace pf
 	enum class keyboard_message_type : unsigned int
 	{
 		key_down,
+		key_up,
 		char_input,
 	};
 
 	// Bundled keyboard parameters
 	struct keyboard_params
 	{
-		unsigned int vk = 0; // virtual key code (for key_down)
-		char ch = 0; // character (for char_input)
+		unsigned int vk = 0; // virtual key code (for key_down / key_up)
+		char32_t ch = 0; // codepoint (for char_input), surrogate pairs already combined
+		bool repeat = false; // key_down produced by auto-repeat rather than a fresh press
 	};
 
 	// Extract signed mouse coordinates from packed lParam (handles negative values on multi-monitor)
@@ -926,6 +948,14 @@ namespace pf
 	// Resolve a (possibly relative) URL against an absolute base URL.
 	// Mirrors the previous shlwapi-based behaviour.
 	std::string resolve_url(std::string_view base, std::string_view rel);
+
+	// Map an IANA/HTML charset label to a platform code page. Returns 0 when
+	// the label is not recognised.
+	uint32_t charset_to_codepage(std::string_view charset);
+
+	// Transcode bytes in the given code page to UTF-8. A code page of 0 (or
+	// UTF-8) returns the input unchanged.
+	std::string transcode_to_utf8(std::string_view bytes, uint32_t codepage);
 
 
 	// Measure / Draw contexts
@@ -1058,6 +1088,11 @@ namespace pf
 		                                      color_t background) const & = 0;
 		virtual void close() = 0;
 		virtual int message_box(std::string_view text, std::string_view title, uint32_t style) = 0;
+
+		// Blit a 32-bit BGRA top-down frame straight to the window, outside any
+		// paint handler and without copying. For apps that own their frame loop.
+		virtual void present_pixels(const uint32_t* pixels, int cx, int cy) = 0;
+
 		// Menu
 		virtual void set_menu(std::vector<menu_command> menu_def) = 0;
 		// Measure context
@@ -1109,6 +1144,22 @@ namespace pf
 
 	// Load an embedded text resource (e.g. master.css). Returns empty on failure.
 	std::string platform_load_text_resource(int id);
+
+	// Data files compiled into the executable by platform_add_app(EMBED ...).
+	// Backend-independent: the build generates a translation unit that registers
+	// the table below before main runs, so no .rc and no numeric IDs are needed.
+	struct embedded_resource
+	{
+		std::string_view name;
+		const uint8_t* data;
+		size_t size;
+	};
+
+	void register_embedded_resources(const embedded_resource* items, size_t count);
+
+	// Empty when the name is not registered. The text form is null-terminated.
+	std::span<const uint8_t> embedded_resource_data(std::string_view name);
+	std::string_view embedded_resource_text(std::string_view name);
 
 	// Dialog / Message box constants
 	namespace dialog_id
@@ -1238,6 +1289,7 @@ namespace pf
 	bool platform_move_file_replace(const char* source, const char* dest);
 	std::string platform_temp_file_path(const char* prefix);
 	std::string platform_last_error_message();
+	bool platform_delete_file(const file_path& path);
 	bool platform_recycle_file(const file_path& path);
 	bool platform_rename_file(const file_path& old_path, const file_path& new_path);
 	bool platform_create_directory(const file_path& path);
@@ -1265,11 +1317,20 @@ namespace pf
 	void debug_trace(const std::string& msg);
 	void write_stdout(std::string_view text);
 
+	// Binds stdout/stderr to the parent console. A GUI-subsystem executable has
+	// no console of its own, so printf is invisible from a CLI mode until this
+	// has run.
+	void attach_console();
+
 	// Configuration (INI file)
 	void config_set_app_name(std::string_view app_name);
 	std::string config_read(std::string_view section, std::string_view key,
 	                        std::string_view default_value = {});
 	void config_write(std::string_view section, std::string_view key, std::string_view value);
+
+	// Commits any buffered configuration to disk. Backends that write through
+	// on every config_write have nothing to do here.
+	void config_flush();
 
 	// background tasks
 	void run_async(std::function<void()> task);
@@ -1350,6 +1411,39 @@ namespace pf
 
 	// Load an encoded image from an embedded resource (RT_RCDATA by default).
 	bitmap_ptr load_bitmap_named_resource(std::string_view name, std::string_view type = "RCDATA");
+
+	// ── Audio ─────────────────────────────────────────────────────────────────
+	//
+	// Sample playback for short sounds held entirely in memory.
+	struct sound_buffer
+	{
+		virtual ~sound_buffer() = default;
+
+		virtual void play(bool loop = false) = 0;
+		virtual void stop() = 0;
+
+		// Playback sample rate, which is how a sample is pitch-shifted.
+		virtual void set_frequency(uint32_t hz) = 0;
+
+		// Linear amplitude: 0 is silent, 1 is the sample unattenuated.
+		virtual void set_volume(float gain) = 0;
+
+		// -1 is hard left, 0 centre, +1 hard right.
+		virtual void set_pan(float pan) = 0;
+
+		// Play cursor as a byte offset into the sample data. Empty when the
+		// device cannot report it.
+		[[nodiscard]] virtual std::optional<uint32_t> play_position() const = 0;
+		virtual void set_play_position(uint32_t pos) = 0;
+	};
+
+	using sound_buffer_ptr = std::shared_ptr<sound_buffer>;
+
+	bool sound_init();
+	void sound_shutdown();
+
+	// Takes the bytes of a RIFF/WAVE file, typically an embedded resource.
+	sound_buffer_ptr create_sound_buffer(std::span<const uint8_t> wav);
 
 	// ── Async HTTP ────────────────────────────────────────────────────────────
 	//
@@ -1488,6 +1582,15 @@ struct app_init_result
 {
 	bool start_gui = true;
 	int exit_code = 0;
+
+	// Run the UI offscreen: a real window with real painting, but never visible
+	// and never focused, so automated runs don't disrupt the desktop.
+	bool offscreen_gui = false;
+
+	// When set, the platform hands control here instead of running its own
+	// message loop — for apps that need a free-running frame loop and pump
+	// messages themselves with pf::platform_events().
+	std::function<int()> main_loop;
 };
 
 
