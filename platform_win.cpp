@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <format>
@@ -17,6 +18,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -2190,106 +2192,288 @@ bool pf::platform_events()
 
 //  Message Loop â”€
 
-static CRITICAL_SECTION cs_async;
-static CRITICAL_SECTION cs_ui;
-static std::vector<std::function<void()>> async_tasks;
-static std::vector<std::function<void()>> ui_tasks;
-static HANDLE async_h = nullptr;
 static HANDLE exit_h = nullptr;
-static HANDLE ui_event_h = nullptr;
+
+namespace
+{
+	struct task_queue_state
+	{
+		std::mutex mutex;
+		std::condition_variable ready;
+		std::condition_variable finished;
+		std::deque<std::function<void()>> tasks;
+		bool accepting = true;
+		size_t workers = 0;
+	};
+
+	void invoke_task(std::function<void()>& task)
+	{
+		try { task(); }
+		catch (const std::exception& e)
+		{
+			pf::debug_trace("Task exception: " + std::string(e.what()) + "\n");
+		}
+		catch (...)
+		{
+			pf::debug_trace("Task: unknown exception\n");
+		}
+	}
+
+	void consume_tasks(const std::shared_ptr<task_queue_state>& state)
+	{
+		for (;;)
+		{
+			std::function<void()> task;
+			{
+				std::unique_lock lock(state->mutex);
+				state->ready.wait(lock, [&] { return !state->accepting || !state->tasks.empty(); });
+				if (state->tasks.empty())
+				{
+					--state->workers;
+					state->finished.notify_all();
+					return;
+				}
+				task = std::move(state->tasks.front());
+				state->tasks.pop_front();
+			}
+			invoke_task(task);
+		}
+	}
+
+	bool enqueue_task(const std::shared_ptr<task_queue_state>& state, std::function<void()> task)
+	{
+		if (!task) return false;
+		{
+			std::lock_guard lock(state->mutex);
+			if (!state->accepting) return false;
+			state->tasks.push_back(std::move(task));
+		}
+		state->ready.notify_one();
+		return true;
+	}
+
+	void stop_queue(const std::shared_ptr<task_queue_state>& state)
+	{
+		{
+			std::lock_guard lock(state->mutex);
+			state->accepting = false;
+		}
+		state->ready.notify_all();
+	}
+
+	class win_serial_executor final : public pf::serial_executor
+	{
+		const std::shared_ptr<task_queue_state> _state = std::make_shared<task_queue_state>();
+		std::mutex _join_mutex;
+		std::thread _worker;
+		std::thread::id _worker_id;
+
+	public:
+		win_serial_executor()
+		{
+			_state->workers = 1;
+			_worker = std::thread([state = _state] { consume_tasks(state); });
+			_worker_id = _worker.get_id();
+		}
+
+		~win_serial_executor() override
+		{
+			stop();
+			if (_worker.joinable()) _worker.detach();
+		}
+
+		bool post(std::function<void()> task) override
+		{
+			const auto state = _state;
+			return enqueue_task(state, std::move(task));
+		}
+
+		void stop() override
+		{
+			stop_queue(_state);
+			if (std::this_thread::get_id() == _worker_id) return;
+			std::lock_guard lock(_join_mutex);
+			if (_worker.joinable()) _worker.join();
+		}
+	};
+
+	class async_task_pool
+	{
+		const std::shared_ptr<task_queue_state> _state = std::make_shared<task_queue_state>();
+		std::vector<std::thread> _workers;
+		std::mutex _stop_mutex;
+		bool _stopped = false;
+
+	public:
+		async_task_pool()
+		{
+			constexpr size_t worker_count = 4;
+			_workers.reserve(worker_count);
+			_state->workers = worker_count;
+			try
+			{
+				for (size_t i = 0; i < worker_count; ++i)
+					_workers.emplace_back([state = _state] { consume_tasks(state); });
+			}
+			catch (...)
+			{
+				{
+					std::lock_guard lock(_state->mutex);
+					_state->workers -= worker_count - _workers.size();
+				}
+				stop_queue(_state);
+				for (auto& worker : _workers) worker.join();
+				throw;
+			}
+		}
+
+		bool post(std::function<void()> task)
+		{
+			return enqueue_task(_state, std::move(task));
+		}
+
+		void stop(const bool bounded)
+		{
+			std::lock_guard stop_lock(_stop_mutex);
+			if (_stopped) return;
+			_stopped = true;
+			std::deque<std::function<void()>> cancelled;
+			{
+				std::lock_guard lock(_state->mutex);
+				_state->accepting = false;
+				if (bounded) cancelled.swap(_state->tasks);
+			}
+			_state->ready.notify_all();
+
+			bool finished = true;
+			if (bounded)
+			{
+				std::unique_lock lock(_state->mutex);
+				finished = _state->finished.wait_for(lock, std::chrono::seconds(5),
+					[&] { return _state->workers == 0; });
+			}
+			for (auto& worker : _workers)
+			{
+				if (finished && worker.get_id() != std::this_thread::get_id())
+					worker.join();
+				else
+					worker.detach();
+			}
+			if (!finished)
+				pf::debug_trace("Async shutdown: workers still running after 5 seconds\n");
+		}
+	};
+
+	struct task_dispatcher
+	{
+		std::mutex pool_mutex;
+		std::unique_ptr<async_task_pool> pool;
+		bool stopping = false;
+		std::mutex ui_mutex;
+		std::vector<std::function<void()>> ui_tasks;
+		HANDLE ui_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		bool ui_accepting = true;
+
+		task_dispatcher()
+		{
+			if (!ui_event)
+				throw std::runtime_error(std::format("CreateEvent(UI tasks) failed ({})", GetLastError()));
+		}
+
+		void shutdown(const bool bounded)
+		{
+			async_task_pool* active_pool = nullptr;
+			{
+				std::lock_guard lock(pool_mutex);
+				stopping = true;
+				active_pool = pool.get();
+			}
+			if (active_pool) active_pool->stop(bounded);
+			std::vector<std::function<void()>> discarded;
+			{
+				std::lock_guard lock(ui_mutex);
+				ui_accepting = false;
+				discarded.swap(ui_tasks);
+				if (ui_event) CloseHandle(ui_event);
+				ui_event = nullptr;
+			}
+		}
+	};
+
+	task_dispatcher& dispatcher()
+	{
+		// Detached network jobs may still post during CRT teardown; keep the stopped dispatcher alive.
+		static auto* value = new task_dispatcher;
+		struct cleanup
+		{
+			~cleanup() { dispatcher().shutdown(false); }
+		};
+		static cleanup at_exit;
+		return *value;
+	}
+}
+
+pf::serial_executor_ptr pf::create_serial_executor()
+{
+	try { return std::make_unique<win_serial_executor>(); }
+	catch (const std::exception& e)
+	{
+		debug_trace("create_serial_executor: " + std::string(e.what()) + "\n");
+		return nullptr;
+	}
+}
 
 void pf::run_async(std::function<void()> task)
 {
-	EnterCriticalSection(&cs_async);
-	async_tasks.push_back(std::move(task));
-	LeaveCriticalSection(&cs_async);
-	SetEvent(async_h);
+	if (!task) return;
+	auto& state = dispatcher();
+	std::lock_guard lock(state.pool_mutex);
+	if (state.stopping) return;
+	if (!state.pool)
+	{
+		try { state.pool = std::make_unique<async_task_pool>(); }
+		catch (const std::exception& e)
+		{
+			debug_trace("run_async: " + std::string(e.what()) + "\n");
+			throw;
+		}
+	}
+	state.pool->post(std::move(task));
 }
 
 void pf::run_ui(std::function<void()> task)
 {
-	EnterCriticalSection(&cs_ui);
-	ui_tasks.push_back(std::move(task));
-	LeaveCriticalSection(&cs_ui);
-	SetEvent(ui_event_h);
+	if (!task) return;
+	auto& state = dispatcher();
+	std::lock_guard lock(state.ui_mutex);
+	if (!state.ui_accepting) return;
+	state.ui_tasks.push_back(std::move(task));
+	SetEvent(state.ui_event);
 }
 
 static void run_ui_tasks()
 {
+	auto& state = dispatcher();
 	std::vector<std::function<void()>> tasks;
-	EnterCriticalSection(&cs_ui);
-	tasks.swap(ui_tasks);
-	LeaveCriticalSection(&cs_ui);
-	for (auto& t : tasks)
 	{
-		try { t(); }
-		catch (const std::exception& e)
-		{
-			pf::debug_trace(
-				"UI task exception: " + std::string(e.what()) + "\n");
-		}
-		catch (...)
-		{
-			pf::debug_trace("UI task: unknown exception\n");
-		}
+		std::lock_guard lock(state.ui_mutex);
+		tasks.swap(state.ui_tasks);
 	}
+	for (auto& task : tasks) invoke_task(task);
 }
 
 void pf::pump_ui_tasks(const int timeout_ms)
 {
-	if (ui_event_h)
-		WaitForSingleObject(ui_event_h, static_cast<DWORD>(timeout_ms));
-
+	if (const auto event = dispatcher().ui_event)
+		WaitForSingleObject(event, static_cast<DWORD>(std::max(0, timeout_ms)));
 	run_ui_tasks();
-}
-
-static DWORD WINAPI async_thread_proc(LPVOID /*param*/)
-{
-	for (;;)
-	{
-		const HANDLE h[] = {async_h, exit_h};
-
-		switch (WaitForMultipleObjects(2, h, FALSE, INFINITE))
-		{
-		case WAIT_OBJECT_0:
-			{
-				std::vector<std::function<void()>> tasks;
-				EnterCriticalSection(&cs_async);
-				tasks.swap(async_tasks);
-				LeaveCriticalSection(&cs_async);
-				for (auto& t : tasks)
-				{
-					try { t(); }
-					catch (const std::exception& e)
-					{
-						pf::debug_trace(
-							"Async task exception: " + std::string(e.what()) +
-							"\n");
-					}
-					catch (...)
-					{
-						pf::debug_trace("Async task: unknown exception\n");
-					}
-				}
-			}
-			break;
-		case WAIT_OBJECT_0 + 1:
-			return 0;
-		default:
-			return 1;
-		}
-	}
 }
 
 static void init_handles()
 {
-	InitializeCriticalSection(&cs_async);
-	InitializeCriticalSection(&cs_ui);
-	async_h = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 	exit_h = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	ui_event_h = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
-	if (!async_h || !exit_h || !ui_event_h)
+	if (!exit_h || !dispatcher().ui_event)
 	{
 		pf::debug_trace("init_handles: CreateEvent failed\n");
 		std::abort();
@@ -2305,12 +2489,11 @@ static void init_handles()
 int pf::platform_run()
 {
 	MSG msg = {};
-	HANDLE hAsyncThread = CreateThread(nullptr, 0, async_thread_proc, nullptr, 0, nullptr);
 	int result = 0;
 
 	for (;;)
 	{
-		const HANDLE h[] = {ui_event_h, exit_h};
+		const HANDLE h[] = {dispatcher().ui_event, exit_h};
 		constexpr auto n = std::size(h);
 
 		const auto wait = MsgWaitForMultipleObjects(n, h, FALSE, INFINITE, QS_ALLINPUT);
@@ -2353,23 +2536,9 @@ int pf::platform_run()
 	}
 
 cleanup:
-	if (hAsyncThread)
-	{
-		SetEvent(exit_h);
-		WaitForSingleObject(hAsyncThread, 5000);
-		CloseHandle(hAsyncThread);
-		hAsyncThread = nullptr;
-	}
-
-	CloseHandle(async_h);
+	dispatcher().shutdown(true);
 	CloseHandle(exit_h);
-	CloseHandle(ui_event_h);
-	async_h = nullptr;
 	exit_h = nullptr;
-	ui_event_h = nullptr;
-
-	DeleteCriticalSection(&cs_async);
-	DeleteCriticalSection(&cs_ui);
 
 	return result;
 }
@@ -3526,6 +3695,9 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	const auto init_result = app_init(app_statedow, params);
 	if (!init_result.start_gui)
 	{
+		dispatcher().shutdown(false);
+		CloseHandle(exit_h);
+		exit_h = nullptr;
 		LocalFree(argv);
 		CoUninitialize();
 		return init_result.exit_code;
@@ -3560,6 +3732,9 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 
 	const int result = init_result.main_loop ? init_result.main_loop() : pf::platform_run();
 
+	dispatcher().shutdown(true);
+	if (exit_h) CloseHandle(exit_h);
+	exit_h = nullptr;
 	CoUninitialize();
 	return result;
 }

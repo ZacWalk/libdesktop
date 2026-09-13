@@ -1406,9 +1406,24 @@ namespace pf
 	// on every config_write have nothing to do here.
 	void config_flush();
 
-	// background tasks
+	// A four-worker pool, available before app_init/platform_run; tasks may overlap.
 	void run_async(std::function<void()> task);
+	// Queues callbacks for the UI thread, or pump_ui_tasks in headless modes.
 	void run_ui(std::function<void()> task);
+
+	struct serial_executor
+	{
+		virtual ~serial_executor() = default;
+		// Rejects empty tasks and submissions after stop; accepted tasks run FIFO.
+		virtual bool post(std::function<void()> task) = 0;
+		// Drains and joins, except on its own worker where draining continues after return.
+		virtual void stop() = 0;
+	};
+
+	using serial_executor_ptr = std::unique_ptr<serial_executor>;
+
+	// Starts a dedicated worker immediately; nullptr on failure. Destruction calls stop.
+	serial_executor_ptr create_serial_executor();
 
 	// Waits up to 'timeout_ms' for queued UI work and runs it. Only for command-line modes,
 	// which have no message loop; the GUI drains the same queue from platform_run.

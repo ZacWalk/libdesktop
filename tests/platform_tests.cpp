@@ -4,9 +4,12 @@
 
 #include "platform.h"
 
+#include <atomic>
 #include <cstdio>
 #include <chrono>
+#include <cstdlib>
 #include <format>
+#include <future>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +18,22 @@ namespace
 {
 	int g_checks = 0;
 	int g_failures = 0;
+	std::atomic<int> g_shutdown_completed = 0;
+	std::promise<void> g_shutdown_release;
+	const std::shared_future<void> g_shutdown_gate = g_shutdown_release.get_future().share();
+	constexpr int shutdown_job_count = 16;
+
+	void check_pool_teardown()
+	{
+		const bool drained = g_shutdown_completed == shutdown_job_count;
+		std::printf("headless async teardown: %s (%d/%d jobs)\n",
+			drained ? "PASS" : "FAIL", g_shutdown_completed.load(), shutdown_job_count);
+		if (!drained)
+		{
+			std::fflush(stdout);
+			std::_Exit(1);
+		}
+	}
 
 	void check(const bool ok, const char* expr, const int line)
 	{
@@ -224,6 +243,145 @@ namespace
 		CHECK(path == pf::canonical_path(path));
 		CHECK(path.view().find('\0') == std::string_view::npos);
 		CHECK(path == pf::local_app_data_path());
+	}
+
+	void test_serial_executor()
+	{
+		auto executor = pf::create_serial_executor();
+		CHECK(executor != nullptr);
+		if (!executor) return;
+		CHECK(!executor->post({}));
+		std::vector<int> order;
+		for (int i = 0; i < 32; ++i)
+			CHECK(executor->post([&, i] { order.push_back(i); }));
+		CHECK(executor->post([] { throw std::runtime_error("expected serial task failure"); }));
+		CHECK(executor->post([&] { order.push_back(32); }));
+		executor->stop();
+		CHECK_EQ(order.size(), 33u);
+		for (size_t i = 0; i < order.size(); ++i)
+			CHECK_EQ(order[i], static_cast<int>(i));
+		CHECK(!executor->post([] {}));
+		executor->stop();
+
+		int drained = 0;
+		{
+			auto scoped = pf::create_serial_executor();
+			CHECK(scoped != nullptr);
+			if (scoped)
+				for (int i = 0; i < 8; ++i)
+					CHECK(scoped->post([&] { ++drained; }));
+		}
+		CHECK_EQ(drained, 8);
+
+		auto self_stopping = pf::create_serial_executor();
+		CHECK(self_stopping != nullptr);
+		if (!self_stopping) return;
+		std::promise<void> release;
+		const auto gate = release.get_future().share();
+		bool tail_ran = false;
+		CHECK(self_stopping->post([&] { gate.wait(); self_stopping->stop(); }));
+		CHECK(self_stopping->post([&] { tail_ran = true; }));
+		release.set_value();
+		// Joining concurrently with a worker's stop must not hold a lock that worker needs.
+		self_stopping->stop();
+		CHECK(tail_ran);
+
+		auto owner = std::make_shared<pf::serial_executor_ptr>(pf::create_serial_executor());
+		CHECK(*owner != nullptr);
+		if (!*owner) return;
+		std::promise<void> destroy;
+		const auto destroy_gate = destroy.get_future().share();
+		auto completed = std::make_shared<std::promise<void>>();
+		auto completion = completed->get_future();
+		CHECK((*owner)->post([owner, destroy_gate] { destroy_gate.wait(); owner->reset(); }));
+		CHECK((*owner)->post([completed] { completed->set_value(); }));
+		destroy.set_value();
+		CHECK(completion.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	}
+
+	void test_headless_async_pool()
+	{
+		auto release = std::make_shared<std::promise<void>>();
+		const auto gate = release->get_future().share();
+		std::vector<std::future<void>> started;
+		std::vector<std::future<void>> finished;
+		for (int i = 0; i < 4; ++i)
+		{
+			auto start = std::make_shared<std::promise<void>>();
+			auto finish = std::make_shared<std::promise<void>>();
+			started.push_back(start->get_future());
+			finished.push_back(finish->get_future());
+			pf::run_async([start, finish, gate]
+			{
+				start->set_value();
+				gate.wait();
+				finish->set_value();
+			});
+		}
+		// No window, app_init, or platform_run has run in this console executable.
+		for (auto& future : started)
+			CHECK(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+		auto fifth = std::make_shared<std::promise<void>>();
+		auto fifth_done = fifth->get_future();
+		pf::run_async([fifth] { fifth->set_value(); });
+		CHECK(fifth_done.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
+		release->set_value();
+		for (auto& future : finished)
+			CHECK(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+		CHECK(fifth_done.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+		pf::run_async([] { throw std::runtime_error("expected async task failure"); });
+		auto ui_thread = std::make_shared<std::promise<std::thread::id>>();
+		auto ui_done = ui_thread->get_future();
+		pf::run_async([ui_thread]
+		{
+			pf::run_ui([ui_thread] { ui_thread->set_value(std::this_thread::get_id()); });
+		});
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (ui_done.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
+			std::chrono::steady_clock::now() < deadline)
+			pf::pump_ui_tasks(25);
+		const bool delivered = ui_done.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+		CHECK(delivered);
+		if (delivered) CHECK(ui_done.get() == std::this_thread::get_id());
+	}
+
+	void test_pool_waiting_on_serial_executor()
+	{
+		auto writer = std::shared_ptr<pf::serial_executor>(pf::create_serial_executor());
+		CHECK(writer != nullptr);
+		if (!writer) return;
+		auto release = std::make_shared<std::promise<void>>();
+		const auto gate = release->get_future().share();
+		std::vector<std::future<void>> started;
+		std::vector<std::future<bool>> completed;
+		for (int i = 0; i < 4; ++i)
+		{
+			auto start = std::make_shared<std::promise<void>>();
+			auto done = std::make_shared<std::promise<bool>>();
+			started.push_back(start->get_future());
+			completed.push_back(done->get_future());
+			pf::run_async([writer, start, done, gate]
+			{
+				start->set_value();
+				gate.wait();
+				auto written = std::make_shared<std::promise<void>>();
+				auto result = written->get_future();
+				const bool posted = writer->post([written] { written->set_value(); });
+				done->set_value(posted &&
+					result.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+			});
+		}
+		for (auto& future : started)
+			CHECK(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+		release->set_value();
+		for (auto& future : completed)
+		{
+			const bool ready = future.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+			CHECK(ready);
+			if (ready) CHECK(future.get());
+		}
+		writer->stop();
 	}
 
 	void test_embedded_resources()
@@ -505,11 +663,16 @@ void app_destroy()
 
 int main()
 {
+	// Registered before dispatcher creation, so this checks after its teardown has drained.
+	CHECK(std::atexit(check_pool_teardown) == 0);
 	test_text();
 	test_invalid_text();
 	test_file_path();
 	test_instance_lock();
 	test_local_app_data_path();
+	test_serial_executor();
+	test_headless_async_pool();
+	test_pool_waiting_on_serial_executor();
 	test_geometry();
 	test_embedded_resources();
 	test_audio();
@@ -518,7 +681,10 @@ int main()
 	test_child_process_arguments();
 	test_path_containment();
 
+	CHECK(std::atexit([] { g_shutdown_release.set_value(); }) == 0);
 	std::printf("platform tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
+	for (int i = 0; i < shutdown_job_count; ++i)
+		pf::run_async([] { g_shutdown_gate.wait(); ++g_shutdown_completed; });
 	return g_failures == 0 ? 0 : 1;
 }

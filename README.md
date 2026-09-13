@@ -32,7 +32,7 @@ somewhere other than Windows, it does not belong here.
 | Audio      | `sound_buffer` for a sample held in memory; `audio_stream` for PCM the app generates as it goes |
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
-| Threading  | `run_async`, `run_ui` (marshal to the UI thread) |
+| Threading  | `run_async`, `run_ui` (marshal to the UI thread), `create_serial_executor` |
 | Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg`, `try_lock_instance` |
 
 ### Backends
@@ -87,6 +87,36 @@ Failures are also sent to `debug_trace`, never standard output.
 The Windows backend uses a named mutex whose name includes the user's SID.
 It holds the object alive without claiming thread ownership, so even a second
 attempt on the same thread is rejected rather than recursively acquiring it.
+
+### Background and serialized work
+
+`run_async()` lazily starts four workers and dispatches one queued task per
+worker at a time. It works in `app_init`, headless modes, and console programs
+without entering `platform_run`; callbacks may overlap, so they must synchronize
+shared state. `run_ui()` only queues callbacks: the GUI loop or explicit
+`pump_ui_tasks()` calls deliver them on the calling UI thread.
+
+`create_serial_executor()` starts a separate worker immediately, returning
+`nullptr` with a diagnostic if creation fails. Its `post(task)` returns false
+for an empty task or after shutdown; accepted tasks run FIFO. `stop()` rejects
+new work, drains accepted tasks and joins the worker. Destruction also stops
+the executor. When called on its own worker, stop/destruction does not self-join:
+the queue state survives until its accepted work finishes. Exceptions in tasks
+are diagnosed without terminating either executor.
+
+Use a dedicated executor for a serialized database writer or a long-running
+queue consumer. Pool jobs may wait for that independent executor, but must not
+occupy every pool worker while waiting for more work on the same pool. A
+long-running consumer must receive its own shutdown signal before its executor
+can finish draining.
+
+Headless return/process teardown drains the async pool; pending UI callbacks are
+discarded, not invoked after application state has gone away. GUI shutdown
+cancels queued pool work and waits at most five seconds for active jobs, then
+detaches any remaining workers. Their queue/dispatcher state stays valid for
+late completions, and new background/UI submissions are ignored after shutdown.
+The application still owns cancellation of network operations and the lifetime
+of objects its tasks reference.
 
 ## Consuming it from an app
 
@@ -155,7 +185,8 @@ drive CMake directly: `cmake --preset release && cmake --build --preset release`
 
 The suite in `tests/` is a console program covering the parts that can be
 checked without a window: text conversion, paths, geometry, embedded resources,
-line splitting, argument quoting, path containment, and audio at zero volume
+line splitting, argument quoting, path containment, instance locks, per-user
+storage paths, headless pool/executor concurrency and teardown, and audio at zero volume
 (XAudio2 needs no window) — both a sample buffer and the stream queue that apps
 pace themselves against. It skips the audio cases when the machine has no
 output device.
