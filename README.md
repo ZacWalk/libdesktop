@@ -27,13 +27,13 @@ somewhere other than Windows, it does not belong here.
 | Menus      | Menu tree with accelerators, built at runtime |
 | Input      | Mouse, keyboard (`key_down` / `key_up` / `char_input`), focus, caret |
 | Clipboard  | Copy / paste text |
-| Files      | Paths, enumeration, open/save/folder dialogs, config ini, `is_path_within` |
+| Files      | Paths, enumeration, open/save/folder dialogs, config ini, `is_path_within`, `local_app_data_path` |
 | Networking | `web_request` / `web_response`, plus an async HTTP client |
 | Audio      | `sound_buffer` for a sample held in memory; `audio_stream` for PCM the app generates as it goes |
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
 | Threading  | `run_async`, `run_ui` (marshal to the UI thread) |
-| Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg` |
+| Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg`, `try_lock_instance` |
 
 ### Backends
 
@@ -69,6 +69,24 @@ thread. It has no idea what those lines mean — a protocol belongs in the app.
 `find_executable()` resolves a bare name through `PATH` and `PATHEXT` without
 ever searching the current directory, and `quote_command_arg()` quotes by the
 `CommandLineToArgvW` rules so an argument cannot be split or injected.
+
+### Per-user storage and single-instance applications
+
+`local_app_data_path()` returns the current user's non-roaming application-data
+directory (the LocalAppData Known Folder on Windows), or an empty path on failure.
+It neither reads an environment-variable shortcut nor creates an app subdirectory.
+
+`try_lock_instance(name)` attempts a nonblocking, per-user lock shared across login
+sessions. Use an app-specific name of 1–128 ASCII letters, digits, `.`, `_` or `-`.
+Keep the returned `lock` alive for the application's lifetime. The move-only
+`instance_lock_ptr` releases on destruction, on any thread; process termination
+also releases the native handle. `already_running` means another holder exists,
+whereas a nonempty `error` reports invalid input or an operating-system failure.
+Failures are also sent to `debug_trace`, never standard output.
+
+The Windows backend uses a named mutex whose name includes the user's SID.
+It holds the object alive without claiming thread ownership, so even a second
+attempt on the same thread is rejected rather than recursively acquiring it.
 
 ## Consuming it from an app
 

@@ -28,6 +28,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <sddl.h>
 #include <spellcheck.h>
 #include <WinInet.h>
 
@@ -112,6 +113,88 @@ pf::file_path pf::file_path::module_folder()
 	wchar_t raw_path[MAX_PATH];
 	GetModuleFileNameW(nullptr, raw_path, MAX_PATH);
 	return file_path(utf16_to_utf8(raw_path)).folder();
+}
+
+pf::file_path pf::local_app_data_path()
+{
+	PWSTR raw_path = nullptr;
+	const auto status = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw_path);
+	const auto free_path = [](wchar_t* path) { CoTaskMemFree(path); };
+	const std::unique_ptr<wchar_t, decltype(free_path)> path(raw_path, free_path);
+	if (FAILED(status) || !raw_path)
+	{
+		debug_trace(std::format("SHGetKnownFolderPath(LocalAppData) failed ({:#x})",
+		                        static_cast<uint32_t>(status)));
+		return {};
+	}
+	return file_path(utf16_to_utf8(raw_path));
+}
+
+namespace
+{
+	struct win_instance_lock final : pf::instance_lock
+	{
+		HANDLE handle = nullptr;
+		~win_instance_lock() override
+		{
+			if (handle) CloseHandle(handle);
+		}
+	};
+
+	pf::instance_lock_result instance_lock_error(const std::string_view operation, const DWORD error)
+	{
+		auto message = std::format("{} failed (error {})", operation, error);
+		pf::debug_trace(message);
+		return {nullptr, false, std::move(message)};
+	}
+}
+
+pf::instance_lock_result pf::try_lock_instance(const std::string_view name)
+{
+	if (name.empty() || name.size() > 128 ||
+		!std::all_of(name.begin(), name.end(), [](const char c)
+		{
+			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+		}))
+		return instance_lock_error("Instance lock name validation", ERROR_INVALID_NAME);
+
+	HANDLE raw_token = nullptr;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token))
+		return instance_lock_error("OpenProcessToken", GetLastError());
+	const auto close_token = [](void* handle) { CloseHandle(handle); };
+	const std::unique_ptr<void, decltype(close_token)> token(raw_token, close_token);
+
+	DWORD bytes = 0;
+	if (!GetTokenInformation(token.get(), TokenUser, nullptr, 0, &bytes))
+	{
+		const auto error = GetLastError();
+		if (error != ERROR_INSUFFICIENT_BUFFER)
+			return instance_lock_error("GetTokenInformation(size)", error);
+	}
+	if (bytes < sizeof(TOKEN_USER))
+		return instance_lock_error("GetTokenInformation(size)", ERROR_INVALID_DATA);
+	std::vector<uint8_t> user(bytes);
+	if (!GetTokenInformation(token.get(), TokenUser, user.data(), bytes, &bytes))
+		return instance_lock_error("GetTokenInformation", GetLastError());
+
+	PWSTR raw_sid = nullptr;
+	if (!ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid, &raw_sid))
+		return instance_lock_error("ConvertSidToStringSid", GetLastError());
+	const auto free_sid = [](wchar_t* sid) { LocalFree(sid); };
+	const std::unique_ptr<wchar_t, decltype(free_sid)> sid(raw_sid, free_sid);
+	const auto qualified_name = std::wstring(L"Global\\pf.instance.") + sid.get() + L"." + utf8_to_utf16(name);
+
+	auto lock = std::make_unique<win_instance_lock>();
+	// Object lifetime, not thread ownership, is the lock; a second handle must never escape.
+	SetLastError(ERROR_SUCCESS);
+	lock->handle = CreateMutexW(nullptr, FALSE, qualified_name.c_str());
+	const auto error = GetLastError();
+	if (!lock->handle)
+		return instance_lock_error("CreateMutex", error);
+	if (error == ERROR_ALREADY_EXISTS)
+		return {nullptr, true, {}};
+	return {std::move(lock), false, {}};
 }
 
 pf::file_path tmp_folder()

@@ -5,8 +5,10 @@
 #include "platform.h"
 
 #include <cstdio>
+#include <chrono>
 #include <format>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -157,6 +159,71 @@ namespace
 		CHECK(c.darken(20) == pf::color_t(0, 230, 108));
 		CHECK_EQ(pf::color_t(1, 2, 3).rgb(), 0x030201u);
 		CHECK_EQ(pf::clamp(5, 10, 1), 10);
+	}
+
+	void test_instance_lock()
+	{
+		const auto name = std::format("platform-tests-{}",
+			std::chrono::steady_clock::now().time_since_epoch().count());
+		{
+			auto first = pf::try_lock_instance(name);
+			CHECK(first.lock != nullptr);
+			CHECK(!first.already_running);
+			CHECK(first.error.empty());
+
+			const auto duplicate = pf::try_lock_instance(name);
+			CHECK(duplicate.lock == nullptr);
+			CHECK(duplicate.already_running);
+			CHECK(duplicate.error.empty());
+
+			pf::instance_lock_result concurrent;
+			std::thread contender([&] { concurrent = pf::try_lock_instance(name); });
+			contender.join();
+			CHECK(concurrent.lock == nullptr);
+			CHECK(concurrent.already_running);
+			CHECK(concurrent.error.empty());
+
+			auto different = pf::try_lock_instance(name + "-other");
+			CHECK(different.lock != nullptr);
+			CHECK(!different.already_running);
+			CHECK(different.error.empty());
+		}
+
+		auto reacquired = pf::try_lock_instance(name);
+		CHECK(reacquired.lock != nullptr);
+		CHECK(!reacquired.already_running);
+		CHECK(reacquired.error.empty());
+		std::thread releaser([lock = std::move(reacquired.lock)]() mutable { lock.reset(); });
+		releaser.join();
+		const auto after_release = pf::try_lock_instance(name);
+		CHECK(after_release.lock != nullptr);
+		CHECK(!after_release.already_running);
+		CHECK(after_release.error.empty());
+
+		for (const std::string invalid : {"", "a b", "a\\b", "a/b", "\xc3\xa9"})
+		{
+			const auto result = pf::try_lock_instance(invalid);
+			CHECK(result.lock == nullptr);
+			CHECK(!result.already_running);
+			CHECK(!result.error.empty());
+		}
+		for (const auto& invalid : {std::string(129, 'x'), std::string("a\0b", 3)})
+		{
+			const auto result = pf::try_lock_instance(invalid);
+			CHECK(result.lock == nullptr);
+			CHECK(!result.already_running);
+			CHECK(!result.error.empty());
+		}
+	}
+
+	void test_local_app_data_path()
+	{
+		const auto path = pf::local_app_data_path();
+		CHECK(!path.empty());
+		CHECK(pf::is_directory(path));
+		CHECK(path == pf::canonical_path(path));
+		CHECK(path.view().find('\0') == std::string_view::npos);
+		CHECK(path == pf::local_app_data_path());
 	}
 
 	void test_embedded_resources()
@@ -441,6 +508,8 @@ int main()
 	test_text();
 	test_invalid_text();
 	test_file_path();
+	test_instance_lock();
+	test_local_app_data_path();
 	test_geometry();
 	test_embedded_resources();
 	test_audio();

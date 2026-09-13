@@ -1258,6 +1258,8 @@ namespace pf
 	//
 	bool is_directory(const file_path& path);
 	file_path current_directory();
+	// The current user's non-roaming application-data directory; empty on failure.
+	file_path local_app_data_path();
 
 	// File dialog
 	file_path open_file_path(std::string_view title, std::string_view filters);
@@ -1411,6 +1413,24 @@ namespace pf
 	// Waits up to 'timeout_ms' for queued UI work and runs it. Only for command-line modes,
 	// which have no message loop; the GUI drains the same queue from platform_run.
 	void pump_ui_tasks(int timeout_ms);
+
+	struct instance_lock
+	{
+		virtual ~instance_lock() = default;
+	};
+
+	using instance_lock_ptr = std::unique_ptr<instance_lock>;
+
+	struct instance_lock_result
+	{
+		instance_lock_ptr lock;
+		bool already_running = false;
+		std::string error;
+	};
+
+	// One holder per user across login sessions; destruction releases it on any thread.
+	// Names contain 1–128 ASCII letters, digits, '.', '_' or '-'; failures populate error.
+	instance_lock_result try_lock_instance(std::string_view name);
 
 	// ── Child processes ────────────────────────────────────────────────────────────────────
 	// Used to host a tool that speaks a line-based protocol over its standard streams.
