@@ -5,6 +5,7 @@
 #include "platform.h"
 
 #include <cstdio>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -298,6 +299,22 @@ namespace
 		CHECK_STR(pf::format_key_binding({}), "");
 		CHECK_STR(pf::format_key_binding({'S', pf::key_mod::ctrl}), "Ctrl+S");
 		CHECK_STR(pf::format_key_binding({'F', pf::key_mod::ctrl | pf::key_mod::shift}), "Ctrl+Shift+F");
+		for (auto key = pf::platform_key::F1; key <= pf::platform_key::F12; ++key)
+		{
+			const auto name = std::format("F{}", key - pf::platform_key::F1 + 1);
+			CHECK_STR(pf::format_key_binding({key}), name);
+			CHECK_STR(pf::format_key_binding({key, pf::key_mod::ctrl}), "Ctrl+" + name);
+			CHECK_STR(pf::format_key_binding({key, pf::key_mod::shift}), "Shift+" + name);
+			CHECK_STR(pf::format_key_binding({key, pf::key_mod::alt}), "Alt+" + name);
+		}
+		CHECK_STR(pf::format_key_binding({pf::platform_key::Left, pf::key_mod::alt}), "Alt+Left");
+		CHECK_STR(pf::format_key_binding({pf::platform_key::Right, pf::key_mod::alt}), "Alt+Right");
+		CHECK_STR(pf::format_key_binding({pf::platform_key::Insert, pf::key_mod::ctrl}), "Ctrl+Ins");
+		CHECK_STR(pf::format_key_binding({pf::platform_key::Delete, pf::key_mod::shift}), "Shift+Del");
+		CHECK_STR(pf::format_key_binding({pf::platform_key::F12,
+		                                pf::key_mod::ctrl | pf::key_mod::alt | pf::key_mod::shift}),
+		          "Ctrl+Alt+Shift+F12");
+		CHECK_STR(pf::format_key_binding({0xFF}), "0xFF");
 
 		CHECK_STR(pf::resolve_url("https://example.com/a/b.html", "c.css"),
 		          "https://example.com/a/c.css");
