@@ -1258,6 +1258,8 @@ namespace pf
 	//
 	bool is_directory(const file_path& path);
 	file_path current_directory();
+	// Full path of the current executable, not its working directory.
+	file_path executable_path();
 	// The current user's non-roaming application-data directory; empty on failure.
 	file_path local_app_data_path();
 
@@ -1390,6 +1392,9 @@ namespace pf
 
 	void debug_trace(const std::string& msg);
 	void write_stdout(std::string_view text);
+	// Inherited binary standard streams only; never attach a console or rebind CRT streams.
+	size_t read_stdin(char* buffer, size_t bytes); // Blocking; zero means EOF/error.
+	bool write_stdout_raw(std::string_view text); // Complete, serialized write; no newline added.
 
 	// Binds stdout/stderr to the parent console. A GUI-subsystem executable has
 	// no console of its own, so printf is invisible from a CLI mode until this

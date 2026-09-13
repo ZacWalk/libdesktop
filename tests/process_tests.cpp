@@ -146,6 +146,32 @@ namespace
 		REQUIRE(!pf::process_alive(child));
 	}
 
+	void inherited_stdio()
+	{
+		auto options = fixture({});
+		options.exe = std::string(pf::file_path::module_folder().combine("platform_stdio_fixture.exe").view());
+		auto child = pf::process_spawn(options);
+		REQUIRE(child != nullptr);
+		auto output = std::async(std::launch::async, [child] { return drain(child); });
+		std::string bytes(192 * 1024, 'x');
+		bytes[0] = '\0';
+		bytes[10] = '\n';
+		bytes[11] = '\r';
+		bytes[12] = '\x1a';
+		REQUIRE(pf::process_write(child, bytes));
+		pf::process_close_input(child);
+		REQUIRE(output.get() == bytes);
+		REQUIRE(drain(child, true).empty());
+		REQUIRE(exited(child));
+		options.args = {"self"};
+		child = pf::process_spawn(options);
+		REQUIRE(child != nullptr);
+		pf::process_close_input(child);
+		REQUIRE(drain(child) == options.exe);
+		REQUIRE(exited(child));
+		REQUIRE(pf::executable_path().name() == "platform_tests.exe");
+	}
+
 	void cancelled_io()
 	{
 		for (const bool close_only : {false, true})
@@ -243,6 +269,7 @@ bool test_processes()
 	environment();
 	streams();
 	inheritance();
+	inherited_stdio();
 	cancelled_io();
 	descendants();
 	batch();

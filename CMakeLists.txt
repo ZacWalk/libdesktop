@@ -48,7 +48,11 @@ if(PROJECT_IS_TOP_LEVEL)
     )
     add_executable(platform_process_fixture tests/process_fixture.cpp)
     target_compile_features(platform_process_fixture PRIVATE cxx_std_20)
-    add_dependencies(platform_tests platform_process_fixture)
+    platform_add_app(platform_stdio_fixture
+        SOURCES tests/stdio_fixture.cpp
+        DESCRIPTION "platform-h inherited standard stream fixture"
+    )
+    add_dependencies(platform_tests platform_process_fixture platform_stdio_fixture)
 
     add_test(NAME platform COMMAND platform_tests)
     set_tests_properties(platform PROPERTIES TIMEOUT 90)

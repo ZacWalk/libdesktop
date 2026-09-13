@@ -117,6 +117,27 @@ pf::file_path pf::file_path::module_folder()
 	return file_path(utf16_to_utf8(raw_path)).folder();
 }
 
+pf::file_path pf::executable_path()
+{
+	std::wstring path(256, L'\0');
+	for (;;)
+	{
+		const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+		if (!length)
+		{
+			debug_trace(std::format("GetModuleFileNameW failed ({})\n", GetLastError()));
+			return {};
+		}
+		if (length < path.size()) return file_path(utf16_to_utf8(std::wstring_view(path.data(), length)));
+		if (path.size() >= 32768)
+		{
+			debug_trace("GetModuleFileNameW failed (path too long)\n");
+			return {};
+		}
+		path.resize(std::min<size_t>(path.size() * 2, 32768));
+	}
+}
+
 pf::file_path pf::local_app_data_path()
 {
 	PWSTR raw_path = nullptr;
@@ -2117,6 +2138,35 @@ void pf::write_stdout(const std::string_view text)
 
 	fwrite(text.data(), 1, text.size(), stdout);
 	fflush(stdout);
+}
+
+size_t pf::read_stdin(char* buffer, size_t bytes)
+{
+	if (!bytes) return 0;
+	if (!buffer) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+	const auto input = GetStdHandle(STD_INPUT_HANDLE);
+	if (!input || input == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+	DWORD read = 0;
+	if (!ReadFile(input, buffer, static_cast<DWORD>(std::min<size_t>(bytes, 65536)), &read, nullptr))
+		return 0;
+	return read;
+}
+
+bool pf::write_stdout_raw(std::string_view text)
+{
+	static std::mutex mutex;
+	std::lock_guard lock(mutex);
+	const auto output = GetStdHandle(STD_OUTPUT_HANDLE);
+	if (!output || output == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return false; }
+	while (!text.empty())
+	{
+		DWORD written = 0;
+		if (!WriteFile(output, text.data(), static_cast<DWORD>(std::min<size_t>(text.size(), 65536)),
+			&written, nullptr)) return false;
+		if (!written) { SetLastError(ERROR_WRITE_FAULT); return false; }
+		text.remove_prefix(written);
+	}
+	return true;
 }
 
 //  Sound â€” WAV resource helpers â”€

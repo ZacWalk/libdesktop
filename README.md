@@ -107,6 +107,14 @@ pure, in-process tests) for binary streams, argument/environment forwarding,
 batch shims, restricted inheritance, blocked-I/O cancellation and descendant
 cleanup. These fixtures neither use the network nor open a GUI.
 
+For a child protocol server, `read_stdin(char*, size_t)` and
+`write_stdout_raw(string_view)` use only the inherited standard handles. They
+never attach a console or redirect CRT streams; input is blocking binary data,
+and output is serialized and written completely with no added newline.
+`write_stdout()` is the older console-oriented helper and must not be used for
+headless pipe protocols. `executable_path()` returns the actual current
+executable's full path, including its configuration-specific filename.
+
 ### Per-user storage and single-instance applications
 
 `local_app_data_path()` returns the current user's non-roaming application-data
