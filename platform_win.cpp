@@ -1586,24 +1586,10 @@ std::string pf::format_key_binding(const key_binding& kb)
 		break;
 	case platform_key::Delete: result += "Del";
 		break;
-	case platform_key::F1: result += "F1";
-		break;
-	case platform_key::F3: result += "F3";
-		break;
-	case platform_key::F5: result += "F5";
-		break;
-	case platform_key::F6: result += "F6";
-		break;
-	case platform_key::F7: result += "F7";
-		break;
-	case platform_key::F8: result += "F8";
-		break;
-	case platform_key::F9: result += "F9";
-		break;
-	case platform_key::F10: result += "F10";
-		break;
 	default:
-		if (kb.key >= 'A' && kb.key <= 'Z')
+		if (kb.key >= platform_key::F1 && kb.key <= platform_key::F12)
+			result += std::format("F{}", kb.key - platform_key::F1 + 1);
+		else if (kb.key >= 'A' && kb.key <= 'Z')
 			result += static_cast<char>(kb.key);
 		else if (kb.key >= '0' && kb.key <= '9')
 			result += static_cast<char>(kb.key);
