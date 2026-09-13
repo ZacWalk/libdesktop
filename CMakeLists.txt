@@ -42,10 +42,14 @@ if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
 
     platform_add_app(platform_tests CONSOLE
-        SOURCES     tests/platform_tests.cpp
+        SOURCES     tests/platform_tests.cpp tests/process_tests.cpp tests/process_test_handles.cpp
         DESCRIPTION "platform-h unit tests"
         EMBED       tests/data/sample.css
     )
+    add_executable(platform_process_fixture tests/process_fixture.cpp)
+    target_compile_features(platform_process_fixture PRIVATE cxx_std_20)
+    add_dependencies(platform_tests platform_process_fixture)
 
     add_test(NAME platform COMMAND platform_tests)
+    set_tests_properties(platform PROPERTIES TIMEOUT 90)
 endif()

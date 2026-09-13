@@ -661,6 +661,8 @@ void app_destroy()
 {
 }
 
+bool test_processes();
+
 int main()
 {
 	// Registered before dispatcher creation, so this checks after its teardown has drained.
@@ -679,6 +681,7 @@ int main()
 	test_backend_helpers();
 	test_line_splitter();
 	test_child_process_arguments();
+	CHECK(test_processes());
 	test_path_containment();
 
 	CHECK(std::atexit([] { g_shutdown_release.set_value(); }) == 0);

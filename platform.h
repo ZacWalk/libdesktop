@@ -1450,6 +1450,27 @@ namespace pf
 	// ── Child processes ────────────────────────────────────────────────────────────────────
 	// Used to host a tool that speaks a line-based protocol over its standard streams.
 
+	struct process_options
+	{
+		std::string exe, cwd;
+		std::vector<std::string> args, env; // NAME=VALUE overrides of the inherited environment.
+		bool kill_descendants_on_close = true;
+	};
+
+	struct process;
+	using process_ptr = std::shared_ptr<process>;
+
+	// Binary streams; drain stdout and stderr independently. Zero means EOF/error/cancelled.
+	// Calls on separate shared_ptr copies are thread-safe; writes are serialized whole.
+	process_ptr process_spawn(const process_options&);
+	size_t process_read(const process_ptr&, char* buffer, size_t bytes);
+	size_t process_read_err(const process_ptr&, char* buffer, size_t bytes);
+	bool process_write(const process_ptr&, std::string_view);
+	// Cancels an outstanding write and closes stdin; terminate also cancels both readers.
+	void process_close_input(const process_ptr&);
+	bool process_alive(const process_ptr&);
+	void process_terminate(const process_ptr&);
+
 	struct child_process
 	{
 		virtual ~child_process() = default;

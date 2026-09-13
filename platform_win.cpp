@@ -2715,6 +2715,414 @@ bool pf::has_shell_metacharacter(const std::string_view text)
 	return text.find_first_of("&|<>^%!\"\r\n") != std::string_view::npos;
 }
 
+namespace
+{
+	struct process_handle
+	{
+		HANDLE value = nullptr;
+		process_handle() = default;
+		process_handle(const process_handle&) = delete;
+		process_handle& operator=(const process_handle&) = delete;
+		~process_handle() { reset(); }
+		void reset(HANDLE next = nullptr)
+		{
+			if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value);
+			value = next;
+		}
+	};
+
+	void process_error(const char* operation, DWORD error = GetLastError())
+	{
+		pf::debug_trace(std::format("process: {} failed ({})\n", operation, error));
+	}
+
+	struct process_startup
+	{
+		STARTUPINFOEXW info{};
+		std::vector<unsigned char> storage;
+		bool initialized = false;
+		~process_startup()
+		{
+			if (initialized) DeleteProcThreadAttributeList(info.lpAttributeList);
+		}
+		bool set_handles(HANDLE (&handles)[3])
+		{
+			SIZE_T bytes = 0;
+			InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+			storage.resize(bytes);
+			info.StartupInfo.cb = sizeof(info);
+			info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+			info.StartupInfo.hStdInput = handles[0];
+			info.StartupInfo.hStdOutput = handles[1];
+			info.StartupInfo.hStdError = handles[2];
+			info.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+			initialized = InitializeProcThreadAttributeList(info.lpAttributeList, 1, 0, &bytes) != FALSE;
+			return initialized && UpdateProcThreadAttribute(info.lpAttributeList, 0,
+				PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles), nullptr, nullptr);
+		}
+	};
+
+	struct process_pipe
+	{
+		process_handle handle;
+		std::mutex mutex;
+		bool eof = false;
+	};
+
+	bool process_make_pipe(process_pipe& parent, process_handle& child, bool input)
+	{
+		GUID id{};
+		const auto result = CoCreateGuid(&id);
+		if (FAILED(result))
+		{
+			SetLastError(static_cast<DWORD>(result));
+			return false;
+		}
+		wchar_t guid[40]{};
+		StringFromGUID2(id, guid, static_cast<int>(std::size(guid)));
+		const auto name = std::wstring(L"\\\\.\\pipe\\pf-process-") + guid;
+		parent.handle.reset(CreateNamedPipeW(name.c_str(),
+			(input ? PIPE_ACCESS_OUTBOUND : PIPE_ACCESS_INBOUND) |
+			FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			1, 65536, 65536, 0, nullptr));
+		if (parent.handle.value == INVALID_HANDLE_VALUE) return false;
+		SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+		child.reset(CreateFileW(name.c_str(), input ? GENERIC_READ : GENERIC_WRITE,
+			0, &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+		return child.value != INVALID_HANDLE_VALUE;
+	}
+
+	std::wstring process_env_value(const wchar_t* key)
+	{
+		std::wstring value(GetEnvironmentVariableW(key, nullptr, 0), L'\0');
+		if (value.empty()) return {};
+		const DWORD size = GetEnvironmentVariableW(key, value.data(), static_cast<DWORD>(value.size()));
+		if (size >= value.size()) return {};
+		value.resize(size);
+		return value;
+	}
+
+	struct process_env_less
+	{
+		bool operator()(const std::wstring& a, const std::wstring& b) const
+		{
+			return CompareStringOrdinal(a.data(), static_cast<int>(a.size()),
+				b.data(), static_cast<int>(b.size()), TRUE) == CSTR_LESS_THAN;
+		}
+	};
+
+	bool process_environment(const std::vector<std::string>& overrides, std::vector<wchar_t>& block)
+	{
+		std::map<std::wstring, std::wstring, process_env_less> entries;
+		auto* environment = GetEnvironmentStringsW();
+		if (!environment) return false;
+		for (auto* p = environment; *p; p += wcslen(p) + 1)
+		{
+			const std::wstring entry(p);
+			const auto eq = entry.find(L'=', 1); // Preserve the hidden '=C:' drive entries.
+			if (eq != std::wstring::npos) entries[entry.substr(0, eq)] = entry.substr(eq + 1);
+		}
+		FreeEnvironmentStringsW(environment);
+		for (const auto& entry : overrides)
+		{
+			const auto eq = entry.find('=');
+			if (!eq || eq == std::string::npos || entry.find('\0') != std::string::npos)
+			{
+				SetLastError(ERROR_INVALID_PARAMETER);
+				return false;
+			}
+			entries[pf::utf8_to_utf16(entry.substr(0, eq))] = pf::utf8_to_utf16(entry.substr(eq + 1));
+		}
+		for (const auto& [key, value] : entries)
+		{
+			block.insert(block.end(), key.begin(), key.end());
+			block.push_back(L'=');
+			block.insert(block.end(), value.begin(), value.end());
+			block.push_back(L'\0');
+		}
+		if (block.empty()) block.push_back(L'\0');
+		block.push_back(L'\0');
+		return true;
+	}
+
+	// cmd expands percent expressions even inside quotes; refuse ambiguous script input.
+	bool process_batch_arg(const std::string& arg)
+	{
+		return arg.find_first_of("%\"\r\n") == std::string::npos;
+	}
+
+	std::string process_batch_quote(const std::string& arg)
+	{
+		// Shims forward %* to an executable: preserve CRT trailing-backslash escaping.
+		auto quoted = pf::quote_command_arg(" " + arg);
+		quoted.erase(1, 1);
+		return quoted;
+	}
+}
+
+struct pf::process
+{
+	process_handle child, job, cancelled, input_closed;
+	process_pipe input, output, error;
+	std::mutex lifecycle;
+
+	~process()
+	{
+		// A job remains useful after its leader exits: grandchildren may still own pipes.
+		if (job.value)
+		{
+			if (!TerminateJobObject(job.value, 1)) process_error("TerminateJobObject");
+		}
+		else if (child.value && WaitForSingleObject(child.value, 0) == WAIT_TIMEOUT)
+		{
+			if (!TerminateProcess(child.value, 1)) process_error("TerminateProcess");
+		}
+		if (child.value) WaitForSingleObject(child.value, INFINITE);
+	}
+};
+
+pf::process_ptr pf::process_spawn(const process_options& options)
+{
+	if (options.exe.empty() || options.exe.find('\0') != std::string::npos ||
+		options.cwd.find('\0') != std::string::npos ||
+		std::any_of(options.args.begin(), options.args.end(),
+			[](const auto& arg) { return arg.find('\0') != std::string::npos; }))
+	{
+		process_error("arguments", ERROR_INVALID_PARAMETER);
+		return {};
+	}
+	auto exe = options.exe;
+	if (exe.find_first_of("\\/") == std::string::npos)
+		exe = std::string(find_executable(exe).view());
+	if (exe.empty())
+	{
+		process_error("executable", ERROR_FILE_NOT_FOUND);
+		return {};
+	}
+	const auto extension = to_lower(file_path(exe).extension());
+	const bool batch = extension == ".bat" || extension == ".cmd";
+	std::string command;
+	std::wstring application;
+	if (batch)
+	{
+		if (!process_batch_arg(exe) ||
+			std::any_of(options.args.begin(), options.args.end(),
+				[](const auto& arg) { return !process_batch_arg(arg); }))
+		{
+			process_error("batch arguments", ERROR_INVALID_PARAMETER);
+			return {};
+		}
+		application = process_env_value(L"ComSpec");
+		if (application.empty())
+		{
+			wchar_t system[MAX_PATH]{};
+			const auto length = GetSystemDirectoryW(system, MAX_PATH);
+			if (!length || length >= MAX_PATH)
+			{
+				process_error("GetSystemDirectoryW");
+				return {};
+			}
+			application = std::wstring(system, length) + L"\\cmd.exe";
+		}
+		command = quote_command_arg(utf16_to_utf8(application)) +
+			" /d /s /v:off /c \"" + process_batch_quote(exe);
+		for (const auto& arg : options.args) command += " " + process_batch_quote(arg);
+		command += '"';
+	}
+	else
+	{
+		application = utf8_to_utf16(exe);
+		command = quote_command_arg(exe);
+		for (const auto& arg : options.args) command += " " + quote_command_arg(arg);
+	}
+	auto wide_command = utf8_to_utf16(command);
+	if (wide_command.size() >= (batch ? 8191u : 32767u))
+	{
+		process_error("command length", ERROR_BAD_LENGTH);
+		return {};
+	}
+	std::vector<wchar_t> environment;
+	if (!process_environment(options.env, environment))
+	{
+		process_error("environment");
+		return {};
+	}
+	auto result = std::make_shared<process>();
+	result->cancelled.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+	result->input_closed.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+	if (!result->cancelled.value || !result->input_closed.value)
+	{
+		process_error("CreateEventW");
+		return {};
+	}
+	process_handle child_input, child_output, child_error;
+	if (!process_make_pipe(result->input, child_input, true) ||
+		!process_make_pipe(result->output, child_output, false) ||
+		!process_make_pipe(result->error, child_error, false))
+	{
+		process_error("pipe");
+		return {};
+	}
+	if (options.kill_descendants_on_close)
+	{
+		result->job.reset(CreateJobObjectW(nullptr, nullptr));
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+		limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!result->job.value || !SetInformationJobObject(result->job.value,
+			JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+		{
+			process_error("job");
+			return {};
+		}
+	}
+	HANDLE handles[]{child_input.value, child_output.value, child_error.value};
+	process_startup startup;
+	if (!startup.set_handles(handles))
+	{
+		process_error("handle inheritance");
+		return {};
+	}
+	PROCESS_INFORMATION created{};
+	const auto cwd = utf8_to_utf16(options.cwd);
+	if (!CreateProcessW(application.c_str(), wide_command.data(), nullptr, nullptr, TRUE,
+		CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+		environment.data(), cwd.empty() ? nullptr : cwd.c_str(), &startup.info.StartupInfo, &created))
+	{
+		process_error("CreateProcessW");
+		return {};
+	}
+	result->child.reset(created.hProcess);
+	process_handle main_thread;
+	main_thread.reset(created.hThread);
+	if (result->job.value && !AssignProcessToJobObject(result->job.value, result->child.value))
+	{
+		process_error("AssignProcessToJobObject");
+		// A suspended child not yet in our job must be killed explicitly on failure.
+		if (!TerminateProcess(result->child.value, 1)) process_error("TerminateProcess");
+		return {};
+	}
+	if (ResumeThread(main_thread.value) == static_cast<DWORD>(-1))
+	{
+		process_error("ResumeThread");
+		return {};
+	}
+	return result;
+}
+
+namespace
+{
+	size_t process_transfer(pf::process& owner, process_pipe& pipe, char* data, size_t bytes, bool write)
+	{
+		if (pipe.eof || !pipe.handle.value ||
+			WaitForSingleObject(owner.cancelled.value, 0) == WAIT_OBJECT_0 ||
+			(write && WaitForSingleObject(owner.input_closed.value, 0) == WAIT_OBJECT_0))
+			return 0;
+		process_handle event;
+		event.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+		if (!event.value) { process_error("CreateEventW"); return 0; }
+		OVERLAPPED operation{};
+		operation.hEvent = event.value;
+		DWORD transferred = 0;
+		const DWORD count = static_cast<DWORD>(std::min<size_t>(bytes, 65536));
+		const bool success = write ?
+			WriteFile(pipe.handle.value, data, count, &transferred, &operation) != FALSE :
+			ReadFile(pipe.handle.value, data, count, &transferred, &operation) != FALSE;
+		DWORD error = success ? ERROR_SUCCESS : GetLastError();
+		if (error == ERROR_IO_PENDING)
+		{
+			HANDLE events[]{owner.cancelled.value, write ? owner.input_closed.value : event.value, event.value};
+			const DWORD wait = WaitForMultipleObjects(write ? 3 : 2, events, FALSE, INFINITE);
+			if (wait != WAIT_OBJECT_0 + (write ? 2 : 1))
+			{
+				if (!CancelIoEx(pipe.handle.value, &operation) && GetLastError() != ERROR_NOT_FOUND)
+					process_error("CancelIoEx");
+			}
+			// Even a cancelled operation owns its OVERLAPPED and buffer until completion.
+			error = GetOverlappedResult(pipe.handle.value, &operation, &transferred, TRUE) ?
+				ERROR_SUCCESS : GetLastError();
+		}
+		if (error != ERROR_SUCCESS)
+		{
+			if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED &&
+				error != ERROR_OPERATION_ABORTED) process_error(write ? "WriteFile" : "ReadFile", error);
+			pipe.eof = true;
+			return 0;
+		}
+		if (!transferred) pipe.eof = true;
+		return transferred;
+	}
+}
+
+size_t pf::process_read(const process_ptr& process, char* buffer, size_t bytes)
+{
+	const auto owner = process;
+	if (!owner || !buffer || !bytes) return 0;
+	std::lock_guard lock(owner->output.mutex);
+	return process_transfer(*owner, owner->output, buffer, bytes, false);
+}
+
+size_t pf::process_read_err(const process_ptr& process, char* buffer, size_t bytes)
+{
+	const auto owner = process;
+	if (!owner || !buffer || !bytes) return 0;
+	std::lock_guard lock(owner->error.mutex);
+	return process_transfer(*owner, owner->error, buffer, bytes, false);
+}
+
+bool pf::process_write(const process_ptr& process, std::string_view text)
+{
+	const auto owner = process;
+	if (!owner) return false;
+	std::lock_guard lock(owner->input.mutex);
+	if (!owner->input.handle.value || owner->input.eof ||
+		WaitForSingleObject(owner->input_closed.value, 0) == WAIT_OBJECT_0 ||
+		WaitForSingleObject(owner->cancelled.value, 0) == WAIT_OBJECT_0) return false;
+	while (!text.empty())
+	{
+		const auto written = process_transfer(*owner, owner->input,
+			const_cast<char*>(text.data()), text.size(), true);
+		if (!written) return false;
+		text.remove_prefix(written);
+	}
+	return true;
+}
+
+void pf::process_close_input(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return;
+	if (!SetEvent(owner->input_closed.value)) process_error("SetEvent");
+	std::lock_guard lock(owner->input.mutex);
+	owner->input.handle.reset();
+}
+
+bool pf::process_alive(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return false;
+	const auto result = WaitForSingleObject(owner->child.value, 0);
+	if (result == WAIT_FAILED) process_error("WaitForSingleObject");
+	return result == WAIT_TIMEOUT;
+}
+
+void pf::process_terminate(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return;
+	if (!SetEvent(owner->cancelled.value)) process_error("SetEvent");
+	process_close_input(owner);
+	std::lock_guard lock(owner->lifecycle);
+	if (owner->job.value)
+	{
+		if (!TerminateJobObject(owner->job.value, 1)) process_error("TerminateJobObject");
+	}
+	else if (process_alive(owner) && !TerminateProcess(owner->child.value, 1))
+		process_error("TerminateProcess");
+	if (WaitForSingleObject(owner->child.value, INFINITE) == WAIT_FAILED)
+		process_error("WaitForSingleObject");
+}
+
 pf::file_path pf::find_executable(const std::string_view name)
 {
 	if (name.empty())
@@ -3034,11 +3442,14 @@ pf::child_process_ptr pf::spawn_child_process(const file_path& exe,
 		return nullptr;
 	}
 
-	STARTUPINFOW si = {sizeof(STARTUPINFOW)};
-	si.dwFlags = STARTF_USESTDHANDLES;
-	si.hStdInput = stdin_read;
-	si.hStdOutput = stdout_write;
-	si.hStdError = stderr_write;
+	HANDLE handles[]{stdin_read, stdout_write, stderr_write};
+	process_startup startup;
+	if (!startup.set_handles(handles))
+	{
+		process_error("handle inheritance");
+		close_all();
+		return nullptr;
+	}
 
 	PROCESS_INFORMATION pi = {};
 
@@ -3046,9 +3457,9 @@ pf::child_process_ptr pf::spawn_child_process(const file_path& exe,
 	const auto wide_working_dir = utf8_to_utf16(working_dir.view());
 
 	const auto created = CreateProcessW(nullptr, wide_command_line.data(), nullptr, nullptr, TRUE,
-	                                    CREATE_NO_WINDOW, nullptr,
+	                                    CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
 	                                    wide_working_dir.empty() ? nullptr : wide_working_dir.c_str(),
-	                                    &si, &pi);
+	                                    &startup.info.StartupInfo, &pi);
 
 	// The child owns its ends now; holding them open would hide the pipe closing
 	CloseHandle(stdin_read);

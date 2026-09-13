@@ -22,6 +22,8 @@ library with no application of its own.
    Build all of them before you consider a change done — see below.
 5. **Add a test with a capability.** `tests/platform_tests.cpp` is a console
    program; anything checkable without a window belongs in it.
+   Process tests use local child fixtures; their test-only Win32 sources may
+   inspect handles and descendants without adding OS types to `platform.h`.
 
 ## Layout
 

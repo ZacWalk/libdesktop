@@ -33,7 +33,7 @@ somewhere other than Windows, it does not belong here.
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
 | Threading  | `run_async`, `run_ui` (marshal to the UI thread), `create_serial_executor` |
-| Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg`, `try_lock_instance` |
+| Processes  | `process_spawn` / `process_*`, `spawn_child_process`, `find_executable`, `quote_command_arg`, `try_lock_instance` |
 
 ### Backends
 
@@ -69,6 +69,43 @@ thread. It has no idea what those lines mean — a protocol belongs in the app.
 `find_executable()` resolves a bare name through `PATH` and `PATHEXT` without
 ever searching the current directory, and `quote_command_arg()` quotes by the
 `CommandLineToArgvW` rules so an argument cannot be split or injected.
+
+For headless or application-owned transports, `process_spawn(process_options)`
+returns an opaque shared `process_ptr`. Set `exe`, optional `cwd`, an argument
+vector, and optional `env` entries (`NAME=VALUE`, case-insensitive overrides of
+the inherited environment; an empty value remains an empty value). Bare
+executables resolve through `find_executable`, not the current directory.
+All strings are UTF-8; embedded NULs and malformed environment entries fail.
+
+`process_read` and `process_read_err` are separate blocking binary streams
+(zero means EOF, error, or cancellation); callers must drain both independently.
+`process_write` writes the entire view without adding a newline; concurrent
+writes are serialized. Calls may run concurrently on separate shared-pointer
+copies. As with any shared pointer, do not reset the *same pointer variable*
+concurrently with an API call. Pending calls retain shared ownership.
+
+`process_close_input` is polite shutdown: it cancels any blocked write and
+closes stdin. After an application-selected grace period, `process_terminate`
+cancels blocked I/O, kills the child tree, and waits for the leader to exit.
+It is safe to repeat either call or invoke them concurrently. Releasing the
+last shared owner also kills the tree, even if the leader has already exited.
+With `kill_descendants_on_close = false`, only the immediate child is killed.
+
+The Windows implementation starts suspended, assigns a kill-on-close Job Object
+before resuming, and fails closed if assignment is not possible. Only the three
+standard-stream handles are inherited. `.bat`/`.cmd` files are launched through
+`%ComSpec% /d /s /v:off /c` with the outer command and each argument quoted.
+Spaces, Unicode and quoted shell operators work, including shim arguments
+ending in backslashes. Percent signs, embedded double quotes and CR/LF are
+rejected for scripts because batch expansion cannot safely represent them
+generically; use a native executable for those arguments. A script's own
+unsafe re-expansion of its parameters is outside the transport's control.
+Diagnostics include OS error codes via `debug_trace`, never protocol stdout.
+
+The console suite includes local process fixtures (the explicit exception to
+pure, in-process tests) for binary streams, argument/environment forwarding,
+batch shims, restricted inheritance, blocked-I/O cancellation and descendant
+cleanup. These fixtures neither use the network nor open a GUI.
 
 ### Per-user storage and single-instance applications
 
