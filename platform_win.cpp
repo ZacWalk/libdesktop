@@ -2142,13 +2142,19 @@ void pf::write_stdout(const std::string_view text)
 
 size_t pf::read_stdin(char* buffer, size_t bytes)
 {
+	const auto read = stdio_read(buffer, bytes);
+	return read > 0 ? static_cast<size_t>(read) : 0;
+}
+
+std::ptrdiff_t pf::stdio_read(char* buffer, size_t bytes)
+{
 	if (!bytes) return 0;
-	if (!buffer) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+	if (!buffer) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
 	const auto input = GetStdHandle(STD_INPUT_HANDLE);
-	if (!input || input == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+	if (!input || input == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return -1; }
 	DWORD read = 0;
 	if (!ReadFile(input, buffer, static_cast<DWORD>(std::min<size_t>(bytes, 65536)), &read, nullptr))
-		return 0;
+		return GetLastError() == ERROR_BROKEN_PIPE ? 0 : -1;
 	return read;
 }
 
@@ -2167,6 +2173,11 @@ bool pf::write_stdout_raw(std::string_view text)
 		text.remove_prefix(written);
 	}
 	return true;
+}
+
+bool pf::stdio_write(std::string_view text)
+{
+	return write_stdout_raw(text);
 }
 
 //  Sound â€” WAV resource helpers â”€

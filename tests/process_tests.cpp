@@ -170,6 +170,12 @@ namespace
 		REQUIRE(drain(child) == options.exe);
 		REQUIRE(exited(child));
 		REQUIRE(pf::executable_path().name() == "platform_tests.exe");
+		options.args = {"invalid-read"};
+		child = pf::process_spawn(options);
+		REQUIRE(child != nullptr);
+		pf::process_close_input(child);
+		REQUIRE(drain(child) == "error");
+		REQUIRE(exited(child));
 	}
 
 	void cancelled_io()

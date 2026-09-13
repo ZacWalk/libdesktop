@@ -1395,6 +1395,8 @@ namespace pf
 	// Inherited binary standard streams only; never attach a console or rebind CRT streams.
 	size_t read_stdin(char* buffer, size_t bytes); // Blocking; zero means EOF/error.
 	bool write_stdout_raw(std::string_view text); // Complete, serialized write; no newline added.
+	std::ptrdiff_t stdio_read(char* buffer, size_t bytes); // Blocking; -1 error, 0 EOF.
+	bool stdio_write(std::string_view text); // Same complete binary write as write_stdout_raw.
 
 	// Binds stdout/stderr to the parent console. A GUI-subsystem executable has
 	// no console of its own, so printf is invisible from a CLI mode until this

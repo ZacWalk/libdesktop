@@ -114,6 +114,9 @@ and output is serialized and written completely with no added newline.
 `write_stdout()` is the older console-oriented helper and must not be used for
 headless pipe protocols. `executable_path()` returns the actual current
 executable's full path, including its configuration-specific filename.
+`stdio_read(char*, size_t)` is the signed-result variant: `-1` means an I/O
+error and `0` means EOF (or a zero-length request). `stdio_write(string_view)`
+is an equivalent name for `write_stdout_raw`; neither API touches the console.
 
 ### Per-user storage and single-instance applications
 
