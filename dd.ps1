@@ -10,6 +10,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string] $Config = 'Release',
 
+    [string] $TestFilter,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Rest
 )
@@ -105,7 +107,11 @@ switch ($Command) {
 
     'test' {
         Invoke-Build
-        & (Join-Path (Get-BuildDir) 'platform_tests.exe') @Rest
+        $ctest = Resolve-Tool -Name 'ctest' -VisualStudio (Get-VisualStudioPath) `
+            -BundledRelativePath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe'
+        $ctestArgs = @('--test-dir', (Get-BuildDir), '--output-on-failure')
+        if ($TestFilter) { $ctestArgs += @('-R', $TestFilter) }
+        & $ctest @ctestArgs @Rest
         exit $LASTEXITCODE
     }
 

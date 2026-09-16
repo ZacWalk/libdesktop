@@ -48,4 +48,22 @@ if(PROJECT_IS_TOP_LEVEL)
     )
 
     add_test(NAME platform COMMAND platform_tests)
+
+    platform_add_app(platform_http_tests CONSOLE
+        SOURCES tests/http_tests.cpp
+        DESCRIPTION "platform-h offline HTTP tests"
+    )
+    target_link_libraries(platform_http_tests PRIVATE ws2_32)
+    add_test(NAME platform_http COMMAND platform_http_tests)
+    set_tests_properties(platform_http PROPERTIES TIMEOUT 45)
+
+    add_test(NAME platform_consumer
+        COMMAND "${CMAKE_COMMAND}"
+            "-DPLATFORM_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DCONSUMER_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/consumer"
+            "-DCONSUMER_GENERATOR=${CMAKE_GENERATOR}"
+            "-DCONSUMER_CONFIG=$<CONFIG>"
+            "-DCONSUMER_COMPILER=${CMAKE_CXX_COMPILER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer_test.cmake")
+    set_tests_properties(platform_consumer PROPERTIES TIMEOUT 120)
 endif()

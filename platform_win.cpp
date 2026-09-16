@@ -4,7 +4,9 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 #include <deque>
@@ -30,6 +32,7 @@
 #include <shlwapi.h>
 #include <spellcheck.h>
 #include <WinInet.h>
+#include <winhttp.h>
 
 #include <iostream>
 
@@ -3778,60 +3781,64 @@ std::string pf::url_encode(const std::string_view input)
 	return result;
 }
 
-static int get_status_code(const HINTERNET h)
+static bool web_header_token(const std::string_view text)
 {
-	DWORD result = 0;
-	DWORD result_size = sizeof(result);
-	if (!HttpQueryInfo(h, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &result, &result_size, nullptr))
+	if (text.empty()) return false;
+	for (const unsigned char c : text)
 	{
-		return 0; // Return 0 if query fails
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos)) return false;
 	}
-	return static_cast<int>(result);
+	return true;
 }
 
-static std::string get_content_type(const HINTERNET request_handle)
+static bool web_header_value(const std::string_view text)
 {
-	std::string result;
-	DWORD result_size = 0;
-	DWORD header_index = 0;
-
-	// First call to get the required buffer size
-	HttpQueryInfoA(request_handle, HTTP_QUERY_CONTENT_TYPE, nullptr, &result_size, &header_index);
-
-	if (result_size > 0)
+	for (const unsigned char c : text)
 	{
-		result.resize(result_size);
-		header_index = 0; // Reset header index
-
-		if (HttpQueryInfoA(request_handle, HTTP_QUERY_CONTENT_TYPE, result.data(), &result_size, &header_index))
-		{
-			// result_size now contains the actual string length (excluding null terminator)
-			if (result_size > 0 && result_size <= result.size())
-			{
-				result.resize(result_size);
-			}
-			else
-			{
-				result.clear();
-			}
-		}
-		else
-		{
-			result.clear();
-		}
+		if ((c < 32 && c != '\t') || c == 127) return false;
 	}
+	return text.size() < INT_MAX;
+}
 
-	return result;
+static bool web_multipart_name(const std::string_view text)
+{
+	return web_header_value(text) && text.find_first_of("\"\\") == std::string_view::npos;
+}
+
+static std::string_view web_trim(std::string_view text)
+{
+	while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+	while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
+	return text;
+}
+
+static bool web_length(const std::string_view text, uint64_t& value)
+{
+	if (text.empty()) return false;
+	const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+	return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
+
+static bool set_web_timeouts(const HINTERNET handle, const uint32_t timeout)
+{
+	DWORD milliseconds = timeout == 0 ? 30000 : timeout;
+	for (const auto option : {INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
+		INTERNET_OPTION_RECEIVE_TIMEOUT})
+	{
+		if (!InternetSetOptionW(handle, option, &milliseconds, sizeof(milliseconds))) return false;
+	}
+	return true;
 }
 
 static std::string format_path(const pf::web_request& req)
 {
-	auto result = req.path;
+	auto result = req.path.empty() ? std::string("/") : req.path;
 
 	if (!req.query.empty())
 	{
 		bool is_first = true;
-		result += "?";
+		result += result.find('?') == std::string::npos ? "?" : "&";
 
 		for (const auto& qp : req.query)
 		{
@@ -3918,6 +3925,9 @@ struct pf::web_host
 	HINTERNET session_handle = nullptr;
 	HINTERNET connection_handle = nullptr;
 	bool secure = true;
+	std::string name;
+	std::string user_agent;
+	int port = 0;
 
 	~web_host()
 	{
@@ -3926,11 +3936,129 @@ struct pf::web_host
 	}
 };
 
+struct sync_http_handle
+{
+	HINTERNET value = nullptr;
+	sync_http_handle() = default;
+	sync_http_handle(const sync_http_handle&) = delete;
+	sync_http_handle& operator=(const sync_http_handle&) = delete;
+	~sync_http_handle() { if (value) WinHttpCloseHandle(value); }
+};
+
+// The public call blocks, but async handles permit documented, race-free
+// cancellation when WinHTTP's native timeout granularity exceeds the deadline.
+class bounded_http_request
+{
+	HANDLE completed = nullptr;
+	HANDLE closed = nullptr;
+	bool has_callback = false;
+	DWORD timeout = 30000;
+	std::atomic<DWORD> error = ERROR_SUCCESS;
+	std::atomic<DWORD> received = 0;
+
+	static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status,
+		void* info, const DWORD length)
+	{
+		const auto self = reinterpret_cast<bounded_http_request*>(context);
+		if (!self) return;
+		switch (status)
+		{
+		case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+			SetEvent(self->closed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
+			self->error = static_cast<WINHTTP_ASYNC_RESULT*>(info)->dwError;
+			SetEvent(self->completed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+			self->received = length;
+			SetEvent(self->completed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+		case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+			SetEvent(self->completed);
+			break;
+		}
+	}
+
+public:
+	HINTERNET value = nullptr;
+	bounded_http_request() = default;
+	bounded_http_request(const bounded_http_request&) = delete;
+	bounded_http_request& operator=(const bounded_http_request&) = delete;
+
+	~bounded_http_request()
+	{
+		close();
+		if (completed) CloseHandle(completed);
+		if (closed) CloseHandle(closed);
+	}
+
+	void close()
+	{
+		if (!value) return;
+		const auto handle = value;
+		value = nullptr;
+		WinHttpCloseHandle(handle);
+		if (has_callback) WaitForSingleObject(closed, INFINITE);
+	}
+
+	bool initialize(const uint32_t timeout_ms)
+	{
+		completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		closed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		if (!completed || !closed) return false;
+		timeout = std::min<uint32_t>(timeout_ms ? timeout_ms : 30000, INFINITE - 1);
+		DWORD_PTR context = reinterpret_cast<DWORD_PTR>(this);
+		if (!WinHttpSetOption(value, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) return false;
+		if (WinHttpSetStatusCallback(value, callback,
+			WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
+			return false;
+		has_callback = true;
+		return true;
+	}
+
+	template <typename F>
+	bool invoke(F issue)
+	{
+		error = ERROR_SUCCESS;
+		received = 0;
+		ResetEvent(completed);
+		if (!issue()) return false;
+		if (WaitForSingleObject(completed, timeout) != WAIT_OBJECT_0)
+		{
+			// Complete cancellation before the caller releases its read/write buffers.
+			close();
+			SetLastError(ERROR_WINHTTP_TIMEOUT);
+			return false;
+		}
+		if (error != ERROR_SUCCESS)
+		{
+			SetLastError(error);
+			return false;
+		}
+		return true;
+	}
+
+	bool read(void* buffer, const DWORD size, DWORD& count)
+	{
+		if (!invoke([&] { return WinHttpReadData(value, buffer, size, nullptr); })) return false;
+		count = received;
+		return true;
+	}
+};
+
 pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool secure_in, const int port_in,
                                      const std::string_view user_agent)
 {
+	if (host.empty() || host.size() >= INT_MAX || port_in < 0 || port_in > 65535 ||
+		!web_header_value(user_agent)) return nullptr;
+	for (const unsigned char c : host)
+	{
+		if (c <= 32 || c == 127 || std::string_view("/\\?#@").find(c) != std::string_view::npos) return nullptr;
+	}
 	// InternetOpen and InternetConnect
-	const std::wstring agent_str = user_agent.empty() ? L"PotatoApp/1.0" : utf8_to_utf16(user_agent);
+	const std::wstring agent_str = user_agent.empty() ? L"PotatoApp/1.0" : pf::utf8_to_utf16(user_agent);
 	inet_handle session_handle(InternetOpenW(agent_str.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0));
 
 	if (!session_handle.is_valid())
@@ -3938,18 +4066,9 @@ pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool sec
 		return nullptr; // Return empty response on failure
 	}
 
-	// Apply 30s timeouts to prevent indefinite hangs.
-	{
-		DWORD timeout_ms = 30000;
-		InternetSetOptionW(session_handle, INTERNET_OPTION_CONNECT_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-		InternetSetOptionW(session_handle, INTERNET_OPTION_SEND_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-		InternetSetOptionW(session_handle, INTERNET_OPTION_RECEIVE_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-	}
+	if (!set_web_timeouts(session_handle, 0)) return nullptr;
 
-	const auto hostW = utf8_to_utf16(host);
+	const auto hostW = pf::utf8_to_utf16(host);
 	const auto port = port_in == 0
 		                  ? (secure_in ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT)
 		                  : port_in;
@@ -3965,25 +4084,44 @@ pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool sec
 	// to make_shared, because web_host's destructor closes the handles and the
 	// default copy/move would shallow-copy them, leaving the live instance with
 	// already-closed (invalid) handles.
-	auto host_ptr = std::make_shared<web_host>();
+	auto host_ptr = std::make_shared<pf::web_host>();
 	host_ptr->session_handle = session_handle.detach();
 	host_ptr->connection_handle = conn.detach();
 	host_ptr->secure = secure_in;
+	host_ptr->name = host;
+	host_ptr->port = port_in;
+	host_ptr->user_agent = user_agent;
 	return host_ptr;
 }
 
 pf::web_response pf::send_request(const web_host_ptr& host, const web_request& req)
 {
 	web_response result;
-
-	if (!host)
+	const auto fail = [&result](const web_response_error error)
+	{
+		result.error = error;
+		result.body.clear();
 		return result;
+	};
+
+	if (!host || (req.verb != web_request_verb::GET && req.verb != web_request_verb::POST) ||
+		req.body.size() > MAXDWORD || req.path.size() >= INT_MAX ||
+		(!req.path.empty() && (req.path.front() != '/' || req.path.starts_with("//"))))
+		return fail(web_response_error::invalid_request);
+	for (const unsigned char c : req.path)
+	{
+		if (c <= 32 || c == 127 || c == '\\' || c == '#') return fail(web_response_error::invalid_request);
+	}
 
 	std::string content;
 	std::string header_str;
 
 	for (const auto& h : req.headers)
 	{
+		if (!web_header_token(h.first) || !web_header_value(h.second) ||
+			h.first.size() >= INT_MAX || header_str.size() + h.first.size() + h.second.size() + 4 >= INT_MAX ||
+			icmp(h.first, "Transfer-Encoding") == 0 || (!req.use_cookies && icmp(h.first, "Cookie") == 0))
+			return fail(web_response_error::invalid_request);
 		header_str += h.first;
 		header_str += ": ";
 		header_str += h.second;
@@ -4000,6 +4138,9 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 
 		for (const auto& f : req.form_data)
 		{
+			if (!web_multipart_name(f.first) ||
+				content.size() + f.first.size() + f.second.size() + 256 > MAXDWORD)
+				return fail(web_response_error::invalid_request);
 			content += "--";
 			content += boundary;
 			content += "\r\n";
@@ -4014,6 +4155,9 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 
 		if (!req.upload_file_path.empty() && !req.file_form_data_name.empty())
 		{
+			if (!web_multipart_name(req.file_form_data_name) || !web_multipart_name(req.file_name) ||
+				content.size() + req.file_form_data_name.size() + req.file_name.size() + 256 > MAXDWORD)
+				return fail(web_response_error::invalid_request);
 			std::string ct = "application/octet-stream";
 			if (req.upload_file_path.extension() == ".zip") ct = "application/x-zip-compressed";
 
@@ -4030,14 +4174,17 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 			content += "\r\n\r\n";
 
 			auto fh = open_for_read(req.upload_file_path);
-			if (fh)
+			if (!fh) return fail(web_response_error::transport);
+			std::vector<uint8_t> buf(65536);
+			for (;;)
 			{
-				std::vector<uint8_t> buf(65536);
 				uint32_t bytes_read = 0;
-				while (fh->read(buf.data(), static_cast<uint32_t>(buf.size()), &bytes_read) && bytes_read > 0)
-				{
-					content.append(reinterpret_cast<const char*>(buf.data()), bytes_read);
-				}
+				if (!fh->read(buf.data(), static_cast<uint32_t>(buf.size()), &bytes_read))
+					return fail(web_response_error::transport);
+				if (bytes_read == 0) break;
+				if (content.size() > MAXDWORD - 256 || bytes_read > MAXDWORD - content.size() - 256)
+					return fail(web_response_error::invalid_request);
+				content.append(reinterpret_cast<const char*>(buf.data()), bytes_read);
 			}
 
 			content += "\r\n";
@@ -4051,107 +4198,237 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 		header_str += "\r\n";
 	}
 
+	for (const auto& h : req.headers)
+	{
+		if (icmp(h.first, "Content-Length") == 0)
+		{
+			uint64_t length = 0;
+			if (!web_length(web_trim(h.second), length) || length != content.size())
+				return fail(web_response_error::invalid_request);
+		}
+	}
+	size_t path_bound = req.path.size();
+	for (const auto& [key, value] : req.query)
+	{
+		if (path_bound > INT_MAX - 2 || key.size() > (INT_MAX - path_bound - 2) / 3 ||
+			value.size() > (INT_MAX - path_bound - 2) / 3 - key.size())
+			return fail(web_response_error::invalid_request);
+		path_bound += 3 * (key.size() + value.size()) + 2;
+	}
+	const auto path = format_path(req);
+	if (path.size() >= INT_MAX || header_str.size() >= INT_MAX)
+		return fail(web_response_error::invalid_request);
 	const auto wverb = req.verb == web_request_verb::GET ? L"GET" : L"POST";
-	const auto wpath = utf8_to_utf16(format_path(req));
+	const auto wpath = utf8_to_utf16(path.empty() ? "/" : path);
 	auto flags = INTERNET_FLAG_KEEP_CONNECTION | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTH |
 		INTERNET_FLAG_RELOAD;
 	if (host->secure) flags |= INTERNET_FLAG_SECURE;
+	if (!req.follow_redirects) flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
+	if (!req.use_cookies) flags |= INTERNET_FLAG_NO_COOKIES;
 
-	inet_handle request_handle(HttpOpenRequest(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr, nullptr,
-	                                           flags, 0));
-
-	if (!request_handle.is_valid())
-	{
-		result.body = "HttpOpenRequest failed (Win32 err " + std::to_string(::GetLastError()) + ")";
-		return result;
-	}
-
+	// WinINet can report success on incomplete chunks and round short timeouts.
+	// Bounded requests consume an isolated WinHTTP session synchronously instead.
+	const bool bounded = req.max_response_bytes || req.max_header_bytes || req.timeout_ms;
+	sync_http_handle bounded_session;
+	sync_http_handle bounded_connection;
+	bounded_http_request bounded_request;
+	inet_handle request_handle;
 	const auto headerW = utf8_to_utf16(header_str);
-
-	if (content.empty())
+	const auto transport_failure = [&]
 	{
-		// Simple request with no body â€” use HttpSendRequest which handles redirects properly
-		if (!HttpSendRequest(request_handle, headerW.c_str(), static_cast<DWORD>(headerW.size()), nullptr, 0))
+		const auto native_error = GetLastError();
+		if (bounded && bounded_request.value && result.status_code == 0)
 		{
-			result.body = "HttpSendRequest failed (Win32 err " + std::to_string(::GetLastError()) + ")";
-			return result;
+			DWORD status = 0;
+			DWORD size = sizeof(status);
+			if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))
+				result.status_code = static_cast<int>(status);
 		}
+		return fail(bounded && native_error == ERROR_WINHTTP_HEADER_SIZE_OVERFLOW
+			? web_response_error::response_limit : web_response_error::transport);
+	};
+	if (bounded)
+	{
+		const auto agent = host->user_agent.empty() ? L"PotatoApp/1.0" : utf8_to_utf16(host->user_agent);
+		bounded_session.value = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+		if (!bounded_session.value) return transport_failure();
+		const auto timeout = static_cast<int>(std::min<uint32_t>(req.timeout_ms ? req.timeout_ms : 30000, INT_MAX));
+		if (!WinHttpSetTimeouts(bounded_session.value, timeout, timeout, timeout, timeout))
+			return transport_failure();
+		const auto port = host->port ? host->port : (host->secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
+		bounded_connection.value = WinHttpConnect(bounded_session.value, utf8_to_utf16(host->name).c_str(),
+			static_cast<INTERNET_PORT>(port), 0);
+		if (!bounded_connection.value) return transport_failure();
+		bounded_request.value = WinHttpOpenRequest(bounded_connection.value, wverb, wpath.c_str(), nullptr,
+			WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, host->secure ? WINHTTP_FLAG_SECURE : 0);
+		if (!bounded_request.value) return transport_failure();
+		if (!bounded_request.initialize(req.timeout_ms)) return transport_failure();
+		DWORD receive_timeout = static_cast<DWORD>(timeout);
+		if (!WinHttpSetTimeouts(bounded_request.value, timeout, timeout, timeout, timeout) ||
+			!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
+				&receive_timeout, sizeof(receive_timeout))) return transport_failure();
+		DWORD disabled = WINHTTP_DISABLE_AUTHENTICATION;
+		if (!req.follow_redirects) disabled |= WINHTTP_DISABLE_REDIRECTS;
+		if (!req.use_cookies) disabled |= WINHTTP_DISABLE_COOKIES;
+		if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled)))
+			return transport_failure();
+		if (req.max_header_bytes)
+		{
+			DWORD maximum = static_cast<DWORD>(std::min<size_t>(req.max_header_bytes, MAXDWORD));
+			if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
+				&maximum, sizeof(maximum))) return transport_failure();
+		}
+		if (!bounded_request.invoke([&] {
+			return WinHttpSendRequest(bounded_request.value, headerW.c_str(), static_cast<DWORD>(headerW.size()),
+				content.empty() ? nullptr : content.data(), static_cast<DWORD>(content.size()),
+				static_cast<DWORD>(content.size()), reinterpret_cast<DWORD_PTR>(&bounded_request));
+		}) || !bounded_request.invoke([&] { return WinHttpReceiveResponse(bounded_request.value, nullptr); }))
+			return transport_failure();
 	}
 	else
 	{
-		// Request with body â€” use HttpSendRequestEx for chunked sending
-		INTERNET_BUFFERS buffers = {};
-		buffers.dwStructSize = sizeof(INTERNET_BUFFERS);
-		buffers.lpcszHeader = headerW.c_str();
-		buffers.dwHeadersTotal = buffers.dwHeadersLength = static_cast<DWORD>(headerW.size());
-		buffers.dwBufferTotal = static_cast<DWORD>(content.size());
+		request_handle.reset(HttpOpenRequest(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr, nullptr,
+			flags, 0));
+		if (!request_handle.is_valid()) return transport_failure();
+		if (!set_web_timeouts(request_handle, 0)) return transport_failure();
 
-		if (!HttpSendRequestEx(request_handle, &buffers, nullptr, 0, 0))
+		if (content.empty())
 		{
-			return result;
+			if (!HttpSendRequest(request_handle, headerW.c_str(), static_cast<DWORD>(headerW.size()), nullptr, 0))
+				return fail(web_response_error::transport);
 		}
-
-		constexpr size_t chunk_size = 8192;
-		size_t total_written = 0;
-
-		while (total_written < content.size())
+		else
 		{
-			const auto remaining = content.size() - total_written;
-			const auto to_write = std::min(chunk_size, remaining);
-			DWORD written = 0;
+			INTERNET_BUFFERS buffers = {};
+			buffers.dwStructSize = sizeof(INTERNET_BUFFERS);
+			buffers.lpcszHeader = headerW.c_str();
+			buffers.dwHeadersTotal = buffers.dwHeadersLength = static_cast<DWORD>(headerW.size());
+			buffers.dwBufferTotal = static_cast<DWORD>(content.size());
 
-			if (!InternetWriteFile(request_handle, content.data() + total_written, static_cast<DWORD>(to_write),
-			                       &written))
+			if (!HttpSendRequestEx(request_handle, &buffers, nullptr, 0, 0))
+				return fail(web_response_error::transport);
+
+			constexpr size_t chunk_size = 8192;
+			size_t total_written = 0;
+
+			while (total_written < content.size())
 			{
-				return result;
+				const auto remaining = content.size() - total_written;
+				const auto to_write = std::min(chunk_size, remaining);
+				DWORD written = 0;
+				if (!InternetWriteFile(request_handle, content.data() + total_written, static_cast<DWORD>(to_write),
+					&written) || written == 0) return fail(web_response_error::transport);
+				total_written += written;
 			}
-
-			if (written == 0)
-			{
-				return result;
-			}
-
-			total_written += written;
-		}
-
-		if (!::HttpEndRequest(request_handle, nullptr, 0, 0))
-		{
-			return result;
+			if (!HttpEndRequest(request_handle, nullptr, 0, 0)) return fail(web_response_error::transport);
 		}
 	}
 
-	result.status_code = get_status_code(request_handle);
-	result.content_type = get_content_type(request_handle);
+	DWORD status = 0;
+	DWORD size = sizeof(status);
+	if (bounded ? !WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+		WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)
+		: !HttpQueryInfoW(request_handle, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+		&status, &size, nullptr)) return transport_failure();
+	result.status_code = static_cast<int>(status);
 
+	size = 0;
+	if (bounded)
+	{
+		if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+			WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &size, WINHTTP_NO_HEADER_INDEX) ||
+			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size < sizeof(wchar_t))
+			return transport_failure();
+		const auto chars = size / sizeof(wchar_t);
+		if (req.max_header_bytes && chars - 1 > req.max_header_bytes)
+			return fail(web_response_error::response_limit);
+		std::wstring headers(chars, L'\0');
+		if (!WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+			WINHTTP_HEADER_NAME_BY_INDEX, headers.data(), &size, WINHTTP_NO_HEADER_INDEX))
+			return transport_failure();
+		headers.resize(size / sizeof(wchar_t));
+		// HTTP header octets are widened one-to-one by WinHTTP, not UTF-8 text.
+		result.headers.reserve(headers.size());
+		for (const auto c : headers) result.headers.push_back(static_cast<char>(c));
+	}
+	else
+	{
+		if (HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, nullptr, &size, nullptr) ||
+			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0)
+			return fail(web_response_error::transport);
+		result.headers.resize(size);
+		if (!HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, result.headers.data(), &size, nullptr))
+		{
+			result.headers.clear();
+			return fail(web_response_error::transport);
+		}
+		result.headers.resize(size);
+	}
+	if (req.max_header_bytes && result.headers.size() > req.max_header_bytes)
+	{
+		result.headers.clear();
+		return fail(web_response_error::response_limit);
+	}
+
+	std::optional<uint64_t> content_length;
+	bool transfer_encoded = false;
+	std::string_view remaining_headers = result.headers;
+	while (!remaining_headers.empty())
+	{
+		const auto end = remaining_headers.find("\r\n");
+		const auto line = remaining_headers.substr(0, end);
+		if (const auto colon = line.find(':'); colon != std::string_view::npos)
+		{
+			const auto name = line.substr(0, colon);
+			const auto value = web_trim(line.substr(colon + 1));
+			if (icmp(name, "Content-Length") == 0)
+			{
+				uint64_t length = 0;
+				if (!web_length(value, length) || (content_length && *content_length != length))
+					return fail(web_response_error::transport);
+				content_length = length;
+			}
+			else if (icmp(name, "Content-Type") == 0)
+				result.content_type = value;
+			else if (icmp(name, "Transfer-Encoding") == 0)
+				transfer_encoded = true;
+		}
+		if (end == std::string_view::npos) break;
+		remaining_headers.remove_prefix(end + 2);
+	}
+	if (transfer_encoded && content_length) return fail(web_response_error::transport);
+	const bool no_body = status == 204 || status == 304 || (status >= 100 && status < 200);
+	if (!no_body && req.max_response_bytes && content_length && *content_length > req.max_response_bytes)
+		return fail(web_response_error::response_limit);
+
+	writable_file_handle_ptr download_file;
 	if (!req.download_file_path.empty())
 	{
-		const auto download_file = open_file_for_write(req.download_file_path);
-
-		if (download_file)
-		{
-			uint8_t buffer[8192];
-			DWORD read = 0;
-
-			while (InternetReadFile(request_handle, buffer, sizeof(buffer), &read) && read > 0)
-			{
-				if (download_file->write(buffer, read) != read)
-				{
-					break;
-				}
-			}
-		}
+		download_file = open_file_for_write(req.download_file_path);
+		if (!download_file) return fail(web_response_error::transport);
 	}
-	else
+	uint64_t total = 0;
+	for (;;)
 	{
 		uint8_t buffer[8192];
 		DWORD read = 0;
-
-		while (InternetReadFile(request_handle, buffer, sizeof(buffer), &read) && read > 0)
+		if (bounded ? !bounded_request.read(buffer, sizeof(buffer), read)
+			: !InternetReadFile(request_handle, buffer, sizeof(buffer), &read))
+			return transport_failure();
+		if (read == 0) break;
+		if (req.max_response_bytes && (total > req.max_response_bytes || read > req.max_response_bytes - total))
+			return fail(web_response_error::response_limit);
+		total += read;
+		if (download_file)
 		{
-			result.body.append(buffer, buffer + read);
+			if (download_file->write(buffer, read) != read) return fail(web_response_error::transport);
 		}
+		else
+			result.body.append(reinterpret_cast<const char*>(buffer), read);
 	}
-
+	if (!no_body && content_length && total != *content_length) return fail(web_response_error::transport);
 	return result;
 }
 
@@ -4161,7 +4438,6 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 // (and eventually moved out) as a single block.
 
 #include <wincodec.h>
-#include <winhttp.h>
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "winhttp.lib")

@@ -1480,14 +1480,34 @@ namespace pf
 		file_path download_file_path;
 
 		web_request_verb verb = web_request_verb::GET;
+
+		bool follow_redirects = true;
+		bool use_cookies = true;
+		// Zero leaves body/initial-header storage unbounded; limits count bytes, not characters.
+		size_t max_response_bytes = 0;
+		size_t max_header_bytes = 0;
+		// Per network operation, including connection establishment; zero retains 30 seconds.
+		uint32_t timeout_ms = 0;
+	};
+
+	enum class web_response_error
+	{
+		none,
+		invalid_request,
+		transport,
+		response_limit
 	};
 
 	struct web_response
 	{
+		// Raw initial HTTP headers with CRLF separators; excludes transfer framing/trailers.
 		std::string headers;
 		std::string body;
 		std::string content_type;
+		// Retained on acquisition errors; zero if the backend never exposed a status.
 		int status_code = 0;
+		// HTTP error status codes are still valid responses. On acquisition failure body is empty.
+		web_response_error error = web_response_error::none;
 	};
 
 	struct web_host;

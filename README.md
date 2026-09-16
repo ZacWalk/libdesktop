@@ -70,6 +70,63 @@ thread. It has no idea what those lines mean — a protocol belongs in the app.
 ever searching the current directory, and `quote_command_arg()` quotes by the
 `CommandLineToArgvW` rules so an argument cannot be split or injected.
 
+### Bounded HTTP acquisition
+
+`connect_to_host()` accepts a hostname (not a URL), defaults to HTTPS and port
+443, and accepts an optional user-agent. `send_request()` accepts origin-form
+paths such as `/v1/items`, optional encoded query pairs, raw GET/POST bodies,
+multipart forms/uploads, and file downloads. Header names/values, multipart
+names and paths are validated before sending; invalid requests never become
+diagnostic strings containing URLs, credentials or response bodies.
+
+For acquisition from an untrusted remote endpoint, opt in explicitly:
+
+```cpp
+pf::web_request request;
+request.path = "/v1/items";
+request.follow_redirects = false;
+request.use_cookies = false;
+request.max_response_bytes = 4 * 1024 * 1024;
+request.max_header_bytes = 32 * 1024;
+request.timeout_ms = 10000;
+const auto response = pf::send_request(host, request);
+if (response.error != pf::web_response_error::none) {
+    // Discard this acquisition. No partial body is returned.
+}
+```
+
+`web_response_error` distinguishes `invalid_request`, `transport` (including
+timeouts, truncated responses and file I/O failures), and `response_limit`.
+HTTP statuses such as 302, 404 and 500 are valid responses, not transport errors.
+An obtained status is retained on limits and failures. A native rejection before
+headers become available (including the native header-size limit) can leave
+`status_code` zero; the platform does not invent an unavailable status.
+`headers` contains the raw initial CRLF-delimited header block. Limits count its
+bytes and body bytes after transfer decoding, independently; HTTP framing and
+trailers consumed by the OS are not returned. Declared lengths are checked
+before body allocation/file creation, and every read is checked before adding
+bytes to memory or a file. A failed download may leave a partial file no larger
+than the body limit; callers should discard it.
+
+Defaults preserve the legacy WinINet path: redirects/cookies enabled, zero
+limits, 30-second operation timeouts. Redirect/cookie opt-outs set per-request
+WinINet flags; disabling cookies also rejects an explicit `Cookie` header.
+Setting either size limit or a nonzero timeout selects an isolated WinHTTP
+request. This avoids WinINet's silent acceptance of incomplete chunks and
+provides cancellable operation deadlines and a native initial-header limit.
+The public call remains synchronous; its private completion/cancellation
+plumbing is separate from the asynchronous HTTP client. No shared host/global
+timeout options are mutated. A zero timeout in this mode means 30 seconds per
+operation, not a whole-transfer deadline (a progressing transfer may last longer).
+Cookies in bounded mode, when enabled, are scoped to that single request and
+its redirects, never shared with the browser or subsequent requests.
+Certificate and hostname verification remain enabled for HTTPS; no
+certificate-error bypass flags are set.
+
+The added aggregate members preserve source defaults, but change the binary
+layout of `web_request` and `web_response`: rebuild the library and every
+consumer together; do not mix old binaries with new headers.
+
 ## Consuming it from an app
 
 The library is a CMake package exporting `platform::platform`. Apps pull it in
@@ -127,6 +184,7 @@ From an x64 Developer PowerShell:
 
 ```
 .\dd.ps1 test            # build and run the unit suite (the default command)
+.\dd.ps1 test -TestFilter '^platform_http$'  # only the offline HTTP regressions
 .\dd.ps1 build -Config Debug
 .\dd.ps1 clean
 ```
@@ -141,3 +199,11 @@ line splitting, argument quoting, path containment, and audio at zero volume
 (XAudio2 needs no window) — both a sample buffer and the stream queue that apps
 pace themselves against. It skips the audio cases when the machine has no
 output device.
+
+CTest also runs a bounded, raw-TCP loopback HTTP fixture (GET/POST byte
+fidelity, headers/user-agent, redirects, cookie isolation, declared/chunked/EOF
+limits, truncation, timeouts, multipart uploads and downloads), and configures,
+builds and runs a separate offline `FetchContent` consumer. Tests open no
+windows and contact no external providers. HTTPS defaults are checked at the
+API boundary and in backend flags; there is no local trusted TLS fixture, so
+the suite does not claim a live HTTPS handshake test.
