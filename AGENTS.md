@@ -99,18 +99,24 @@ foreach ($r in 'platform-h','list0','ovrwin','potato','rethinkify-app','crypto-a
 
 `equity-app` also consumes this package, but through its own pinned acquisition
 (`EQUITY_PLATFORM_SOURCE_DIR`), which requires a clean tree at the declared pin.
-Build it separately with `.\dd.ps1 build both`.
+Commit here and move its pin first, then verify it with `.\dd.ps1 verify --yes`.
 
-Each app finds a sibling `../platform-h` checkout automatically, so a local edit
-here is picked up by all of them with no publish step.
+Five apps — rethinkify-app, list0, ovrwin, potato and stuntcarracer — use a
+sibling `../platform-h` checkout automatically, whatever its HEAD, so a local
+edit here reaches them with no publish step. equity-app and crypto-app use a
+local checkout only when told to (`EQUITY_PLATFORM_SOURCE_DIR`,
+`CRYPTO_SOURCE_PLATFORM_H`), and only when its HEAD is exactly their pin.
 
 ## Adding a capability
 
 1. Declare it in `src/core/platform.h`, in neutral terms (see rule 2).
 2. Implement it in the backend.
 3. Add a case to `tests/platform_tests.cpp` if it can run without a window.
-4. Rebuild every app. If you added a pure virtual to `window_frame`, expect to
-   update `stub_window_frame` in `rethinkify-app/src/tests.cpp` too.
+4. Rebuild every app. A pure virtual added to `window_frame` must be implemented
+   three times, all in this repository: `win_impl` in `platform_win.cpp`,
+   `hosted_window` in `pane_host.h` and `fake_window_frame` in `test_support.h`.
+   One added to `frame_reactor` breaks every application and `pf::ui::view_base`,
+   since each implements it.
 
 ## Adding to platform-ui
 
