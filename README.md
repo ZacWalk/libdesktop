@@ -7,7 +7,7 @@ A small C++20 platform layer for desktop applications, in two static libraries:
 | Library | Alias | Contents |
 |---|---|---|
 | **platform-core** | `platform::core` (and `platform::platform`) | One OS-free header, `src/core/platform.h`, and a backend that implements it. Windows, drawing, fonts, menus, input, clipboard, files, HTTP, audio, timers, threading, child processes — all behind `pf::`, so application code never sees a `HWND`. |
-| **platform-ui** | `platform::ui` | The reusable presentation layer in `src/ui`: widgets, text views, markdown rendering and the agent chat panel, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
+| **platform-ui** | `platform::ui` | The reusable presentation layer in `src/ui`: widgets, text and document views, markdown rendering, lists and the prompt composer, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
 
 platform-ui operates on a UTF-8 text buffer the application hands it. It never
 opens a file, never knows a path, and never names an application — loading and
@@ -52,9 +52,12 @@ somewhere other than Windows, it does not belong here.
 
 ### `src/ui/` — the presentation layer
 
-Everything here is in `pf::ui` and is reached as `#include "ui/<file>.h"`, or all
-at once through `ui/ui.h`. It may use `pf::`; it may not name an application,
-open a file, know a path or speak a protocol.
+Everything here is in `pf::ui`. It may use `pf::`; it may not name an
+application, open a file, know a path or speak a protocol. A file is reached as
+`#include "ui/<file>.h"`. `ui/ui.h` gathers the core building blocks —
+`platform.h` and the theme, text model, host, syntax, spell, markdown, widget
+and table-layout headers — but no view, so a view's header, such as
+`view_markdown.h`, is included explicitly.
 
 | Category | Key types / files |
 |----------|-------------------|
@@ -70,6 +73,37 @@ open a file, know a path or speak a protocol.
 
 Layout and hit testing are testable without a window, because
 `pf::measure_context` is an interface and `test_support.h` implements one.
+
+### File layout
+
+| File | Contents |
+|---|---|
+| `src/core/platform.h` | The whole `pf::` surface. Declarations, plus inline text/geometry helpers |
+| `src/core/platform_common.cpp` | Backend-independent implementation (the embedded-resource registry, `line_splitter`) |
+| `src/core/platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, WinINet/WinHTTP, dialogs, clipboard, spell check, child processes |
+| `src/core/platform_win_audio.cpp` | XAudio2 backend, isolated from the rest |
+| `src/ui/ui.h` | platform-ui umbrella header for the core UI building blocks |
+| `src/ui/theme.h` / `.cpp` | The `pf::ui::colors` table, the `theme` metrics, the style palette and the heading fonts |
+| `src/ui/text_types.h` | `text_location`, `text_selection`, `text_style`, `text_block`, `highlight_fn` |
+| `src/ui/view_host.h` | What a view asks of the application: invalidation, `ensure_visible`, status |
+| `src/ui/widgets.h` | `edit_box`, `caret_blinker`, `splitter`, `custom_scrollbar`, `edit_box_widget` |
+| `src/ui/table_layout.h` / `.cpp` | Table cell parsing and rendering, shared by the markdown and CSV views |
+| `src/ui/syntax.h` / `.cpp` | The syntax highlighters; language choice is the caller's |
+| `src/ui/spell.h` / `.cpp` | The process-wide spell checker and its cache |
+| `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
+| `src/ui/text_input.h` | `pf::ui::input` — filtering and bounding untrusted text before it enters a prompt |
+| `src/ui/markdown.h` | `pf::ui::md` — the Markdown model, its parser and the HTML reducer |
+| `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing. Ctrl+A/C/X/V live here rather than in any one view, because a view with no menu behind it gets no copy command |
+| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes. `read_only_doc_view` also answers `at_bottom` and `scroll_to_end`, so a transcript that grows can follow its end only when the reader was already there |
+| `src/ui/view_composer.h` | `composer` — the prompt box: growing, history, and the input filter in front of it |
+| `src/ui/view_list.h` | `list_view` and `list_item` — the panel list: rows, selection, hover, keyboard and copy |
+| `src/ui/pane_host.h` | `pane_host` and `hosted_window` — running these views inside one window, for an application that draws its panes into rectangles rather than giving each a child window |
+| `src/ui/test_support.h` | Headless fakes — `measure_context`, `draw_context`, `view_host`, `window_frame` |
+| `cmake/platform_app.cmake` | `platform_add_app()` — the function apps use to declare themselves |
+| `cmake/embed_resources.cmake` | Turns data files into a generated C++ byte-array TU |
+| `cmake/app.manifest.in` | The manifest every app gets |
+| `tests/platform_tests.cpp` | The platform-core suite (CTest label `platform`) |
+| `tests/ui_tests.cpp` | The platform-ui suite (CTest label `platform-ui`) |
 
 ## Usage
 
@@ -205,7 +239,7 @@ uses the CMake and Ninja that ship with it.
 
 ```powershell
 .\dd.ps1 build        # both configurations
-.\dd.ps1 test         # build and run the unit suite
+.\dd.ps1 test         # build and run the platform and platform-ui suites
 ```
 
 `dd.ps1` locates Visual Studio, enters the MSVC environment, and falls back to
