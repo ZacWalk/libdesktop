@@ -23,13 +23,18 @@ namespace table_layout
 	std::vector<std::string_view>& split_pipe_cells(std::vector<std::string_view>& cells,
 	                                                std::string_view line);
 
+	// A quoted field's escaped quote ("") stands for one quote. Given storage, a
+	// field that has one is rewritten there, unescaped; without it the field is
+	// the text as it stands. A line that ends with a delimiter ends with an empty
+	// field.
 	std::vector<std::string_view>& split_csv_cells(std::vector<std::string_view>& cells,
-	                                               std::string_view line);
+	                                               std::string_view line, std::string* storage = nullptr);
 
 	// True when a cell looks numeric (optional sign, currency, digits, separators, trailing %).
 	bool is_right_align_cell(std::string_view text);
 
-	// Shrink columns proportionally so the row fits avail_cols character cells.
+	// Narrow the widest columns so the row fits avail_cols character cells. A
+	// column no wider than an even share of the room keeps its natural width.
 	void cap_col_widths(std::vector<int>& col_widths, int avail_cols);
 
 	// Draw pipe character(s) at x for the given number of sub-rows

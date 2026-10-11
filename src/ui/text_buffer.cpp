@@ -57,30 +57,52 @@ namespace pf::ui
 		_undo.clear();
 		_undo_pos = 0;
 		_saved_undo_pos = 0;
+		_max_line_len = -1;
 
 		if (text.empty())
 		{
 			append_line("");
-			return;
 		}
-
-		size_t start = 0;
-		for (size_t i = 0; i < text.size(); i++)
+		else
 		{
-			if (text[i] == '\n')
+			size_t start = 0;
+			for (size_t i = 0; i < text.size(); i++)
 			{
-				auto end = i;
-				if (end > start && text[end - 1] == '\r')
-					end--;
-				append_line(text.substr(start, end - start));
-				start = i + 1;
+				if (text[i] == '\n')
+				{
+					auto end = i;
+					if (end > start && text[end - 1] == '\r')
+						end--;
+					append_line(text.substr(start, end - start));
+					start = i + 1;
+				}
 			}
+
+			auto end = text.size();
+			if (end > start && text[end - 1] == '\r')
+				end--;
+			append_line(text.substr(start, end - start));
 		}
 
-		auto end = text.size();
-		if (end > start && text[end - 1] == '\r')
-			end--;
-		append_line(text.substr(start, end - start));
+		clamp_locations();
+		_ideal_char_pos = -1;
+	}
+
+	// The caret, anchor and selection must name places in the text: every accessor
+	// indexes _lines with them, so an edit that shortens the text past them leaves a
+	// crash for whoever reads them next. Copying a selection that a replaced
+	// transcript had outlived read past the last line.
+	void text_buffer::clamp_locations()
+	{
+		const auto inside = [this](text_location at)
+		{
+			at.y = std::clamp(at.y, 0, static_cast<int>(_lines.size()) - 1);
+			at.x = std::clamp(at.x, 0, static_cast<int>(_lines[at.y].size()));
+			return at;
+		};
+		_cursor_loc = inside(_cursor_loc);
+		_anchor_loc = inside(_anchor_loc);
+		_selection = text_selection(inside(_selection._start), inside(_selection._end));
 	}
 	bool text_buffer::is_inside_selection(const text_location& ptTextPos) const
 	{
@@ -1208,7 +1230,7 @@ namespace pf::ui
 				line_text.erase(line_text.begin() + selection._start.x, line_text.begin() + selection._end.x);
 				li.update(line_text);
 
-				if (end() < _cursor_loc) _cursor_loc = end();
+				clamp_locations();
 
 				invalidate_line(selection._start.y);
 			}
@@ -1228,7 +1250,7 @@ namespace pf::ui
 				// Erase intermediate lines and the end line
 				_lines.erase(_lines.begin() + selection._start.y + 1, _lines.begin() + selection._end.y + 1);
 
-				if (end() < _cursor_loc) _cursor_loc = end();
+				clamp_locations();
 
 				_max_line_len = -1;
 				_host.line_count_changed(selection._start.y, selection._start.y - selection._end.y);
@@ -1293,6 +1315,7 @@ namespace pf::ui
 			invalidate_line(location.y);
 		}
 
+		clamp_locations();
 		return resultPos;
 	}
 

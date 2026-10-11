@@ -120,6 +120,25 @@ The platform owns the message loop and calls these at the appropriate times. An
 application that needs its own frame loop — a game — returns a `main_loop`
 callable in `app_init_result` and pumps messages with `pf::platform_events()`.
 
+Three things about the main window catch every new application:
+
+- `app_init` runs **before** the native window exists. Binding a reactor and
+  building the menu there is what it is for; a title, a size or a position set
+  there is dropped. Set those when the reactor receives `message_type::create`.
+- `message_type::close` does not close anything by itself: the platform returns
+  the reactor's answer without the default handling, so a reactor that wants the
+  close button, Alt+F4 and `WM_CLOSE` to work calls `window->close()`. Not
+  calling it is how an application keeps the window open — to ask about unsaved
+  work, say.
+- `app_destroy` runs once the GUI loop (or `main_loop`) returns and the task
+  queue has stopped: queued tasks are dropped, and running ones are given up to
+  five seconds to finish before they are left to end on their own. So nothing
+  queued can start on what `app_destroy` frees, but a worker that can run longer
+  than that must be stopped or joined before what it uses is freed, and work
+  posted from `app_destroy` never runs. COM is still up. It is not called when
+  `app_init` returned `start_gui = false`; a headless mode cleans up after
+  itself.
+
 ### Child processes
 
 `spawn_child_process()` starts a tool and moves bytes to and from its standard
@@ -253,6 +272,31 @@ storage paths, headless pool/executor concurrency and teardown, and audio at zer
 (XAudio2 needs no window) — both a sample buffer and the stream queue that apps
 pace themselves against. It skips the audio cases when the machine has no
 output device.
+
+## Known gaps
+
+Found by hand-testing the applications, and not yet closed:
+
+- **Alt keys never reach a reactor.** `WM_SYSKEYDOWN`, `WM_SYSKEYUP` and
+  `WM_SYSCHAR` go straight to the default handling, so Alt, Alt+key and F10 open
+  the menu bar or the system menu instead. ovrwin's DOS programs and potato's
+  Alt+Left/Alt+Right want them. Forwarding them needs a way for a reactor to say
+  it consumed a key — `handle_keyboard`'s result is not read that way today —
+  or every application would see Alt+letter and open its menu with it.
+- **A text view gives every code point one cell.** Wide characters — CJK, most
+  emoji — are drawn one cell wide and the next character overprints their right
+  half; hit testing and the caret follow the same grid. A proportional
+  `text_font` misbehaves the same way, which is why `theme.h` asks for a
+  fixed-pitch face.
+- **`draw_bitmap` ignores alpha.** It copies pixels with `StretchDIBits`, so the
+  transparent parts of a PNG draw black (potato's pages show it). `AlphaBlend`
+  needs premultiplied pixels, and many 32-bit bitmaps carry alpha 0 while meant
+  to be opaque, so it needs a per-bitmap "has alpha" decision rather than a
+  switch, and a check in every application that draws images.
+- **A CSV record is one line.** `csv_view` splits each physical line, so a quoted
+  field that contains a line break draws its second half as a new record.
+  Joining them changes the line-to-record mapping that selection and hit testing
+  rely on.
 
 ## Documentation
 

@@ -146,7 +146,11 @@ namespace pf::ui
 			_lines.assign(line_count, line_metrics{});
 
 			const auto base_cy = std::max(1, _font_extent.cy);
-			const auto avail_width = std::max(1, _view_extent.cx - left_pad());
+			// The vertical scrollbar is drawn over the view's right edge, so a row
+			// stops short of it rather than running under the thumb. The room is
+			// kept whether or not the bar can scroll, so the text does not re-flow
+			// the moment it first outgrows the view.
+			const auto avail_width = std::max(1, _view_extent.cx - left_pad() - right_pad());
 			const auto table_cols = safe_cols(avail_width, _font_extent.cx);
 			const auto line_pad = base_cy / 4;
 
@@ -458,6 +462,7 @@ namespace pf::ui
 		mutable std::vector<std::string_view> _cells;
 
 		[[nodiscard]] int left_pad() const { return _font_extent.cx * 2; }
+		[[nodiscard]] int right_pad() const { return _vscroll.thumb_thickness() + 2 * _vscroll.edge_margin(); }
 
 		// Lines this view has actually measured. The table lags the buffer between
 		// an edit and the next layout, exactly as the inherited wrap arrays do, so

@@ -38,6 +38,10 @@ namespace pf::ui
 
 		pf::font list_font{20, pf::font_name::calibri};
 		pf::font edit_font{30, pf::font_name::calibri};
+		// Text views lay out, hit-test and draw on a code-point grid of
+		// measure_char() cells, so text_font must be fixed-pitch: a proportional
+		// face overlaps wide glyphs, leaves gaps after narrow ones and puts the
+		// caret beside the text.
 		pf::font text_font{24, pf::font_name::consolas};
 
 		int list_font_height = 20;

@@ -129,7 +129,7 @@ namespace pf::ui
 				while (y < rc_client.bottom && line_index < line_count)
 				{
 					(*_doc)[line_index].render(_line_buf);
-					table_layout::split_csv_cells(_cells, _line_buf);
+					table_layout::split_csv_cells(_cells, _line_buf, &_cell_text);
 
 					const auto is_header = line_index == 0;
 					const auto selected = line_fully_selected(line_index, static_cast<int>(_line_buf.size()));
@@ -170,6 +170,7 @@ namespace pf::ui
 		// Paint and layout scratch, reused across every row
 		mutable std::string _line_buf;
 		mutable std::vector<std::string_view> _cells;
+		mutable std::string _cell_text; // unescaped quoted fields the cells may point into
 		mutable std::vector<int> _cell_breaks;
 
 		[[nodiscard]] int left_pad() const { return _font_extent.cx * 2; }
@@ -188,7 +189,7 @@ namespace pf::ui
 		[[nodiscard]] int record_visual_rows(const int line_index) const
 		{
 			(*_doc)[line_index].render(_line_buf);
-			table_layout::split_csv_cells(_cells, _line_buf);
+			table_layout::split_csv_cells(_cells, _line_buf, &_cell_text);
 
 			int rows = 1;
 
@@ -219,7 +220,7 @@ namespace pf::ui
 			for (int i = 0; i < line_count; i++)
 			{
 				(*_doc)[i].render(_line_buf);
-				table_layout::split_csv_cells(_cells, _line_buf);
+				table_layout::split_csv_cells(_cells, _line_buf, &_cell_text);
 
 				while (_table.col_widths.size() < _cells.size())
 					_table.col_widths.push_back(0);

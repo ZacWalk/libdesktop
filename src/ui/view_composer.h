@@ -156,7 +156,9 @@ namespace pf::ui
 			// An empty box says what it is for, focused or not. draw_text fills its
 			// rect, which swallows the caret sitting at the start of the line — so
 			// the caret goes back on top rather than the hint being hidden whenever
-			// somebody is actually about to type into it.
+			// somebody is actually about to type into it. The fill is the caret
+			// line's own background, which focus turns into the focus band, so the
+			// hint does not sit in a box of its own.
 			if (!_placeholder.empty() && is_empty())
 			{
 				const auto y = top_content_padding();
@@ -164,7 +166,7 @@ namespace pf::ui
 				const pf::irect clip(text_left(), y, std::min(box.right, text_left() + width),
 				                     y + _font_extent.cy);
 				draw.draw_text(clip.left, y, clip, _placeholder, body_font(),
-				               _theme.dim_text, _theme.style_color(text_style::normal_bkgnd));
+				               _theme.dim_text, line_bg_color(0));
 
 				draw_caret(draw);
 			}
@@ -186,6 +188,8 @@ namespace pf::ui
 	protected:
 		[[nodiscard]] int top_content_padding() const override { return std::max(1, _font_extent.cy / 4); }
 		[[nodiscard]] int bottom_content_padding() const override { return std::max(1, _font_extent.cy / 4); }
+		// The border is drawn inside the box, so a row stops a cell short of it.
+		[[nodiscard]] int right_content_padding() const override { return _font_extent.cx; }
 
 		// A composer is a few rows tall at most, so a horizontal scrollbar drawn
 		// inside it sits on top of the line it is meant to help read — and takes

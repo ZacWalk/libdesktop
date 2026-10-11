@@ -1,8 +1,8 @@
 // view_doc_edit.h — an editable document view.
 //
-// Character input, backspace, tab and the clipboard verbs, all expressed as text
-// buffer edits. What a right-click offers is left to the application: see
-// doc_view::on_popup_menu.
+// Character input, backspace, delete, tab, undo and the clipboard verbs, all
+// expressed as text buffer edits. What a right-click offers is left to the
+// application: see doc_view::on_popup_menu.
 
 #pragma once
 
@@ -109,7 +109,10 @@ namespace pf::ui
 			}
 			if (vk == pk::Back && ctrl)
 			{
-				_doc->move_word_left(true);
+				// With a selection, Ctrl+Backspace takes just the selection, as in a
+				// Windows edit box, rather than growing it by a word first.
+				if (!_doc->has_selection())
+					_doc->move_word_left(true);
 				if (_doc->has_selection())
 					_doc->edit_delete();
 				return true;
@@ -122,6 +125,34 @@ namespace pf::ui
 			if (vk == pk::Tab && shift)
 			{
 				_doc->edit_untab();
+				return true;
+			}
+
+			// Like Ctrl+A/C/X/V in text_view: a view with no command table behind it
+			// gets no Delete or Undo command either, so these keys are its own. Where
+			// a table does claim them its accelerators answer first and none of
+			// these is reached.
+			if (vk == pk::Delete && !ctrl && !shift && !alt)
+			{
+				_doc->edit_delete();
+				return true;
+			}
+			if (vk == pk::Delete && ctrl && !shift && !alt)
+			{
+				if (!_doc->has_selection())
+					_doc->move_word_right(true);
+				if (_doc->has_selection())
+					_doc->edit_delete();
+				return true;
+			}
+			if (ctrl && !alt && (vk == 'Z' || vk == 'Y'))
+			{
+				if (!_doc->query_editable())
+					return true;
+				if (vk == 'Z' && !shift)
+					_doc->edit_undo();
+				else if ((vk == 'Y' && !shift) || (vk == 'Z' && shift))
+					_doc->edit_redo();
 				return true;
 			}
 

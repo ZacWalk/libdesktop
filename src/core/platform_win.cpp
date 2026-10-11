@@ -399,6 +399,9 @@ static std::optional<pf::mouse_message_type> map_mouse_message(const UINT uMsg)
 	case WM_LBUTTONDBLCLK: return pf::mouse_message_type::left_button_dbl_clk;
 	case WM_LBUTTONDOWN: return pf::mouse_message_type::left_button_down;
 	case WM_RBUTTONDOWN: return pf::mouse_message_type::right_button_down;
+	case WM_RBUTTONUP: return pf::mouse_message_type::right_button_up;
+	case WM_MBUTTONDOWN: return pf::mouse_message_type::middle_button_down;
+	case WM_MBUTTONUP: return pf::mouse_message_type::middle_button_up;
 	case WM_LBUTTONUP: return pf::mouse_message_type::left_button_up;
 	case WM_MOUSEMOVE: return pf::mouse_message_type::mouse_move;
 	case WM_MOUSEWHEEL: return pf::mouse_message_type::mouse_wheel;
@@ -1398,6 +1401,8 @@ public:
 
 				const auto key_flags = static_cast<uint32_t>(wParam & 0xFFFF);
 				params.left_button = (key_flags & 0x0001) != 0; // MK_LBUTTON
+				params.right_button = (key_flags & 0x0002) != 0; // MK_RBUTTON
+				params.middle_button = (key_flags & 0x0010) != 0; // MK_MBUTTON
 				params.control = (key_flags & 0x0008) != 0; // MK_CONTROL
 				params.shift = (key_flags & 0x0004) != 0; // MK_SHIFT
 
@@ -1413,7 +1418,15 @@ public:
 				if (*mmt == pf::mouse_message_type::set_cursor)
 					params.hit_test = static_cast<uint32_t>(lParam & 0xFFFF);
 
-				return _reactor->handle_mouse(self, *mmt, params);
+				const auto result = _reactor->handle_mouse(self, *mmt, params);
+
+				// DefWindowProc turns a right-button release into WM_CONTEXTMENU, which
+				// is how every context menu here opens; the release is reported as well
+				// as that, never instead of it.
+				if (uMsg == WM_RBUTTONUP)
+					return DefWindowProc(hWnd, uMsg, wParam, lParam);
+
+				return result;
 			}
 		}
 
@@ -1496,10 +1509,26 @@ public:
 	                   const uintptr_t id = 0)
 	{
 		const auto default_cursor = LoadCursor(nullptr, IDC_ARROW);
+
+		// platform_add_app embeds the application's icon as resource 1. Without it
+		// on the class a top-level window shows the generic icon in its caption and
+		// in Alt+Tab, although the exe carries its own. An application with no icon
+		// gets null back and keeps that default.
+		HICON icon = nullptr;
+		HICON small_icon = nullptr;
+		if (!parent)
+		{
+			icon = static_cast<HICON>(LoadImageW(resource_instance, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0,
+			                                     LR_DEFAULTSIZE | LR_SHARED));
+			small_icon = static_cast<HICON>(LoadImageW(resource_instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+			                                           GetSystemMetrics(SM_CXSMICON),
+			                                           GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+		}
+
 		if (register_class(CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
-		                   nullptr, default_cursor,
+		                   icon, default_cursor,
 		                   wnd_clr.rgb(),
-		                   nullptr, class_name, nullptr))
+		                   nullptr, class_name, small_icon))
 		{
 			const bool is_child = (style & WS_CHILD) != 0;
 			const int x = is_child ? 0 : CW_USEDEFAULT;
@@ -4163,7 +4192,14 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 
 	const int result = init_result.main_loop ? init_result.main_loop() : pf::platform_run();
 
+	// The README promises app_destroy, and the applications release what they
+	// hold in it — workers, network sessions, a COM spell checker. The task queue
+	// stops first (platform_run has already stopped it; a main_loop has not), so
+	// no queued task can start on what app_destroy frees; COM is still up. It
+	// used never to run.
 	dispatcher().shutdown(true);
+	app_destroy();
+
 	if (exit_h) CloseHandle(exit_h);
 	exit_h = nullptr;
 	CoUninitialize();

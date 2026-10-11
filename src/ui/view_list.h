@@ -426,6 +426,7 @@ namespace pf::ui
 				return 0;
 			}
 			if (msg == mt::left_button_down) return on_left_button_down(window, params.point);
+			if (msg == mt::right_button_down) return on_right_button_down(window, params.point);
 			if (msg == mt::left_button_up) return on_left_button_up(window);
 			if (msg == mt::left_button_dbl_clk) return 0; // the single click already handled it
 			if (msg == mt::context_menu)
@@ -617,6 +618,31 @@ namespace pf::ui
 				}
 
 				window->invalidate();
+			}
+
+			return 0;
+		}
+
+		// The menu a right-click opens acts on the selection, so the click first
+		// moves the selection to the row under the pointer, as everywhere else in
+		// Windows. A row already inside a shift-extended range leaves the range
+		// alone, so the run can still be right-clicked and copied. Before this a
+		// right-click changed nothing and Copy took whichever row was selected.
+		uint32_t on_right_button_down(const pf::window_frame_ptr& window, const pf::ipoint& point)
+		{
+			window->set_focus();
+
+			const auto rc = pf::irect(0, _header_height, _view_extent.cx, _view_extent.cy);
+			if (point.y < _header_height || _vscroll.hit_test(point, rc)) return 0;
+
+			const auto item = selection_from_point(pf::ipoint(point.x, point.y + _scroll_offset.y));
+			if (!item) return 0;
+
+			for (int i = 0; i < static_cast<int>(_items.size()); i++)
+			{
+				if (_items[i] != item) continue;
+				if (!is_selected(i)) select_list_item(window, item, false);
+				break;
 			}
 
 			return 0;

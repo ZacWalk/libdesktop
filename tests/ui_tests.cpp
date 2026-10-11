@@ -204,6 +204,36 @@ namespace
 
 		tl::split_csv_cells(cells, "");
 		CHECK_EQ(cells.size(), 0u);
+
+		// A line that ends with a delimiter ends with an empty field, which the
+		// split used to drop (rethinkify: "1,2," had two cells under a three-column
+		// header).
+		tl::split_csv_cells(cells, "1,2,");
+		CHECK_EQ(cells.size(), 3u);
+		if (cells.size() == 3u) CHECK_STR(cells[2], "");
+		tl::split_csv_cells(cells, "\"x\",");
+		CHECK_EQ(cells.size(), 2u);
+		tl::split_csv_cells(cells, ",");
+		CHECK_EQ(cells.size(), 2u);
+
+		// A comma inside an unterminated quote is part of the field, not a delimiter.
+		tl::split_csv_cells(cells, "\"a,");
+		CHECK_EQ(cells.size(), 1u);
+
+		// An escaped quote ("") in a quoted field is one quote once there is room to
+		// write it; without that room the field is the text as it stands.
+		std::string storage;
+		tl::split_csv_cells(cells, "gamma,\"has \"\"quotes\"\"\",ab\"\"cd", &storage);
+		CHECK_EQ(cells.size(), 3u);
+		if (cells.size() == 3u)
+		{
+			CHECK_STR(cells[0], "gamma");
+			CHECK_STR(cells[1], "has \"quotes\"");
+			CHECK_STR(cells[2], "ab\"\"cd");
+		}
+		tl::split_csv_cells(cells, "\"has \"\"quotes\"\"\"");
+		CHECK_EQ(cells.size(), 1u);
+		if (cells.size() == 1u) CHECK_STR(cells[0], "has \"\"quotes\"\"");
 	}
 
 	void test_table_alignment()
@@ -237,7 +267,7 @@ namespace
 		CHECK_EQ(widths[0], 10);
 		CHECK_EQ(widths[1], 20);
 
-		// The same columns in 20 cells shrink proportionally.
+		// The same columns in 20 cells shrink, the narrower staying narrower.
 		widths = {10, 20};
 		tl::cap_col_widths(widths, 20);
 		CHECK(widths[0] < 10);
@@ -245,6 +275,16 @@ namespace
 		CHECK(widths[0] >= 1);
 		CHECK(widths[1] >= 1);
 		CHECK(widths[0] < widths[1]);
+		CHECK_EQ(widths[0] + widths[1], 13);
+
+		// Short columns keep their width and the long one gives up the room: a
+		// price and a quantity beside a long description used to be cut to one
+		// character each and stacked down the row.
+		widths = {4, 60, 3};
+		tl::cap_col_widths(widths, 40);
+		CHECK_EQ(widths[0], 4);
+		CHECK_EQ(widths[2], 3);
+		CHECK_EQ(widths[1], 23);
 
 		// No column is ever capped out of existence.
 		widths = {50, 50, 50};
@@ -637,6 +677,88 @@ namespace
 
 		buf.set_text("");
 		CHECK_EQ(buf.size(), 1u);
+
+		// The caret, anchor and selection named the old text, and every accessor
+		// indexes the lines with them, so new text keeps them inside it. list0's
+		// reading pane asserted when a selection outlived a longer message.
+		buf.set_text("one\ntwo\nthree");
+		buf.anchor_pos(pf::ui::text_location{1, 1});
+		buf.cursor_pos(pf::ui::text_location{5, 2});
+		buf.select(pf::ui::text_selection(1, 1, 5, 2));
+		buf.set_text("x");
+		CHECK_EQ(buf.cursor_pos().y, 0);
+		CHECK(buf.cursor_pos().x <= 1);
+		CHECK_EQ(buf.anchor_pos().y, 0);
+		CHECK(buf.anchor_pos().x <= 1);
+		CHECK_EQ(buf.selection()._end.y, 0);
+		CHECK(buf.selection()._end.x <= 1);
+		if (buf.selection()._end.y < static_cast<int>(buf.size()))
+			CHECK(buf.copy().size() <= 1u);
+
+		// Where the old position still exists it is kept.
+		buf.set_text("alpha\nbeta");
+		buf.cursor_pos(pf::ui::text_location{2, 1});
+		buf.set_text("alpha\nbetter");
+		CHECK_EQ(buf.cursor_pos().y, 1);
+		CHECK_EQ(buf.cursor_pos().x, 2);
+
+		// The longest line is measured again: a scroll range left at the old text's
+		// width scrolls into nothing.
+		buf.set_text(std::string(500, 'x'));
+		CHECK_EQ(buf.max_line_length(), 500);
+		buf.set_text("short");
+		CHECK_EQ(buf.max_line_length(), 5);
+	}
+
+	// An edit that shortens the text keeps the caret, anchor and selection inside
+	// it. rethinkify's /clear replaced a selected transcript with five lines, and
+	// copying the selection it had outlived read past the last line.
+	void test_buffer_edits_keep_the_selection_inside_the_text()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+
+		std::string transcript;
+		for (int i = 0; i < 40; ++i)
+			transcript += "line " + std::to_string(i) + "\n";
+		buf.set_text(transcript);
+		buf.anchor_pos(pf::ui::text_location{0, 0});
+		buf.cursor_pos(buf.end());
+		buf.select(buf.all());
+		{
+			pf::ui::undo_group ug(buf);
+			buf.replace_text(ug, buf.all(), "one\ntwo");
+		}
+
+		const auto lines = static_cast<int>(buf.size());
+		CHECK_EQ(lines, 2);
+		CHECK(buf.selection()._end.y < lines);
+		CHECK(buf.anchor_pos().y < lines);
+		CHECK(buf.cursor_pos().y < lines);
+		if (buf.selection()._end.y < lines)
+			CHECK(buf.copy().size() <= 7u);
+
+		// Shortening one line pulls a caret past its new end back onto it.
+		buf.set_text("abcdefghij\nnext");
+		buf.cursor_pos(pf::ui::text_location{9, 0});
+		{
+			pf::ui::undo_group ug(buf);
+			buf.delete_text(ug, pf::ui::text_selection(0, 0, 8, 0));
+		}
+		CHECK_STR(buf.str(), "ij\nnext");
+		CHECK(buf.cursor_pos().x <= 2);
+
+		// Joining lines with a delete at the start of a line does too.
+		buf.set_text("ab\ncd");
+		buf.cursor_pos(pf::ui::text_location{2, 1});
+		buf.anchor_pos(pf::ui::text_location{2, 1});
+		{
+			pf::ui::undo_group ug(buf);
+			buf.delete_text(ug, pf::ui::text_location{0, 1});
+		}
+		CHECK_STR(buf.str(), "abcd");
+		CHECK_EQ(buf.cursor_pos().y, 0);
+		CHECK_EQ(buf.anchor_pos().y, 0);
 	}
 
 	void test_buffer_edit_and_undo()
@@ -847,6 +969,49 @@ namespace
 		// Select-all covers the whole buffer.
 		view.select_all_text();
 		CHECK_STR(view.select_text(), "alpha beta gamma");
+	}
+
+	// Scrolled right with word wrap off, a line's first characters lie left of the
+	// text area, and their clip used to start where they did, so they drew over the
+	// line numbers (rethinkify). The clip starts at the text area now.
+	void test_view_scrolled_text_stays_out_of_the_margin()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::doc_view view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text(std::string(200, 'x'));
+		view.set_buffer(buf, {});
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+		view.set_word_wrap(false);
+		view.handle_size(frame, pf::isize{400, 320}, measure);
+		view.layout();
+
+		// Unscrolled, the line starts where the text area does.
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 400, 320)};
+		view.handle_paint(frame, draw);
+		auto text_left = -1;
+		for (const auto& t : draw.texts)
+			if (t.text.find('x') != std::string::npos)
+				text_left = text_left < 0 ? t.x : std::min(text_left, t.x);
+		CHECK(text_left > 0);
+
+		view.ensure_visible(frame, pf::ui::text_location{200, 0});
+		draw.reset();
+		view.handle_paint(frame, draw);
+
+		auto drew_line = false;
+		for (const auto& t : draw.texts)
+		{
+			if (t.text.find('x') == std::string::npos) continue;
+			drew_line = true;
+			CHECK(t.clip.left >= text_left);
+		}
+		CHECK(drew_line);
 	}
 
 	void test_view_word_wrap()
@@ -1433,6 +1598,36 @@ namespace
 		CHECK(saw_selected_cell);
 	}
 
+	// The vertical scrollbar is drawn over the view's right edge, so a wrapped row
+	// stops short of it. A row that filled the width ran its last letters under
+	// the thumb (equity's transcript, list0's reading pane).
+	void test_markdown_view_keeps_text_clear_of_the_scrollbar()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// One unbroken word is cut at the last column that fits, so its first row
+		// is as full as a row can be.
+		const pf::isize extent{200, 100};
+		show_markdown(view, host, frame, std::string(100, 'x'), extent);
+
+		const auto first_row = view.text_to_client({0, 0}).y;
+		auto right = 0;
+		for (int i = 0; i < 100; ++i)
+		{
+			const auto pt = view.text_to_client({i, 0});
+			if (pt.y == first_row)
+				right = std::max(right, pt.x + 8);
+		}
+
+		using bar = pf::ui::custom_scrollbar;
+		CHECK(right > extent.cx / 2);
+		CHECK(right <= extent.cx - bar::base_thumb_thickness - 2 * bar::base_edge_margin);
+	}
+
 	void test_markdown_view_wraps_without_touching_the_buffer()
 	{
 		pf::ui::test::recording_view_host host;
@@ -1679,6 +1874,15 @@ namespace
 			CHECK(t.text.empty() || !pf::is_utf8_continuation(t.text.front()));
 
 		CHECK(draw.drawn_text().find("x,y") != std::string::npos);
+
+		// An escaped quote is drawn once, and measured once (rethinkify showed
+		// ""quotes"" for "quotes").
+		show_in(view, host, frame, "a,b\n\"say \"\"hi\"\"\",z");
+		CHECK_EQ(view.table().col_widths[0], 8);
+		draw.reset();
+		view.handle_paint(frame, draw);
+		CHECK(draw.drawn_text().find("say \"hi\"") != std::string::npos);
+		CHECK(draw.drawn_text().find("\"\"") == std::string::npos);
 	}
 
 	void test_hex_view()
@@ -2097,6 +2301,63 @@ namespace
 		CHECK(!items[0].is_enabled());
 	}
 
+	// The menu a right-click opens copies the selection, so the click has to put
+	// the selection where it landed first. It used to change nothing: right-click
+	// MSFT, choose Copy, and get whichever row had been selected before.
+	void test_list_right_click_selects_the_row()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		for (int i = 0; i < 6; i++) view.add(std::format("row {}", i));
+		size_list(view, frame);
+
+		const auto right_click = [&](const int x, const int y)
+		{
+			pf::mouse_params params;
+			params.point = {x, y};
+			view.handle_mouse(frame, pf::mouse_message_type::right_button_down, params);
+		};
+		const auto row_y = [&](const int row) { return view._items[row]->bounds.top + 1; };
+
+		view.set_selected(0);
+		right_click(10, row_y(3));
+		CHECK_EQ(view.selected_index(), 3);
+		CHECK_STR(view.selected_rows_text(), "row 3");
+
+		// Inside a shift-extended run the run stays, so it can be right-clicked
+		// and copied as a whole.
+		view.set_selected(1);
+		view.navigate_next(frame, true, false, true);
+		view.navigate_next(frame, true, false, true);
+		right_click(10, row_y(2));
+		CHECK_STR(view.selected_rows_text(), "row 1\r\nrow 2\r\nrow 3");
+
+		// Outside it, the run gives way to the row that was clicked.
+		right_click(10, row_y(5));
+		CHECK_STR(view.selected_rows_text(), "row 5");
+
+		// Past the last row there is nothing to select, so nothing changes.
+		right_click(10, 100000);
+		CHECK_EQ(view.selected_index(), 5);
+
+		// Nor does a right-click on the scrollbar pick the row beside it. The bar
+		// learns its extent when the list paints, as it has before any real click.
+		list_probe tall(theme);
+		for (int i = 0; i < 40; i++) tall.add(std::format("row {}", i));
+		size_list(tall, frame);
+		CHECK(tall.can_scroll());
+		pf::ui::test::fake_draw_context painted{pf::irect(0, 0, 300, 200)};
+		tall.handle_paint(frame, painted);
+		tall.set_selected(0);
+		pf::mouse_params bar;
+		bar.point = {299, tall._items[2]->bounds.top + 1};
+		tall.handle_mouse(frame, pf::mouse_message_type::right_button_down, bar);
+		CHECK_EQ(tall.selected_index(), 0);
+	}
+
 	void test_list_row_text_fits_its_column()
 	{
 		const pf::ui::theme theme;
@@ -2296,6 +2557,23 @@ namespace
 		// A point in no pane is not an event.
 		click.point = {1000, 1000};
 		CHECK(!host.handle_mouse(pf::mouse_message_type::left_button_down, click));
+
+		// The other buttons route the same way, releases included: an emulator
+		// that saw the right button go down has to see it come back up in the
+		// pane it went down in.
+		for (const auto button : {pf::mouse_message_type::right_button_down,
+		                          pf::mouse_message_type::right_button_up,
+		                          pf::mouse_message_type::middle_button_down,
+		                          pf::mouse_message_type::middle_button_up})
+		{
+			const auto before = right->mouse_count;
+			click.point = {250, 60};
+			CHECK(host.handle_mouse(button, click));
+			CHECK_EQ(right->mouse_count, before + 1);
+			CHECK_EQ(right->last_point.x, 150);
+			CHECK_EQ(right->last_point.y, 60);
+		}
+		CHECK_EQ(left->mouse_count, 1);
 
 		// Moving from one pane to another leaves the first, even though the window
 		// itself never saw the pointer go anywhere.
@@ -2901,6 +3179,7 @@ namespace
 		using pf::ui::composer::on_key_down;
 		using pf::ui::composer::can_cut_text;
 		using pf::ui::composer::paste_text_from_clipboard;
+		using pf::ui::composer::focus_band_color;
 	};
 
 	pf::ui::text_buffer_ptr show_composer(composer_probe& view, pf::ui::view_host& host,
@@ -2936,9 +3215,21 @@ namespace
 			return false;
 		};
 
+		// The hint fills its rect, so the fill has to be what the line under it
+		// is: the plain background, and the focus band once the box has focus.
+		// It used to stay the plain background, drawing a lighter box around the
+		// hint inside the band.
+		const auto hint_background = [&](const pf::ui::test::fake_draw_context& draw)
+		{
+			for (const auto& t : draw.texts)
+				if (t.text.find("Ask about") != std::string::npos) return t.background;
+			return pf::color_t{};
+		};
+
 		pf::ui::test::fake_draw_context unfocused{pf::irect(0, 0, 400, 64)};
 		view.handle_paint(frame, unfocused);
 		CHECK(hint_drawn(unfocused));
+		CHECK(hint_background(unfocused) == theme.style_color(pf::ui::text_style::normal_bkgnd));
 
 		// Focused and still empty: the hint is what tells somebody what to type,
 		// and taking focus is exactly when they are about to.
@@ -2948,6 +3239,7 @@ namespace
 		pf::ui::test::fake_draw_context focused{pf::irect(0, 0, 400, 64)};
 		view.handle_paint(frame, focused);
 		CHECK(hint_drawn(focused));
+		CHECK(hint_background(focused) == view.focus_band_color());
 
 		// And the caret survives it. A recording draw context logs calls rather
 		// than compositing pixels, so it cannot see one thing painted over
@@ -3178,6 +3470,89 @@ namespace
 		CHECK_STR(view.text(), "kept");
 	}
 
+	// Like the clipboard shortcuts, Delete and Undo have no command behind a
+	// composer to come from, so the editable view handles the keys itself. Before
+	// it did, Delete, Ctrl+Z and Ctrl+Y did nothing in equity's and list0's prompts.
+	void test_composer_handles_the_editing_keys()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_composer(view, host, frame);
+		for (const auto c : std::u32string(U"hello world"))
+			view.on_char(frame, c);
+		CHECK_STR(view.text(), "hello world");
+
+		// Delete takes the character after the caret, or the selection.
+		buf->select(pf::ui::text_selection(5, 0, 5, 0));
+		view.on_key_down(frame, pf::platform_key::Delete);
+		CHECK_STR(view.text(), "helloworld");
+
+		buf->select(pf::ui::text_selection(0, 0, 2, 0));
+		view.on_key_down(frame, pf::platform_key::Delete);
+		CHECK_STR(view.text(), "lloworld");
+
+		// Ctrl+Delete takes the rest of the word.
+		window->held_keys.insert(pf::platform_key::Control);
+		buf->select(pf::ui::text_selection(0, 0, 0, 0));
+		view.on_key_down(frame, pf::platform_key::Delete);
+		CHECK_STR(view.text(), "");
+
+		// Ctrl+Z puts each of those back, newest first; Ctrl+Y and Ctrl+Shift+Z
+		// take them away again.
+		view.on_key_down(frame, 'Z');
+		CHECK_STR(view.text(), "lloworld");
+		view.on_key_down(frame, 'Z');
+		CHECK_STR(view.text(), "helloworld");
+		view.on_key_down(frame, 'Y');
+		CHECK_STR(view.text(), "lloworld");
+		view.on_key_down(frame, 'Z');
+		window->held_keys.insert(pf::platform_key::Shift);
+		view.on_key_down(frame, 'Z');
+		CHECK_STR(view.text(), "lloworld");
+		window->held_keys.erase(pf::platform_key::Shift);
+
+		// Without Control, Z and Y are only letters and change nothing here.
+		window->held_keys.erase(pf::platform_key::Control);
+		view.on_key_down(frame, 'Z');
+		view.on_key_down(frame, 'Y');
+		CHECK_STR(view.text(), "lloworld");
+	}
+
+	// With a selection, Ctrl+Delete and Ctrl+Backspace take just the selection, as
+	// a Windows edit box does, rather than growing it by a word first.
+	void test_composer_ctrl_delete_takes_only_the_selection()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_composer(view, host, frame);
+		for (const auto c : std::u32string(U"alpha beta gamma"))
+			view.on_char(frame, c);
+		window->held_keys.insert(pf::platform_key::Control);
+
+		buf->select(pf::ui::text_selection(6, 0, 8, 0));
+		view.on_key_down(frame, pf::platform_key::Delete);
+		CHECK_STR(view.text(), "alpha ta gamma");
+
+		buf->select(pf::ui::text_selection(6, 0, 8, 0));
+		view.on_key_down(frame, pf::platform_key::Back);
+		CHECK_STR(view.text(), "alpha  gamma");
+
+		// With no selection they still take a word (Backspace also the spaces after it).
+		buf->select(pf::ui::text_selection(7, 0, 7, 0));
+		view.on_key_down(frame, pf::platform_key::Delete);
+		CHECK_STR(view.text(), "alpha  ");
+		view.on_key_down(frame, pf::platform_key::Back);
+		CHECK_STR(view.text(), "");
+	}
+
 	void test_composer_submits_and_recalls()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3367,6 +3742,91 @@ namespace
 		CHECK_EQ(view.scroll_offset().x, scrolled);
 	}
 
+	// Scrolling to the caret at the end of a long line left the last character and
+	// the caret just past the right edge of list0's one-line prompt: the scroll
+	// counted the whole width rather than the width after the text's left inset,
+	// and gave the caret no cell of its own.
+	void test_composer_scrolls_the_caret_into_view()
+	{
+		struct caret_probe : composer_probe
+		{
+			using composer_probe::composer_probe;
+			using pf::ui::composer::text_to_client;
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		caret_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const pf::isize extent{340, 24};
+		show_composer(view, host, frame, extent);
+		view.set_multiline(false);
+		view.set_max_rows(1);
+		view.set_word_wrap(false);
+		view.set_limit(pf::ui::input::max_editor_bytes);
+		view.set_text(std::string(500, 'x'));
+		view.layout();
+
+		view.ensure_visible(frame, pf::ui::text_location{500, 0});
+		const auto last = view.text_to_client(pf::ui::text_location{499, 0});
+		const auto caret = view.text_to_client(pf::ui::text_location{500, 0});
+		CHECK(last.x >= 0);
+		CHECK(caret.x > last.x);
+		CHECK(caret.x + 2 <= extent.cx);
+
+		// Back at the start, the first character is the first one shown.
+		view.ensure_visible(frame, pf::ui::text_location{0, 0});
+		const auto first = view.text_to_client(pf::ui::text_location{0, 0});
+		const auto second = view.text_to_client(pf::ui::text_location{1, 0});
+		CHECK(first.x >= 0);
+		CHECK(second.x > first.x);
+	}
+
+	// A composer draws its border inside its box, so a wrapped row stops a cell
+	// short of it. Where the text area came to a whole number of cells, the last
+	// letter of a full row sat under the border (equity's prompt at 643-650 px).
+	void test_composer_keeps_text_clear_of_its_border()
+	{
+		struct border_probe : composer_probe
+		{
+			using composer_probe::composer_probe;
+			using pf::ui::composer::text_to_client;
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		border_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// Measure where text starts and how wide a cell is, then size the box so
+		// the space right of that start is exactly 40 cells: the worst case.
+		show_composer(view, host, frame);
+		view.set_text("ab");
+		view.layout();
+		const auto left = view.text_to_client({0, 0}).x;
+		const auto cx = view.text_to_client({1, 0}).x - left;
+		CHECK(cx > 0);
+
+		const pf::isize extent{left + 40 * cx, 64};
+		view.set_text(std::string(100, 'W'));
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, extent, measure);
+		view.layout();
+
+		// What the user sees is where the letters are painted, so measure that.
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, extent.cx, extent.cy)};
+		view.handle_paint(frame, draw);
+		auto right = 0;
+		for (const auto& t : draw.texts)
+			if (t.text.find('W') != std::string::npos)
+				right = std::max(right, t.x + static_cast<int>(t.text.size()) * cx);
+		CHECK(right > extent.cx / 2);
+		CHECK(right <= extent.cx - cx);
+	}
+
 	void test_composer_enter_and_shift_enter()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3469,6 +3929,7 @@ int main()
 	test_syntax_plain();
 	test_syntax_bounds();
 	test_buffer_set_text();
+	test_buffer_edits_keep_the_selection_inside_the_text();
 	test_buffer_edit_and_undo();
 	test_buffer_multiline_edit();
 	test_buffer_utf8_movement();
@@ -3477,6 +3938,7 @@ int main()
 	test_view_layout_and_hit_testing();
 	test_view_selection_and_clipboard();
 	test_view_word_wrap();
+	test_view_scrolled_text_stays_out_of_the_margin();
 	test_view_editing();
 	test_view_paints_its_text();
 	test_markdown_parse();
@@ -3492,6 +3954,7 @@ int main()
 	test_markdown_view_reports_which_link_was_hit();
 	test_markdown_view_tables();
 	test_markdown_view_wraps_without_touching_the_buffer();
+	test_markdown_view_keeps_text_clear_of_the_scrollbar();
 	test_markdown_view_utf8_positions();
 	test_markdown_view_styles_a_quote();
 	test_read_only_view_copies_with_the_keyboard();
@@ -3503,6 +3966,7 @@ int main()
 	test_list_paints_its_rows();
 	test_list_row_text_fits_its_column();
 	test_list_copies_with_the_keyboard();
+	test_list_right_click_selects_the_row();
 	test_list_columns_and_sorting();
 	test_list_draws_its_cells();
 	test_pane_host_routes_input();
@@ -3522,6 +3986,8 @@ int main()
 	test_composer_edits_like_a_document();
 	test_composer_filters_what_is_typed_and_pasted();
 	test_composer_handles_the_clipboard_shortcuts();
+	test_composer_handles_the_editing_keys();
+	test_composer_ctrl_delete_takes_only_the_selection();
 	test_composer_keeps_its_placeholder_while_focused();
 	test_view_offers_its_own_context_menu();
 	test_read_only_view_offers_copy_but_not_cut();
@@ -3529,6 +3995,8 @@ int main()
 	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
 	test_composer_long_line_has_no_horizontal_scrollbar();
+	test_composer_scrolls_the_caret_into_view();
+	test_composer_keeps_text_clear_of_its_border();
 	test_composer_enter_and_shift_enter();
 	test_composer_shows_its_placeholder();
 	test_edit_view_cut_keeps_text_when_the_clipboard_refuses();

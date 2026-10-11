@@ -900,6 +900,12 @@ namespace pf
 		mouse_activate,
 		context_menu,
 		set_cursor,
+		// Added after the rest so their values do not move. A right-button release
+		// still produces context_menu afterwards: it is reported as well, so an
+		// emulator or a drag can see the button come back up.
+		right_button_up,
+		middle_button_down,
+		middle_button_up,
 	};
 
 	// Bundled mouse parameters
@@ -911,6 +917,8 @@ namespace pf
 		bool shift = false;
 		int16_t wheel_delta = 0;
 		uint32_t hit_test = 0; // for set_cursor: HTCLIENT etc.
+		bool right_button = false;
+		bool middle_button = false;
 	};
 
 	// Keyboard message types — dispatched via handle_keyboard

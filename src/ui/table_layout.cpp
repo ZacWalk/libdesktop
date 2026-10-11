@@ -6,6 +6,10 @@
 #include "platform.h"
 #include "ui/table_layout.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <numeric>
+
 namespace pf::ui::table_layout
 {
 	std::string_view trim_cell(const std::string_view s)
@@ -44,11 +48,20 @@ namespace pf::ui::table_layout
 	}
 
 	std::vector<std::string_view>& split_csv_cells(std::vector<std::string_view>& cells,
-	                                                      const std::string_view line)
+	                                                      const std::string_view line, std::string* const storage)
 	{
 		cells.clear();
 		const auto len = static_cast<int>(line.size());
 		int pos = 0;
+		auto after_delimiter = false;
+
+		// Unescaping never lengthens a field, so this is all the room it needs, and
+		// the views already taken into storage stay valid while it fills.
+		if (storage)
+		{
+			storage->clear();
+			storage->reserve(line.size());
+		}
 
 		while (pos < len)
 		{
@@ -57,6 +70,7 @@ namespace pf::ui::table_layout
 				// Quoted field: find matching close quote
 				const auto quote_start = pos + 1;
 				int end = quote_start;
+				auto escaped = false;
 				while (end < len)
 				{
 					if (line[end] == u8'"')
@@ -64,15 +78,33 @@ namespace pf::ui::table_layout
 						if (end + 1 < len && line[end + 1] == u8'"')
 						{
 							end += 2; // escaped quote
+							escaped = true;
 							continue;
 						}
 						break;
 					}
 					end++;
 				}
-				cells.push_back(line.substr(quote_start, end - quote_start));
+
+				const auto field = line.substr(quote_start, end - quote_start);
+				if (escaped && storage)
+				{
+					const auto start = storage->size();
+					for (size_t i = 0; i < field.size(); ++i)
+					{
+						storage->push_back(field[i]);
+						if (field[i] == u8'"' && i + 1 < field.size() && field[i + 1] == u8'"') ++i;
+					}
+					cells.push_back(std::string_view(*storage).substr(start));
+				}
+				else
+				{
+					cells.push_back(field);
+				}
+
 				pos = (end < len) ? end + 1 : end; // skip closing quote
-				if (pos < len && line[pos] == u8',') pos++; // skip delimiter
+				after_delimiter = pos < len && line[pos] == u8',';
+				if (after_delimiter) pos++; // skip delimiter
 			}
 			else
 			{
@@ -80,12 +112,18 @@ namespace pf::ui::table_layout
 				if (next == std::string_view::npos)
 				{
 					cells.push_back(line.substr(pos));
+					after_delimiter = false;
 					break;
 				}
 				cells.push_back(line.substr(pos, next - pos));
 				pos = static_cast<int>(next) + 1;
+				after_delimiter = true;
 			}
 		}
+
+		if (after_delimiter)
+			cells.push_back(line.substr(line.size()));
+
 		return cells;
 	}
 
@@ -137,10 +175,36 @@ namespace pf::ui::table_layout
 		int total_natural = 0;
 		for (const auto w : col_widths) total_natural += w;
 
-		if (total_natural > budget && total_natural > 0)
+		if (total_natural <= budget || total_natural <= 0) return;
+
+		// A column no wider than an even share of the room left keeps its natural
+		// width, and only the wider ones are narrowed, splitting what remains. A
+		// proportional cut squeezed a four-character price column to one character,
+		// stacking it down the row, because one long text column shared the table.
+		std::vector<int> order(col_widths.size());
+		std::iota(order.begin(), order.end(), 0);
+		std::stable_sort(order.begin(), order.end(),
+		                 [&col_widths](const int a, const int b) { return col_widths[a] < col_widths[b]; });
+
+		auto remaining = budget;
+		auto left = num_cols;
+		size_t kept = 0;
+		for (; kept < order.size(); ++kept)
 		{
-			for (auto& w : col_widths)
-				w = std::max(1, w * budget / total_natural);
+			const auto w = col_widths[order[kept]];
+			if (static_cast<int64_t>(w) * left > remaining) break;
+			remaining -= w;
+			--left;
+		}
+
+		// Any cells over go to the widest columns, so a column that needed less
+		// never ends up wider than one that needed more.
+		const auto base = std::max(1, remaining / std::max(1, left));
+		const auto extra = left > 0 ? remaining % left : 0;
+		for (size_t j = kept; j < order.size(); ++j)
+		{
+			const auto from_end = static_cast<int>(order.size() - j);
+			col_widths[order[j]] = base + (from_end <= extra ? 1 : 0);
 		}
 	}
 

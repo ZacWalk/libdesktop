@@ -141,6 +141,7 @@ namespace pf::ui
 		text_location insert_text(const text_location& location, const char& c);
 		text_location delete_text(const text_selection& selection);
 		text_location delete_text(const text_location& location);
+		void clamp_locations();
 
 		struct block_range
 		{

@@ -70,6 +70,7 @@ namespace pf::ui::test
 			std::string text;
 			pf::color_t color;
 			pf::color_t background;
+			pf::irect clip; // the rectangle the text was clipped to, where the call gave one
 		};
 
 		struct rect_fill
@@ -117,10 +118,10 @@ namespace pf::ui::test
 			fills.push_back({pf::irect(x, y, x + cx, y + cy), color});
 		}
 
-		void draw_text(const int x, const int y, const irect&, const std::string_view text,
+		void draw_text(const int x, const int y, const irect& clip, const std::string_view text,
 		               const pf::font&, const color_t text_color, const color_t bg_color) override
 		{
-			texts.push_back({x, y, std::string(text), text_color, bg_color});
+			texts.push_back({x, y, std::string(text), text_color, bg_color, clip});
 		}
 
 		isize measure_text(const std::string_view text, const pf::font&) const override

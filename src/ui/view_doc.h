@@ -491,7 +491,7 @@ namespace pf::ui
 		[[nodiscard]] int wrap_width() const
 		{
 			if (_view_extent.cx <= 0 || _font_extent.cx <= 0) return 80;
-			return std::max(1, (_view_extent.cx - text_left()) / _font_extent.cx);
+			return std::max(1, (_view_extent.cx - text_left() - right_content_padding()) / _font_extent.cx);
 		}
 
 		void calc_line_wrap_into(const text_line& line, std::vector<int>& breaks)
@@ -602,8 +602,12 @@ namespace pf::ui
 				const auto actual_pos = _doc->calc_offset(pt.y, pt.x);
 				auto new_offset = scroll_char();
 
-				if (actual_pos > new_offset + _screen_chars)
-					new_offset = actual_pos - _screen_chars;
+				// Text starts after text_left(), and the caret needs a cell of its own
+				// past the last character: scrolling by the whole width left both just
+				// off the right edge.
+				const auto visible = std::max(1, wrap_width() - 1);
+				if (actual_pos > new_offset + visible)
+					new_offset = actual_pos - visible;
 				if (actual_pos < new_offset)
 					new_offset = actual_pos;
 
@@ -1752,6 +1756,13 @@ namespace pf::ui
 			return _font_extent.cy > 0 ? _font_extent.cy : 0;
 		}
 
+		// Room kept clear at the right of each row, as text_left() keeps room on
+		// the left. A view that draws a border inside its box keeps a cell clear.
+		[[nodiscard]] virtual int right_content_padding() const
+		{
+			return 0;
+		}
+
 		// Content-space Y position of a document line (includes top padding)
 		[[nodiscard]] virtual int line_offset(const int lineIndex) const
 		{
@@ -1843,8 +1854,10 @@ namespace pf::ui
 						nDrawCodepoints = nCountFit;
 					}
 
+					// Scrolled right, a run can start left of the text area; its clip
+					// starts at the area's edge, or the run draws over the margin.
 					auto rcClipBlock = rcClip;
-					rcClipBlock.left = ptOrigin.x;
+					rcClipBlock.left = std::max(ptOrigin.x, rcClip.left);
 					rcClipBlock.right = ptOrigin.x + nDrawCodepoints * nCharWidth;
 					rcClipBlock.bottom = ptOrigin.y + _font_extent.cy;
 
