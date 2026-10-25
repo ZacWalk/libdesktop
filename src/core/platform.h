@@ -4,6 +4,8 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -11,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <bit>
 #include <charconv>
 #include <stdexcept>
@@ -20,6 +23,8 @@
 
 namespace pf
 {
+	constexpr uint32_t REPLACEMENT_CHAR = 0xfffdu;
+	constexpr uint32_t MAX_CODE_POINT = 0x10ffffu;
 	constexpr uint32_t LEAD_SURROGATE_MIN = 0xd800u;
 	constexpr uint32_t LEAD_SURROGATE_MAX = 0xdbffu;
 	constexpr uint32_t TRAIL_SURROGATE_MIN = 0xdc00u;
@@ -99,9 +104,12 @@ namespace pf
 	std::wstring u32_to_wstr(std::u32string_view str);
 	std::u32string wstr_to_u32(std::wstring_view str);
 
+	// The Latin-1 letters are folded explicitly because towlower depends on the process
+	// locale, which an app is not required to set — leaving accented text unfolded by default.
 	constexpr uint32_t to_lower(const uint32_t c)
 	{
 		if (c < 128) return c >= U'A' && c <= U'Z' ? c - U'A' + U'a' : c;
+		if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20;
 		if (c > USHRT_MAX) return c;
 		return towlower(c);
 	}
@@ -109,6 +117,7 @@ namespace pf
 	constexpr uint32_t to_upper(const uint32_t c)
 	{
 		if (c < 128) return c >= U'a' && c <= U'z' ? c - U'a' + U'A' : c;
+		if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return c - 0x20;
 		if (c > USHRT_MAX) return c;
 		return towupper(c);
 	}
@@ -176,25 +185,35 @@ namespace pf
 		return {std::bit_cast<const char*>(val.data()), val.size()};
 	}
 
-	inline std::wstring utf8_to_utf16(const std::string_view s)
+	inline void utf8_to_utf16(const std::string_view s, std::wstring& result)
 	{
-		std::wstring result;
-		result.reserve(s.size());
+		result.clear();
+		result.reserve(std::max(result.capacity(), s.size()));
 		auto i = s.begin();
 		while (i < s.end())
 		{
-			const auto cp = pop_utf8_char(i, s.end());
+			auto cp = pop_utf8_char(i, s.end());
+
+			// Surrogate halves and out-of-range values have no valid UTF-16 form
+			if (cp > MAX_CODE_POINT || is_lead_surrogate(cp) || is_trail_surrogate(cp))
+				cp = REPLACEMENT_CHAR;
 
 			if (cp > 0xffff)
 			{
-				result += static_cast<uint16_t>((cp >> 10) + LEAD_OFFSET);
-				result += static_cast<uint16_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
+				result += static_cast<wchar_t>((cp >> 10) + LEAD_OFFSET);
+				result += static_cast<wchar_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
 			}
 			else
 			{
-				result += static_cast<uint16_t>(cp);
+				result += static_cast<wchar_t>(cp);
 			}
 		}
+	}
+
+	inline std::wstring utf8_to_utf16(const std::string_view s)
+	{
+		std::wstring result;
+		utf8_to_utf16(s, result);
 		return result;
 	}
 
@@ -238,29 +257,22 @@ namespace pf
 		{
 			uint32_t cp = mask16(*start++);
 
+			// Unpaired surrogates are substituted rather than rejected: NTFS permits
+			// them in file names and the clipboard can contain them.
 			if (is_lead_surrogate(cp))
 			{
-				if (start != end)
+				if (start != end && is_trail_surrogate(mask16(*start)))
 				{
-					const uint32_t trail_surrogate = mask16(*start++);
-
-					if (is_trail_surrogate(trail_surrogate))
-					{
-						cp = (cp << 10) + trail_surrogate + SURROGATE_OFFSET;
-					}
-					else
-					{
-						throw std::invalid_argument("Invalid input string");
-					}
+					cp = (cp << 10) + mask16(*start++) + SURROGATE_OFFSET;
 				}
 				else
 				{
-					throw std::invalid_argument("Invalid input string");
+					cp = REPLACEMENT_CHAR;
 				}
 			}
 			else if (is_trail_surrogate(cp))
 			{
-				throw std::invalid_argument("Invalid input string");
+				cp = REPLACEMENT_CHAR;
 			}
 
 			char32_to_utf8(inserter, cp);
@@ -273,6 +285,14 @@ namespace pf
 		utf16_to_utf8(s, result);
 		return result;
 	};
+
+	// Short enough to stay inside the small-string buffer, so this does not allocate.
+	inline std::string utf8_encode(const char32_t cp)
+	{
+		std::string result;
+		char32_to_utf8(std::back_inserter(result), static_cast<uint32_t>(cp));
+		return result;
+	}
 
 	inline std::string to_lower(const std::string_view s)
 	{
@@ -305,6 +325,24 @@ namespace pf
 
 		return result;
 	}
+
+	// line_splitter — Reassembles newline-delimited records from arbitrary read chunks.
+	// A record longer than the limit is discarded and reading resyncs at the next newline,
+	// so a stream that never sends one cannot grow the buffer without bound.
+	struct line_splitter
+	{
+		static constexpr size_t default_max_line_bytes = 1024 * 1024;
+
+		std::string buffer;
+		bool discarding = false;
+		size_t max_line_bytes = default_max_line_bytes;
+		size_t discarded_count = 0;
+
+		void feed(std::string_view chunk, const std::function<void(std::string_view)>& emit);
+
+		// Emits whatever remains when the stream ends without a final newline
+		void flush(const std::function<void(std::string_view)>& emit);
+	};
 
 	constexpr int icmp(const std::string_view ll, const std::string_view rr)
 	{
@@ -574,6 +612,8 @@ namespace pf
 
 		[[nodiscard]] file_path combine(const std::string_view part) const
 		{
+			if (_path.empty()) return file_path{part};
+
 			auto result = _path;
 
 			if (!part.empty())
@@ -607,6 +647,10 @@ namespace pf
 		}
 
 		static file_path module_folder();
+
+		// The running executable's own path. module_folder() is this with the
+		// file name removed.
+		static file_path module_path();
 	};
 
 	struct ihash
@@ -682,6 +726,7 @@ namespace pf
 	{
 		constexpr unsigned int LButton = 0x01;
 		constexpr unsigned int RButton = 0x02;
+		constexpr unsigned int MButton = 0x04;
 		constexpr unsigned int Back = 0x08;
 		constexpr unsigned int Tab = 0x09;
 		constexpr unsigned int Return = 0x0D;
@@ -689,6 +734,8 @@ namespace pf
 		constexpr unsigned int Control = 0x11;
 		constexpr unsigned int Escape = 0x1B;
 		constexpr unsigned int Alt = 0x12;
+		constexpr unsigned int Pause = 0x13;
+		constexpr unsigned int CapsLock = 0x14;
 		constexpr unsigned int Space = 0x20;
 		constexpr unsigned int Prior = 0x21;
 		constexpr unsigned int Next = 0x22;
@@ -700,15 +747,45 @@ namespace pf
 		constexpr unsigned int Down = 0x28;
 		constexpr unsigned int Insert = 0x2D;
 		constexpr unsigned int Delete = 0x2E;
+
+		// Numeric keypad. Only reported when Num Lock is on; otherwise the
+		// keypad sends the navigation keys above.
+		constexpr unsigned int Numpad0 = 0x60;
+		constexpr unsigned int Numpad9 = 0x69;
+		constexpr unsigned int Multiply = 0x6A;
+		constexpr unsigned int Add = 0x6B;
+		constexpr unsigned int Subtract = 0x6D;
+		constexpr unsigned int Decimal = 0x6E;
+		constexpr unsigned int Divide = 0x6F;
+
 		constexpr unsigned int F1 = 0x70;
 		constexpr unsigned int F2 = 0x71;
 		constexpr unsigned int F3 = 0x72;
+		constexpr unsigned int F4 = 0x73;
 		constexpr unsigned int F5 = 0x74;
 		constexpr unsigned int F6 = 0x75;
 		constexpr unsigned int F7 = 0x76;
 		constexpr unsigned int F8 = 0x77;
 		constexpr unsigned int F9 = 0x78;
 		constexpr unsigned int F10 = 0x79;
+		constexpr unsigned int F11 = 0x7A;
+		constexpr unsigned int F12 = 0x7B;
+
+		constexpr unsigned int NumLock = 0x90;
+		constexpr unsigned int ScrollLock = 0x91;
+
+		// Punctuation, named for the US layout the codes are defined against.
+		constexpr unsigned int Semicolon = 0xBA;
+		constexpr unsigned int Equals = 0xBB;
+		constexpr unsigned int Comma = 0xBC;
+		constexpr unsigned int Minus = 0xBD;
+		constexpr unsigned int Period = 0xBE;
+		constexpr unsigned int Slash = 0xBF;
+		constexpr unsigned int Backtick = 0xC0;
+		constexpr unsigned int LeftBracket = 0xDB;
+		constexpr unsigned int Backslash = 0xDC;
+		constexpr unsigned int RightBracket = 0xDD;
+		constexpr unsigned int Quote = 0xDE;
 	}
 
 	// Key modifier flags for accelerator bindings
@@ -745,6 +822,7 @@ namespace pf
 		std::function<bool()> is_checked;
 		std::vector<menu_command> children;
 		key_binding accel;
+		key_binding accel_alt; // second binding for the same command; only accel is shown in the menu
 
 		menu_command() = default;
 
@@ -753,10 +831,11 @@ namespace pf
 		             std::function<void()> act,
 		             std::function<bool()> en = nullptr,
 		             std::function<bool()> chk = nullptr,
-		             const key_binding kb = {})
+		             const key_binding kb = {},
+		             const key_binding kb_alt = {})
 			: text(std::move(t)), id(cmd_id), action(std::move(act)),
 			  is_enabled(std::move(en)), is_checked(std::move(chk)),
-			  accel(kb)
+			  accel(kb), accel_alt(kb_alt)
 		{
 		}
 
@@ -821,6 +900,12 @@ namespace pf
 		mouse_activate,
 		context_menu,
 		set_cursor,
+		// Added after the rest so their values do not move. A right-button release
+		// still produces context_menu afterwards: it is reported as well, so an
+		// emulator or a drag can see the button come back up.
+		right_button_up,
+		middle_button_down,
+		middle_button_up,
 	};
 
 	// Bundled mouse parameters
@@ -832,6 +917,8 @@ namespace pf
 		bool shift = false;
 		int16_t wheel_delta = 0;
 		uint32_t hit_test = 0; // for set_cursor: HTCLIENT etc.
+		bool right_button = false;
+		bool middle_button = false;
 	};
 
 	// Keyboard message types — dispatched via handle_keyboard
@@ -839,14 +926,26 @@ namespace pf
 	enum class keyboard_message_type : unsigned int
 	{
 		key_down,
+		key_up,
 		char_input,
 	};
 
 	// Bundled keyboard parameters
 	struct keyboard_params
 	{
-		unsigned int vk = 0; // virtual key code (for key_down)
-		char ch = 0; // character (for char_input)
+		unsigned int vk = 0; // virtual key code (for key_down / key_up)
+		char32_t ch = 0; // codepoint (for char_input), surrogate pairs already combined
+		bool repeat = false; // key_down produced by auto-repeat rather than a fresh press
+	};
+
+	// Decoded payload for the messages that carry data. The platform layer does the
+	// decoding, so nothing above it sees raw OS parameters.
+	struct message_params
+	{
+		uint32_t timer_id = 0; // timer
+		double dpi_scale = 1.0; // dpi_changed
+		irect suggested_bounds; // dpi_changed — zero-sized when the OS suggested none
+		std::span<const file_path> dropped_paths; // drop_files
 	};
 
 	// Extract signed mouse coordinates from packed lParam (handles negative values on multi-monitor)
@@ -880,6 +979,8 @@ namespace pf
 		constexpr uint32_t search = 0xE721;
 		constexpr uint32_t settings = 0xE713;
 		constexpr uint32_t cancel = 0xE10A;
+		constexpr uint32_t favorite_star = 0xE734;       // outline star
+		constexpr uint32_t favorite_star_fill = 0xE735;  // filled star
 	}
 
 	struct font
@@ -925,6 +1026,14 @@ namespace pf
 	// Mirrors the previous shlwapi-based behaviour.
 	std::string resolve_url(std::string_view base, std::string_view rel);
 
+	// Map an IANA/HTML charset label to a platform code page. Returns 0 when
+	// the label is not recognised.
+	uint32_t charset_to_codepage(std::string_view charset);
+
+	// Transcode bytes in the given code page to UTF-8. A code page of 0 (or
+	// UTF-8) returns the input unchanged.
+	std::string transcode_to_utf8(std::string_view bytes, uint32_t codepage);
+
 
 	// Measure / Draw contexts
 	//
@@ -946,7 +1055,11 @@ namespace pf
 		virtual void fill_solid_rect(const irect& rc, color_t color) = 0;
 		virtual void fill_solid_rect(int x, int y, int cx, int cy, color_t color) = 0;
 
-		// Text output
+		// Text output.
+		// IMPORTANT: this fills `clip` with bg_color before drawing the text
+		// glyphs (Win32 backend uses ETO_OPAQUE). Pass a TIGHT rect — usually
+		// one sized from measure_text — never a full client rect, or you
+		// will erase whatever was drawn underneath.
 		virtual void draw_text(int x, int y, const irect& clip, std::string_view text,
 		                       const font& f, color_t text_color, color_t bg_color) = 0;
 		virtual isize measure_text(std::string_view text, const font& f) const = 0;
@@ -1052,6 +1165,11 @@ namespace pf
 		                                      color_t background) const & = 0;
 		virtual void close() = 0;
 		virtual int message_box(std::string_view text, std::string_view title, uint32_t style) = 0;
+
+		// Blit a 32-bit BGRA top-down frame straight to the window, outside any
+		// paint handler and without copying. For apps that own their frame loop.
+		virtual void present_pixels(const uint32_t* pixels, int cx, int cy) = 0;
+
 		// Menu
 		virtual void set_menu(std::vector<menu_command> menu_def) = 0;
 		// Measure context
@@ -1073,8 +1191,8 @@ namespace pf
 	struct frame_reactor
 	{
 		virtual ~frame_reactor() = default;
-		virtual uint32_t handle_message(window_frame_ptr window, message_type message, uintptr_t wParam,
-		                                intptr_t lParam) = 0;
+		virtual uint32_t handle_message(window_frame_ptr window, message_type message,
+		                                const message_params& params) = 0;
 
 		virtual uint32_t handle_mouse(window_frame_ptr window, mouse_message_type message,
 		                              const mouse_params& params)
@@ -1103,6 +1221,22 @@ namespace pf
 
 	// Load an embedded text resource (e.g. master.css). Returns empty on failure.
 	std::string platform_load_text_resource(int id);
+
+	// Data files compiled into the executable by platform_add_app(EMBED ...).
+	// Backend-independent: the build generates a translation unit that registers
+	// the table below before main runs, so no .rc and no numeric IDs are needed.
+	struct embedded_resource
+	{
+		std::string_view name;
+		const uint8_t* data;
+		size_t size;
+	};
+
+	void register_embedded_resources(const embedded_resource* items, size_t count);
+
+	// Empty when the name is not registered. The text form is null-terminated.
+	std::span<const uint8_t> embedded_resource_data(std::string_view name);
+	std::string_view embedded_resource_text(std::string_view name);
 
 	// Dialog / Message box constants
 	namespace dialog_id
@@ -1136,10 +1270,15 @@ namespace pf
 	//
 	bool is_directory(const file_path& path);
 	file_path current_directory();
+	// The current user's non-roaming application-data directory; empty on failure.
+	file_path local_app_data_path();
 
 	// File dialog
 	file_path open_file_path(std::string_view title, std::string_view filters);
 	file_path save_file_path(std::string_view title, const file_path& default_path, std::string_view filters);
+
+	// Folder picker. Empty when the user cancels.
+	file_path pick_folder_path(std::string_view title);
 
 	// File iteration
 	struct file_attributes_t
@@ -1232,13 +1371,18 @@ namespace pf
 	bool platform_move_file_replace(const char* source, const char* dest);
 	std::string platform_temp_file_path(const char* prefix);
 	std::string platform_last_error_message();
+	bool platform_delete_file(const file_path& path);
 	bool platform_recycle_file(const file_path& path);
 	bool platform_rename_file(const file_path& old_path, const file_path& new_path);
 	bool platform_create_directory(const file_path& path);
 	bool platform_copy_file(const file_path& source, const file_path& dest, bool fail_if_exists);
 
-	// Drag and drop
-	std::vector<file_path> dropped_file_paths(uintptr_t drop_handle);
+	// Absolute, with links followed where the target exists, so two paths can be compared safely
+	file_path canonical_path(const file_path& path);
+
+	// True when 'path' is 'root' or sits underneath it. Compares canonical forms, so neither
+	// '..' nor a junction can be used to reach outside 'root'.
+	bool is_path_within(const file_path& root, const file_path& path);
 
 	// Clipboard
 	bool platform_clipboard_has_text();
@@ -1259,14 +1403,128 @@ namespace pf
 	void debug_trace(const std::string& msg);
 	void write_stdout(std::string_view text);
 
+	// Reads up to capacity bytes from stdin, returning the count read and 0 at
+	// end of input. Binary-safe: no newline or encoding translation, so a stdio
+	// protocol server can frame its own messages.
+	size_t read_stdin(char* buffer, size_t capacity);
+
+	// Binds stdout/stderr to the parent console. A GUI-subsystem executable has
+	// no console of its own, so printf is invisible from a CLI mode until this
+	// has run.
+	void attach_console();
+
 	// Configuration (INI file)
+	void config_set_app_name(std::string_view app_name);
 	std::string config_read(std::string_view section, std::string_view key,
 	                        std::string_view default_value = {});
 	void config_write(std::string_view section, std::string_view key, std::string_view value);
 
-	// background tasks
+	// Commits any buffered configuration to disk. Backends that write through
+	// on every config_write have nothing to do here.
+	void config_flush();
+
+	// A four-worker pool, available before app_init/platform_run; tasks may overlap.
 	void run_async(std::function<void()> task);
+	// Queues callbacks for the UI thread, or pump_ui_tasks in headless modes.
 	void run_ui(std::function<void()> task);
+
+	struct serial_executor
+	{
+		virtual ~serial_executor() = default;
+		// Rejects empty tasks and submissions after stop; accepted tasks run FIFO.
+		virtual bool post(std::function<void()> task) = 0;
+		// Drains and joins, except on its own worker where draining continues after return.
+		virtual void stop() = 0;
+	};
+
+	using serial_executor_ptr = std::unique_ptr<serial_executor>;
+
+	// Starts a dedicated worker immediately; nullptr on failure. Destruction calls stop.
+	serial_executor_ptr create_serial_executor();
+
+	// Waits up to 'timeout_ms' for queued UI work and runs it. Only for command-line modes,
+	// which have no message loop; the GUI drains the same queue from platform_run.
+	void pump_ui_tasks(int timeout_ms);
+
+	struct instance_lock
+	{
+		virtual ~instance_lock() = default;
+	};
+
+	using instance_lock_ptr = std::unique_ptr<instance_lock>;
+
+	struct instance_lock_result
+	{
+		instance_lock_ptr lock;
+		bool already_running = false;
+		std::string error;
+	};
+
+	// One holder per user across login sessions; destruction releases it on any thread.
+	// Names contain 1–128 ASCII letters, digits, '.', '_' or '-'; failures populate error.
+	instance_lock_result try_lock_instance(std::string_view name);
+
+	// ── Child processes ────────────────────────────────────────────────────────────────────
+	// Used to host a tool that speaks a line-based protocol over its standard streams.
+
+	struct process_options
+	{
+		std::string exe, cwd;
+		std::vector<std::string> args, env; // NAME=VALUE overrides of the inherited environment.
+		bool kill_descendants_on_close = true;
+	};
+
+	struct process;
+	using process_ptr = std::shared_ptr<process>;
+
+	// Binary streams; drain stdout and stderr independently. Zero means EOF/error/cancelled.
+	// Calls on separate shared_ptr copies are thread-safe; writes are serialized whole.
+	process_ptr process_spawn(const process_options&);
+	size_t process_read(const process_ptr&, char* buffer, size_t bytes);
+	size_t process_read_err(const process_ptr&, char* buffer, size_t bytes);
+	bool process_write(const process_ptr&, std::string_view);
+	// Cancels an outstanding write and closes stdin; terminate also cancels both readers.
+	void process_close_input(const process_ptr&);
+	bool process_alive(const process_ptr&);
+	void process_terminate(const process_ptr&);
+
+
+	struct child_process
+	{
+		virtual ~child_process() = default;
+
+		// Appends a newline, so 'text' must not contain one
+		virtual bool write_line(std::string_view text) = 0;
+		virtual void close_input() = 0;
+		virtual void terminate() = 0;
+		[[nodiscard]] virtual bool is_running() const = 0;
+	};
+
+	using child_process_ptr = std::unique_ptr<child_process>;
+
+	// Every callback is delivered on the UI thread, and none fires after the process is destroyed
+	struct child_process_callbacks
+	{
+		std::function<void(std::string_view)> on_stdout_line;
+		std::function<void(std::string_view)> on_stderr_line;
+		std::function<void(int)> on_exit;
+	};
+
+	// Returns nullptr when the process could not be started
+	child_process_ptr spawn_child_process(const file_path& exe,
+	                                      std::span<const std::string> args,
+	                                      const file_path& working_dir,
+	                                      child_process_callbacks callbacks);
+
+	// Searches PATH, applying PATHEXT when 'name' has no extension. Empty when not found.
+	file_path find_executable(std::string_view name);
+
+	// Quotes one argument by the CommandLineToArgvW rules, so it cannot be split or injected
+	std::string quote_command_arg(std::string_view arg);
+
+	// True when a string holds a character cmd.exe would act on. A batch file is run through
+	// cmd.exe, where quoting alone does not make an argument safe, so such arguments are refused.
+	bool has_shell_metacharacter(std::string_view text);
 
 	// network
 	bool is_online();
@@ -1296,6 +1554,22 @@ namespace pf
 		file_path download_file_path;
 
 		web_request_verb verb = web_request_verb::GET;
+
+		bool follow_redirects = true;
+		bool use_cookies = true;
+		// Zero leaves body/initial-header storage unbounded; limits count bytes, not characters.
+		size_t max_response_bytes = 0;
+		size_t max_header_bytes = 0;
+		// Per network operation, including connection establishment; zero retains 30 seconds.
+		uint32_t timeout_ms = 0;
+	};
+
+	enum class web_response_error
+	{
+		none,
+		invalid_request,
+		transport,
+		response_limit
 	};
 
 	struct web_response
@@ -1304,6 +1578,8 @@ namespace pf
 		std::string body;
 		std::string content_type;
 		int status_code = 0;
+		// HTTP error status codes are still valid responses. On acquisition failure body is empty.
+		web_response_error error = web_response_error::none;
 	};
 
 	struct web_host;
@@ -1343,6 +1619,69 @@ namespace pf
 
 	// Load an encoded image from an embedded resource (RT_RCDATA by default).
 	bitmap_ptr load_bitmap_named_resource(std::string_view name, std::string_view type = "RCDATA");
+
+	// ── Audio ─────────────────────────────────────────────────────────────────
+	//
+	// Sample playback for short sounds held entirely in memory.
+	struct sound_buffer
+	{
+		virtual ~sound_buffer() = default;
+
+		virtual void play(bool loop = false) = 0;
+		virtual void stop() = 0;
+
+		// Playback sample rate, which is how a sample is pitch-shifted.
+		virtual void set_frequency(uint32_t hz) = 0;
+
+		// Linear amplitude: 0 is silent, 1 is the sample unattenuated.
+		virtual void set_volume(float gain) = 0;
+
+		// -1 is hard left, 0 centre, +1 hard right.
+		virtual void set_pan(float pan) = 0;
+
+		// Play cursor as a byte offset into the sample data. Empty when the
+		// device cannot report it.
+		[[nodiscard]] virtual std::optional<uint32_t> play_position() const = 0;
+		virtual void set_play_position(uint32_t pos) = 0;
+	};
+
+	using sound_buffer_ptr = std::shared_ptr<sound_buffer>;
+
+	bool sound_init();
+	void sound_shutdown();
+
+	// Takes the bytes of a RIFF/WAVE file, typically an embedded resource.
+	sound_buffer_ptr create_sound_buffer(std::span<const uint8_t> wav);
+
+	// Continuous playback of 16-bit PCM the caller generates as it goes — a
+	// synthesiser, a decoder, an emulated sound chip. The queue is also a
+	// clock: the device drains it at exactly the sample rate, so a producer
+	// that waits for room runs at real time without consulting the wall clock.
+	struct audio_stream
+	{
+		virtual ~audio_stream() = default;
+
+		// Blocks handed over and not yet finished playing.
+		[[nodiscard]] virtual int queued_blocks() const = 0;
+
+		// True while the queue has room for another write.
+		[[nodiscard]] virtual bool can_write() const = 0;
+
+		// Copies one block of interleaved samples and queues it. False when
+		// the queue is full, in which case nothing was consumed.
+		virtual bool write(std::span<const int16_t> samples) = 0;
+
+		// Linear amplitude: 0 is silent, 1 is the samples unattenuated.
+		virtual void set_volume(float gain) = 0;
+
+		// Drops whatever is queued and silences the stream.
+		virtual void stop() = 0;
+	};
+
+	using audio_stream_ptr = std::shared_ptr<audio_stream>;
+
+	// max_blocks bounds both latency and how far ahead the producer may run.
+	audio_stream_ptr create_audio_stream(uint32_t sample_rate, int channels, int max_blocks = 4);
 
 	// ── Async HTTP ────────────────────────────────────────────────────────────
 	//
@@ -1407,6 +1746,7 @@ namespace pf
 		std::string tooltip;
 		std::function<void()> action;
 		std::function<bool()> is_enabled;
+		std::function<bool()> is_checked; // optional toggle state
 	};
 
 	struct address_bar_config
@@ -1432,6 +1772,7 @@ namespace pf
 		color_t text_color = color_t(0, 0, 0);
 		color_t button_color = color_t(64, 64, 64);
 		color_t button_hover = color_t(220, 220, 220);
+		color_t button_checked = color_t(0, 120, 212); // accent for checked buttons
 		color_t border_color = color_t(200, 200, 200);
 
 		int height = 54; // dialog units (scaled by DPI on use)
@@ -1479,6 +1820,15 @@ struct app_init_result
 {
 	bool start_gui = true;
 	int exit_code = 0;
+
+	// Run the UI offscreen: a real window with real painting, but never visible
+	// and never focused, so automated runs don't disrupt the desktop.
+	bool offscreen_gui = false;
+
+	// When set, the platform hands control here instead of running its own
+	// message loop — for apps that need a free-running frame loop and pump
+	// messages themselves with pf::platform_events().
+	std::function<int()> main_loop;
 };
 
 

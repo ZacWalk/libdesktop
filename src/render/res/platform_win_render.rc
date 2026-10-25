@@ -1,0 +1,58 @@
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// Copyright 2026  Zac Walker
+// 
+// This program is free software; you can redistribute it and / or modify it
+// under the terms of the LGPL License either version 2.1 or later.
+// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+
+// Purpose: The desktop UI's own Windows resources - its cursors, the drop shadow and the Direct3D
+// shaders. An application's resource script includes this inside its language block, and supplies the
+// window icon and the icon font under the IDs platform_win_render_res.h names.
+
+#include "libdesktop/platform_win_render_res.h"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Cursor
+//
+
+IDC_SELECT              CURSOR                  "select.cur"
+
+IDC_MOVE                CURSOR                  "move.cur"
+
+IDC_HANDLINK            CURSOR                  "hand.cur"
+
+IDC_COLORSELECT         CURSOR                  "color_select.cur"
+
+IDC_HANDDOWN            CURSOR                  "hand_down.cur"
+
+IDC_HANDUP              CURSOR                  "hand_up.cur"
+
+IDC_ZOOM                CURSOR                  "zoom.cur"
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// PNG
+//
+
+IDB_SHADOW              PNG                     "shadow.png"
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// SHADER
+//
+
+IDR_SHADER_SOLID        SHADER                  "solid_ps.cso"
+IDR_SHADER_VERTEX       SHADER                  "vs.cso"
+IDR_SHADER_RGB          SHADER                  "rgb_ps.cso"
+IDR_SHADER_RGB_BICUBIC  SHADER          "rgb_bicubic_ps.cso"
+IDR_SHADER_YUV          SHADER                  "yuv_ps.cso"
+IDR_SHADER_YUV_BICUBIC  SHADER          "yuv_bicubic_ps.cso"
+IDR_SHADER_YUV_HDR      SHADER                  "yuv_hdr_ps.cso"
+IDR_SHADER_YUV_HDR_BICUBIC SHADER               "yuv_hdr_bicubic_ps.cso"
+IDR_SHADER_FONT         SHADER                  "font_ps.cso"
+IDR_SHADER_CIRCLE       SHADER                "circle_ps.cso"
+IDR_SHADER_PANO         SHADER                  "pano_ps.cso"

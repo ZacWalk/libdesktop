@@ -1,0 +1,10 @@
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// Purpose: The render suite's resources: the module's own, included as an application's script includes
+// them, inside its language block.
+
+#include "winres.h"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+#include "platform_win_render.rc"

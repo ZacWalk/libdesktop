@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The vendored dd runtime locates Visual Studio, enters the MSVC
+      # environment and uses the CMake and Ninja that ship with it.
+      - name: Validate pinned dependency declarations
+        shell: pwsh
+        run: ./dd.ps1 dep install --non-interactive
+
+      - name: Check native toolchain
+        shell: pwsh
+        run: ./dd.ps1 doctor --non-interactive
+
+      - name: Build and test Debug and Release
+        shell: pwsh
+        run: ./dd.ps1 test --non-interactive
+
+  # On Linux only libdesktop-system and libdesktop-render build; the commands are the README's.
+  linux:
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+
+      - name: Build
+        run: cmake --build build/linux
+
+      - name: Test
+        run: ctest --test-dir build/linux --output-on-failure
