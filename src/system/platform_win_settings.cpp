@@ -12,62 +12,14 @@
 
 #include "libdesktop/system.h"
 #include "libdesktop/platform_win.h"
+#include "libdesktop/os.h"
 #include "libdesktop/util_base64.h"
-
-// An INI line cannot hold a line break, so each is stored as DLE and a letter, and DLE itself as two.
-// Values written before held no DLE and read back unchanged; a backslash could not be the escape, as
-// Windows paths are full of them. platform_linux_settings.cpp stores them the same way.
-static constexpr char ini_escape = '\x10';
-
-static std::string escape_ini_value(const std::string_view v)
-{
-	std::string result;
-	result.reserve(v.size());
-
-	for (const auto c : v)
-	{
-		if (c == '\r' || c == '\n' || c == ini_escape)
-		{
-			result += ini_escape;
-			result += c == '\r' ? 'r' : c == '\n' ? 'n' : ini_escape;
-		}
-		else
-		{
-			result += c;
-		}
-	}
-
-	return result;
-}
-
-static std::string unescape_ini_value(const std::string_view v)
-{
-	std::string result;
-	result.reserve(v.size());
-
-	for (size_t i = 0; i < v.size(); ++i)
-	{
-		const auto next = i + 1 < v.size() ? v[i + 1] : '\0';
-
-		if (v[i] == ini_escape && (next == 'r' || next == 'n' || next == ini_escape))
-		{
-			result += next == 'r' ? '\r' : next == 'n' ? '\n' : ini_escape;
-			++i;
-		}
-		else
-		{
-			result += v[i];
-		}
-	}
-
-	return result;
-}
 
 // INI file implementation of setting_file interface
 // Stores settings in an INI file in the same folder as the database
 class setting_file_ini final : public platform::setting_file
 {
-	std::wstring _ini_path;
+	os::ini_store_ptr _store;
 	bool _root_created = false;
 	bool _initialization_failed = false;
 
@@ -76,8 +28,6 @@ public:
 	{
 		// Create the INI file path in the same folder as the database
 		const auto ini_file_path = folder.combine_file(std::format("{}.ini", df::app_file_stem()));
-		_ini_path = str::utf8_to_utf16(ini_file_path.str());
-		_root_created = !platform::exists(ini_file_path);
 
 		// Ensure the folder exists
 		if (!folder.exists())
@@ -91,30 +41,9 @@ public:
 			}
 		}
 
-		const auto file = CreateFileW(_ini_path.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW,
-		                              FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (file == INVALID_HANDLE_VALUE)
-		{
-			const auto error = GetLastError();
-			if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
-			{
-				_initialization_failed = true;
-				df::log(__FUNCTION__, std::format("Cannot initialize INI settings: {}", error));
-			}
-			return;
-		}
-
-		const df::scope_exit close([file] { CloseHandle(file); });
-		constexpr uint8_t bom[] = {0xff, 0xfe};
-		DWORD written = 0;
-		if (!WriteFile(file, bom, sizeof(bom), &written, nullptr) || written != sizeof(bom))
-		{
-			_initialization_failed = true;
-			df::log(__FUNCTION__, std::format("Cannot write Unicode INI header: {}", GetLastError()));
-			FILE_DISPOSITION_INFO disposition{TRUE};
-			if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)))
-				df::log(__FUNCTION__, "Cannot remove incomplete INI settings file");
-		}
+		_store = os::open_ini_store(ini_file_path.pack(), true);
+		_root_created = _store && _store->root_created();
+		_initialization_failed = !_store;
 	}
 
 	bool root_created() const override
@@ -134,18 +63,8 @@ public:
 
 	bool write(const std::string_view section, const std::string_view name, const std::string_view v) override
 	{
-		if (_initialization_failed) return false;
-		const auto section_w = str::utf8_to_utf16(section);
-		const auto name_w = str::utf8_to_utf16(name);
-		const auto value_w = str::utf8_to_utf16(std::format("\"{}\"", escape_ini_value(v)));
-
-		const auto written = WritePrivateProfileStringW(
-			section_w.c_str(),
-			name_w.c_str(),
-			value_w.c_str(),
-			_ini_path.c_str()) != 0;
-		if (!written) df::log(__FUNCTION__, std::format("Cannot write INI settings: {}", GetLastError()));
-		return written;
+		if (_initialization_failed || !_store) return false;
+		return _store->write(section, name, std::format("\"{}\"", os::escape_ini_value(v)));
 	}
 
 	bool write(const std::string_view section, const std::string_view name, const df::cspan cs) override
@@ -180,44 +99,11 @@ public:
 
 	bool read(const std::string_view section, const std::string_view name, std::string& v) const override
 	{
-		const auto section_w = str::utf8_to_utf16(section);
-		const auto name_w = str::utf8_to_utf16(name);
-
-		// What GetPrivateProfileString returns for a key that is not there. A stored value escapes
-		// every DLE it holds, so it can never be a lone one: a key stored empty reads back as empty
-		// rather than as missing, which handed back the default in place of a value the user cleared.
-		static constexpr wchar_t absent[] = {static_cast<wchar_t>(ini_escape), L'\0'};
-
-		// Start with a reasonable buffer size
-		std::vector<wchar_t> buffer(1024);
-
-		while (true)
-		{
-			const DWORD result = GetPrivateProfileStringW(
-				section_w.c_str(),
-				name_w.c_str(),
-				absent,
-				buffer.data(),
-				static_cast<DWORD>(buffer.size()),
-				_ini_path.c_str());
-
-			// If the result is less than buffer size - 1, we got all the data
-			if (result < buffer.size() - 1)
-			{
-				const std::wstring_view text(buffer.data(), result);
-				if (text == std::wstring_view(absent, 1)) return false;
-
-				v = unescape_ini_value(str::utf16_to_utf8(text));
-				return true;
-			}
-
-			// Buffer was too small, double it and try again
-			buffer.resize(buffer.size() * 2);
-			if (buffer.size() > 1024 * 1024) // Safety limit of 1MB
-			{
-				return false;
-			}
-		}
+		if (_initialization_failed || !_store) return false;
+		const auto raw = _store->read(section, name);
+		if (!raw) return false;
+		v = os::unescape_ini_value(*raw);
+		return true;
 	}
 
 	bool read(const std::string_view section, const std::string_view name, uint8_t* data,

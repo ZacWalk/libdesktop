@@ -251,6 +251,42 @@ namespace
 			return total;
 		}
 
+		uint64_t read_at(const uint64_t offset, uint8_t* buf, const uint64_t buf_size) const override
+		{
+			uint64_t total = 0;
+			while (total < buf_size)
+			{
+				const auto n = ::pread(_fd, buf + total, buf_size - total,
+				                       static_cast<off_t>(offset + total));
+				if (n < 0)
+				{
+					if (errno == EINTR) continue;
+					break;
+				}
+				if (n == 0) break;
+				total += static_cast<uint64_t>(n);
+			}
+			return total;
+		}
+
+		uint64_t write_at(const uint64_t offset, const uint8_t* data, const uint64_t size) override
+		{
+			uint64_t total = 0;
+			while (total < size)
+			{
+				const auto n = ::pwrite(_fd, data + total, size - total,
+				                        static_cast<off_t>(offset + total));
+				if (n < 0)
+				{
+					if (errno == EINTR) continue;
+					break;
+				}
+				if (n == 0) break;
+				total += static_cast<uint64_t>(n);
+			}
+			return total;
+		}
+
 		bool flush() const override
 		{
 			return ::fsync(_fd) == 0;
@@ -452,6 +488,7 @@ platform::file_ptr platform::open_file(const df::file_path path, const file_open
 	switch (mode)
 	{
 	case file_open_mode::read:
+	case file_open_mode::read_shared:
 	case file_open_mode::sequential_scan:
 		flags = O_RDONLY;
 		break;
@@ -460,6 +497,12 @@ platform::file_ptr platform::open_file(const df::file_path path, const file_open
 		break;
 	case file_open_mode::create:
 		flags = O_RDWR | O_CREAT | O_TRUNC;
+		break;
+	case file_open_mode::create_exclusive:
+		flags = O_RDWR | O_CREAT | O_TRUNC;
+		break;
+	case file_open_mode::create_new:
+		flags = O_RDWR | O_CREAT | O_EXCL;
 		break;
 	case file_open_mode::read_write:
 		flags = O_RDWR;
@@ -475,6 +518,46 @@ platform::file_ptr platform::open_file(const df::file_path path, const file_open
 	}
 
 	return std::make_shared<posix_file>(fd, path);
+}
+
+platform::file_ptr platform::open_file_lock(const df::file_path path, const file_lock_mode mode)
+{
+	// Linux has no portable rename-by-open-file primitive with the same identity guarantee as
+	// SetFileInformationByHandle. Keep the read token available for callers that only need the
+	// identity, but the token move/delete operations below refuse to emulate that guarantee.
+	auto fd = ::open(path.str().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) return {};
+	const df::scope_exit close_on_failure([&fd]
+	{
+		if (fd >= 0)
+		{
+			const auto error = errno;
+			::close(fd);
+			errno = error;
+		}
+	});
+	struct stat state{};
+	if (::fstat(fd, &state) != 0) return {};
+	if (mode == file_lock_mode::read && !S_ISREG(state.st_mode))
+	{
+		errno = S_ISDIR(state.st_mode) ? EISDIR : EINVAL;
+		return {};
+	}
+	auto result = std::make_shared<posix_file>(fd, path);
+	fd = -1;
+	return result;
+}
+
+platform::file_op_result platform::move_file(const platform::file_ptr&, const df::file_path, const bool)
+{
+	return {file_op_result_code::FAILED,
+	        "Identity-pinned rename is unavailable on this backend; pathname rename was not attempted.", {}};
+}
+
+platform::file_op_result platform::delete_file(const platform::file_ptr&)
+{
+	return {file_op_result_code::FAILED,
+	        "Identity-pinned delete is unavailable on this backend; pathname delete was not attempted.", {}};
 }
 
 platform::mapped_file_ptr platform::map_file(const df::file_path path, const map_mode mode)
@@ -538,6 +621,54 @@ platform::file_op_result platform::make_file_writable(const df::file_path path)
 	}
 
 	return {file_op_result_code::OK};
+}
+
+platform::file_op_result platform::set_file_attributes(const df::file_path path,
+                                                        const std::optional<uint64_t> modified,
+                                                        const std::optional<bool> readonly)
+{
+	struct stat st = {};
+	if (::stat(path.str().c_str(), &st) != 0)
+		return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+
+	if (modified)
+	{
+		constexpr uint64_t unix_epoch_in_filetime = 11'644'473'600ull * 10'000'000ull;
+		if (*modified < unix_epoch_in_filetime)
+			return {file_op_result_code::FAILED, "The timestamp is before the Unix epoch."};
+		const auto unix_ticks = *modified - unix_epoch_in_filetime;
+		const timespec times[2] = {
+			{st.st_atim.tv_sec, st.st_atim.tv_nsec},
+			{static_cast<time_t>(unix_ticks / 10'000'000ull),
+			 static_cast<long>((unix_ticks % 10'000'000ull) * 100)}
+		};
+		if (::utimensat(AT_FDCWD, path.str().c_str(), times, 0) != 0)
+			return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+	}
+
+	if (readonly)
+	{
+		auto mode = st.st_mode;
+		if (*readonly) mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+		else mode |= S_IWUSR;
+		if (::chmod(path.str().c_str(), mode) != 0)
+			return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+	}
+
+	return {file_op_result_code::OK};
+}
+
+std::optional<double> platform::file_age_seconds(const df::file_path path)
+{
+	const auto attributes = file_attributes(path);
+	if (!attributes.exists()) return {};
+
+	const auto now = std::chrono::system_clock::now().time_since_epoch();
+	const auto current = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()) /
+	                     1000.0;
+	constexpr double filetime_to_unix = 11'644'473'600.0;
+	const auto modified = static_cast<double>(attributes.modified) / 10'000'000.0 - filetime_to_unix;
+	return std::max(0.0, current - modified);
 }
 
 platform::file_op_result platform::create_folder(const df::folder_path path)

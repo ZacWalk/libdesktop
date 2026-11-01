@@ -10,23 +10,10 @@ of this list. Current limitations are listed under *Known gaps* in the
 A service libdesktop-core and libdesktop-system both implement moves into
 libdesktop-os one at a time, held to both suites' record of its outcomes
 ([AGENTS.md](../AGENTS.md#libdesktop-os)). The web client, clipboard text, known
-folders and audio output have moved. Done when each pair below has one
-implementation and both suites pass.
-
-- [ ] **Files and file dialogs.** pf:: wraps Win32 thinly over `pf::file_path`,
-      UTF-8 text, and reports failure through `GetLastError` - dde words its
-      errors from it - while libdesktop-system works in `df::file_path`, with
-      extended-length paths, shell operations and `file_op_result`. Decide first
-      how the merged service takes a path - UTF-8, and when it adds the `\\?\`
-      prefix, which a relative path cannot take - and how it reports failure;
-      then record both stacks' outcomes for copy, move, rename, delete, recycle,
-      folder creation, enumeration and the dialogs before moving them.
-- [ ] **Settings.** pf:: keeps an INI beside the executable, else in a temporary
-      folder; libdesktop-system keeps the registry or its own INI, with escaped
-      line breaks. Merge the store, not the locations: every application must
-      go on reading the settings its users already have.
-- [ ] **pf::'s default user agent.** An empty user agent sends `PotatoApp/1.0`,
-      which names an application. Make the default neutral, or require one.
+folders, audio output, files, dialogs and the escaped-INI store have moved on
+Windows. The wrappers retain their own paths, settings locations, registry
+policy and result types; Linux keeps its native headless implementations until
+an os backend exists.
 
 Not duplicates, so not merged: pf::'s child processes, with pipes and line
 callbacks, beside `platform::run`, which starts a program and returns;
@@ -37,10 +24,6 @@ spell checker and Hunspell, WIC and libfiles.
 
 ## libdesktop-system
 
-- [ ] **`df::blob` adopts a `std::vector`.** Diffractor copies each encoded
-      image from libfiles' `std::vector` into a `df::blob`, which cannot take
-      ownership of one. Done when the blob can adopt the vector and Diffractor's
-      encoders drop the copy.
 - [ ] **Retire the `_snscanf_s` shim on Linux.** Dates parse by one rule
       everywhere (`date_text`), but Diffractor still reads XMP rationals,
       property ratios and search terms with `_snscanf_s`, which can differ
@@ -52,19 +35,10 @@ spell checker and Hunspell, WIC and libfiles.
 Each module was extracted from one application. A second adopter is where its
 design is tested; read the adopter's tests before replacing its code.
 
-- [ ] **libdesktop-system: ImageWalker 3.0.** Its forked
-      `include/core/util.h`, `util_layout.h` and `util_geometry.h` overlap
-      `df::` and `str::`, and `util_geometry` is part of libiw's public API.
-      Re-measure the divergence when the work starts.
-- [ ] **libdesktop-core: ImageWalker 3.0's `src30/Platform*`.** `iw::platform`
-      copies `pf::`'s shape; move it onto `pf::`, and its types onto
-      libdesktop-system.
-- [ ] **libdesktop-render: zpilot.** zpilot draws with its own Direct3D 11
-      renderer.
-- [ ] **The raw-Win32 apps.** lib8bit's `app/`, sys-mate, ergo-active,
-      fast-draw, low-ban and vector-experiments' `platform.hpp` each carry their
-      own window, message loop and GDI helpers. Move each only once libdesktop
-      has what it needs; their Windows SDK code may stay where it is.
+- [ ] **A second libdesktop-render consumer.** Its window model still serves
+      Diffractor alone. zpilot uses core windowing and audio while retaining
+      its specialized HDR/bloom/CRT renderer; do not replace that renderer
+      merely to adopt another target.
 - [ ] **More of `src/ui` in libdesktop-text.** Diffractor's read-only document
       view draws text and dumps itself, coloured by libdesktop-text. Rendered
       Markdown or CSV tables there would want `ui/markdown.h` (standard C++ but

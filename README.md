@@ -11,7 +11,7 @@ A small C++20 platform layer for desktop applications, in six static libraries:
 | **libdesktop-text** | `libdesktop::text` | The part of `src/ui` that is standard C++ alone: the text layer's vocabulary (`text_types.h`) and the syntax highlighters (`syntax.h`), in `pf::ui`. libdesktop-ui is written in it; an application on another window model links it alone to colour text it draws itself. |
 | **libdesktop-system** | `libdesktop::system` | The foundation and OS services that began as Diffractor's, in `include/libdesktop`: `df::` and `str::` (strings, paths, dates, geometry, containers, hashing, logging, JSON) and `platform::` (files, settings, processes, threads, known folders, the shell, sharing, the web, crash recovery), for Windows and Linux. Opt in with `LIBDESKTOP_SYSTEM`; [docs/system.md](docs/system.md) describes it. |
 | **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, controls and commands, the Direct3D 11 and software renderers, DirectWrite text, WIC, native controls, Media Foundation movie writing and sound, for Windows, with Linux stand-ins. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
-| **libdesktop-os** | `libdesktop::os` | The OS services libdesktop-core and libdesktop-system share, in `os::`: the web client, clipboard text, known folders and the audio endpoint both stacks' sound plays through. A service here names no application and writes no log, so both call it; neither exposes it to an application. Windows only so far. |
+| **libdesktop-os** | `libdesktop::os` | The OS services libdesktop-core and libdesktop-system share, in `os::`: UTF-8/extended-path files and dialogs, escaped INI storage, the web client, clipboard text, known folders and the audio endpoint both stacks' sound plays through. A service here names no application and writes no log, so both call it; neither exposes it to an application. Windows only so far. |
 
 libdesktop-ui operates on a UTF-8 text buffer the application hands it. It never
 opens a file, never knows a path, and never names an application — loading and
@@ -29,6 +29,16 @@ Linux implementations are still libdesktop-system's own.
 [libdos](https://github.com/ZacWalk/libdos)'s dui on libdesktop-core; and
 [Diffractor](https://github.com/ZacWalk/diffractor) on libdesktop-system,
 libdesktop-render and libdesktop-text.
+[ImageWalker](https://github.com/ZacWalk/imagewalker)'s shared imaging adapters
+use core and system, and its 3.0 GUI also uses ui; the historical WTL releases
+retain their own interfaces. [lib8bit](https://github.com/ZacWalk/lib8bit)'s
+host, [fast-draw](https://github.com/ZacWalk/fast-draw),
+[low-ban](https://github.com/ZacWalk/low-ban) and
+[zpilot](https://github.com/ZacWalk/zpilot) use core.
+[SysMate](https://github.com/ZacWalk/sys-mate) uses core and ui;
+[ergo-active](https://github.com/ZacWalk/ergo-active) also uses system.
+Camera and monitoring APIs, printing and zpilot's specialized Direct3D
+renderer remain explicit application backends, not alternate window layers.
 
 ## Architecture
 
@@ -40,13 +50,14 @@ somewhere other than Windows, it does not belong here.
 | Category   | Key types / functions |
 |------------|----------------------|
 | Text       | UTF-8/16/32 conversion, `pop_utf8_char`, `utf8_truncate`, surrogate handling with `U+FFFD` substitution |
-| Windowing  | `window_frame`, `frame_reactor`, the `app_init` / `app_idle` / `app_destroy` callbacks |
-| Drawing    | `draw_context` — shapes, text, bitmaps, clipping; `present_pixels` for app-owned frame loops |
+| Windowing  | `window_frame`, `frame_reactor`, neutral `window_options` (initial/minimum client size and fullscreen), `platform_events`, and the `app_init` / `app_idle` / `app_destroy` callbacks |
+| Drawing    | `draw_context` — shapes, text, bitmaps, clipping; shared pixel surfaces and `present_pixels` for app-owned frame loops |
 | Fonts      | Creation, measurement (thread-local measurement DC), metrics |
 | Menus      | Menu tree with accelerators, built at runtime |
 | Input      | Mouse, keyboard (`key_down` / `key_up` / `char_input`), focus, caret |
 | Clipboard  | Copy / paste text |
-| Files      | Paths, enumeration, open/save/folder dialogs, config ini, `is_path_within`, `local_app_data_path` |
+| Files      | UTF-8/extended paths, structured errors, atomic writers, identity/hash services, enumeration, open/save/folder dialogs, explicit INI/registry settings, config ini, `is_path_within`, local/roaming app-data paths |
+| Images     | WIC bitmap loading, bounded thumbnail/area decoding, cancellation, progress, original dimensions in the returned orientation, metadata probing and installed-extension discovery; neutral BGRA blending/interpolation and bounded OLE compound-preview rasterisation; native codecs remain libfiles' responsibility |
 | Networking | `web_request` / `web_response`, plus an async HTTP client |
 | Audio      | `sound_buffer` for a sample held in memory; `audio_stream` for PCM the app generates as it goes |
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
@@ -58,10 +69,26 @@ somewhere other than Windows, it does not belong here.
 ### Backends
 
 - **`platform_win.cpp`** — the Win32 implementation: `WinMain` and the message
-  loop, GDI drawing, WIC image decoding, WinHTTP (asynchronous) networking,
-  common dialogs, clipboard, spell checking. The synchronous web client,
-  clipboard text and the per-user storage folder are libdesktop-os's, which
-  `pf::` wraps.
+  loop, GDI drawing, WinHTTP (asynchronous) networking,
+  common dialogs, clipboard, spell checking, the optional tray service and
+  second-launch signal. The synchronous web client, files, dialogs, settings,
+  clipboard text and known folders are libdesktop-os's, which `pf::` wraps.
+- **`platform_win_image.cpp`** — the WIC bitmap adapter, kept separate so
+  historical applications and console consumers can load images without
+  pulling in the GUI entry point's application callbacks. Probes report
+  stored dimensions and the remaining orientation; decoded results report
+  original dimensions in their returned orientation. Structured file/probe
+  APIs normalize extended paths for literal filenames; legacy loaders retain
+  their original filename policy. Each entry point owns a balanced COM
+  initialization, including calls made from an existing STA or MTA.
+- **`platform_pixel.cpp` / `platform_pixel_avx2.cpp`** — neutral BGRA
+  blending and interpolation with scalar, SSE2 and runtime-safe AVX2
+  backends; only the private AVX2 translation unit is compiled with
+  `/arch:AVX2`.
+- **`platform_win_compound.cpp`** — bounded extraction of
+  `PIDSI_THUMBNAIL` from an OLE compound document and WMF/EMF rasterisation
+  into `pf::bitmap_load_result`, retaining logical source dimensions while
+  capping the rendered extent.
 - **`platform_audio.cpp`** — the mixer behind `sound_buffer` and
   `audio_stream`, playing through libdesktop-os's audio endpoint. It includes no
   OS header, so only the endpoint is written per system.
@@ -143,7 +170,7 @@ Layout and hit testing are testable without a window, because
 | `cmake/render.cmake` | The libdesktop-render target, its shaders and `libdesktop_render_resources()` |
 | `tests/render_tests.cpp`, `render_win_tests.cpp`, `render_tests.rc` | The libdesktop-render suite (CTest label `libdesktop-render`), on Windows and Linux |
 | `include/libdesktop/os.h` | libdesktop-os: the services both stacks share, reached as `#include "libdesktop/os.h"` by their backends alone |
-| `src/os/os_win.cpp` | Its Windows backend: the WinINet and WinHTTP web client, clipboard text, known folders |
+| `src/os/os_win.cpp` | Its Windows backend: UTF-8/extended-path files and dialogs, escaped INI storage, WinINet/WinHTTP, clipboard text and known folders |
 | `src/os/os_win_audio.cpp` | Its WASAPI audio endpoint, the playback devices and the Pro Audio thread class |
 | `tests/os_tests.cpp` | The libdesktop-os suite (CTest label `libdesktop-os`) |
 | `tests/loopback_http.h` / `.cpp` | A scripted HTTP server on 127.0.0.1, so the web clients are tested offline |

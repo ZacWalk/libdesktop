@@ -538,10 +538,15 @@ namespace df
 	// A move-only byte buffer. Blobs hold decoded images, file contents and metadata blocks, so an
 	// accidental copy is an unbounded allocation plus a full memcpy on a hot path. Copying is spelled
 	// clone() so it cannot happen silently; everything else forwards to the underlying vector.
+	//
+	// The storage deliberately uses the standard vector allocator. Encoders and decoders commonly
+	// already own their bytes in a std::vector<uint8_t>; taking that vector by rvalue is then a
+	// pointer-and-size move rather than a second allocation and memcpy. Blobs sized for an in-place
+	// read still have the same value-initialized std::vector semantics as the adopted storage.
 	class blob
 	{
 	public:
-		using storage = std::vector<uint8_t, default_init_allocator<uint8_t>>;
+		using storage = std::vector<uint8_t>;
 		using value_type = uint8_t;
 		using size_type = storage::size_type;
 		using iterator = storage::iterator;
@@ -561,6 +566,12 @@ namespace df
 		}
 
 		blob(const size_type n, const uint8_t fill) : _v(n, fill)
+		{
+		}
+
+		// Takes ownership of the vector's allocation. The source is left in the usual valid,
+		// unspecified moved-from state and no bytes are copied.
+		explicit blob(storage&& bytes) noexcept : _v(std::move(bytes))
 		{
 		}
 

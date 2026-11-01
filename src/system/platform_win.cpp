@@ -693,10 +693,63 @@ void platform::clear_number_format_probe_snapshots()
 
 class file_impl final : public platform::file
 {
+	os::file_ptr _os;
 	HANDLE _h = INVALID_HANDLE_VALUE;
+
+	HANDLE native_handle() const
+	{
+		if (_h != INVALID_HANDLE_VALUE) return _h;
+		return reinterpret_cast<HANDLE>(_os ? os::native_file_handle(_os) : 0);
+	}
+
+	platform::file_op_result rename_to(const df::file_path& destination, const bool fail_if_exists)
+	{
+		const auto handle = native_handle();
+		if (!handle) return {platform::file_op_result_code::FAILED, "The file has no native handle.", {}};
+		const auto target = platform::to_file_system_path(destination);
+		const auto bytes = target.size() * sizeof(wchar_t);
+		std::vector<uint8_t> buffer(sizeof(FILE_RENAME_INFO) + bytes);
+		auto* const info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+		info->ReplaceIfExists = fail_if_exists ? FALSE : TRUE;
+		info->RootDirectory = nullptr;
+		info->FileNameLength = static_cast<DWORD>(bytes);
+		std::memcpy(info->FileName, target.data(), bytes);
+
+		if (SetFileInformationByHandle(handle, FileRenameInfo, info, static_cast<DWORD>(buffer.size())) != 0)
+			return {platform::file_op_result_code::OK};
+
+		const auto error = GetLastError();
+		const auto code = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
+			                  ? platform::file_op_result_code::ALREADY_EXISTS
+			                  : platform::file_op_result_code::FAILED;
+		auto message = platform::last_os_error();
+		if (message.empty()) message = std::format("Windows error {}", error);
+		platform::file_op_result result{code, std::move(message)};
+		result.error = {static_cast<int>(error), std::system_category()};
+		return result;
+	}
+
+	platform::file_op_result remove()
+	{
+		const auto handle = native_handle();
+		if (!handle) return {platform::file_op_result_code::FAILED, "The file has no native handle.", {}};
+		FILE_DISPOSITION_INFO info = {TRUE};
+		if (SetFileInformationByHandle(handle, FileDispositionInfo, &info, sizeof(info)) != 0)
+			return {platform::file_op_result_code::OK};
+		const auto error = GetLastError();
+		auto message = platform::last_os_error();
+		if (message.empty()) message = "Unable to remove the identity-pinned file.";
+		platform::file_op_result result{platform::file_op_result_code::FAILED, std::move(message)};
+		result.error = {static_cast<int>(error), std::system_category()};
+		return result;
+	}
 
 public:
 	file_impl(const HANDLE file) : _h(file)
+	{
+	}
+
+	explicit file_impl(os::file_ptr file) : _os(std::move(file))
 	{
 	}
 
@@ -710,6 +763,7 @@ public:
 
 	uint64_t size() const override
 	{
+		if (_os) return _os->size();
 		LARGE_INTEGER li;
 		li.QuadPart = 0;
 		if (!GetFileSizeEx(_h, &li))
@@ -722,6 +776,7 @@ public:
 
 	uint64_t read(uint8_t* buf, const uint64_t buf_size) const override
 	{
+		if (_os) return _os->read(buf, buf_size);
 		uint64_t total_read = 0;
 		while (total_read < buf_size)
 		{
@@ -744,6 +799,7 @@ public:
 
 	uint64_t write(const uint8_t* data, const uint64_t size) override
 	{
+		if (_os) return _os->write(data, size);
 		uint64_t total_written = 0;
 		while (total_written < size)
 		{
@@ -762,13 +818,41 @@ public:
 		return total_written;
 	}
 
+	uint64_t read_at(const uint64_t offset, uint8_t* buf, const uint64_t buf_size) const override
+	{
+		if (_os) return _os->read_at(offset, buf, buf_size);
+		const auto old = pos();
+		if (old == UINT64_MAX || seek(offset, whence::begin) == UINT64_MAX) return 0;
+		const auto result = read(buf, buf_size);
+		seek(old, whence::begin);
+		return result;
+	}
+
+	uint64_t write_at(const uint64_t offset, const uint8_t* data, const uint64_t size) override
+	{
+		if (_os) return _os->write_at(offset, data, size);
+		const auto old = pos();
+		if (old == UINT64_MAX || seek(offset, whence::begin) == UINT64_MAX) return 0;
+		const auto result = write(data, size);
+		seek(old, whence::begin);
+		return result;
+	}
+
 	bool flush() const override
 	{
+		if (_os) return _os->flush();
 		return FlushFileBuffers(_h) != 0;
 	}
 
 	uint64_t seek(const uint64_t pos, const whence w) const override
 	{
+		if (_os)
+		{
+			const auto origin = w == whence::begin ? os::file_whence::begin
+			                     : w == whence::current ? os::file_whence::current
+			                                            : os::file_whence::end;
+			return _os->seek(pos, origin);
+		}
 		LARGE_INTEGER result = {0, 0};
 		LARGE_INTEGER offset;
 		offset.QuadPart = pos;
@@ -794,6 +878,7 @@ public:
 
 	uint64_t pos() const override
 	{
+		if (_os) return _os->position();
 		LARGE_INTEGER result = {0, 0};
 		constexpr LARGE_INTEGER offset = {0, 0};
 		if (!SetFilePointerEx(_h, offset, &result, FILE_CURRENT)) return -1;
@@ -802,6 +887,7 @@ public:
 
 	bool trunc(const uint64_t pos) const override
 	{
+		if (_os) return _os->truncate(pos);
 		LARGE_INTEGER liOff;
 		liOff.QuadPart = pos;
 		if (!SetFilePointerEx(_h, liOff, nullptr, FILE_BEGIN)) return false;
@@ -810,14 +896,15 @@ public:
 
 	df::file_path path() const override
 	{
-		if (_h != INVALID_HANDLE_VALUE)
+		const auto handle = native_handle();
+		if (handle && handle != INVALID_HANDLE_VALUE)
 		{
 			std::vector<wchar_t> path(MAX_PATH);
-			auto len = GetFinalPathNameByHandle(_h, path.data(), static_cast<DWORD>(path.size()), VOLUME_NAME_DOS);
+			auto len = GetFinalPathNameByHandle(handle, path.data(), static_cast<DWORD>(path.size()), VOLUME_NAME_DOS);
 			if (len >= path.size())
 			{
 				path.resize(static_cast<size_t>(len) + 1);
-				len = GetFinalPathNameByHandle(_h, path.data(), static_cast<DWORD>(path.size()), VOLUME_NAME_DOS);
+				len = GetFinalPathNameByHandle(handle, path.data(), static_cast<DWORD>(path.size()), VOLUME_NAME_DOS);
 			}
 
 			if (len > 0 && len < path.size())
@@ -828,52 +915,107 @@ public:
 
 		return {};
 	}
+
+	friend platform::file_op_result platform::move_file(const platform::file_ptr&, df::file_path, bool);
+	friend platform::file_op_result platform::delete_file(const platform::file_ptr&);
 };
 
 platform::file_ptr platform::open_file(const df::file_path path, const file_open_mode mode)
 {
-	auto desired_access = GENERIC_READ;
-	auto share_mode = FILE_SHARE_READ;
-	auto creation_disposition = OPEN_EXISTING;
-	auto flags_and_attributes = FILE_ATTRIBUTE_NORMAL;
-
+	auto os_mode = os::file_open_mode::read;
+	auto share = os::file_share_mode::read;
 	switch (mode)
 	{
 	case file_open_mode::read:
+		os_mode = os::file_open_mode::read;
+		share = os::file_share_mode::read;
+		break;
+	case file_open_mode::read_shared:
+		os_mode = os::file_open_mode::read;
+		share = os::file_share_mode::all;
 		break;
 	case file_open_mode::write:
-		desired_access = GENERIC_WRITE;
-		share_mode = FILE_SHARE_WRITE;
-		creation_disposition = OPEN_EXISTING;
+		os_mode = os::file_open_mode::write;
+		share = os::file_share_mode::write;
 		break;
 	case file_open_mode::read_write:
-		desired_access = GENERIC_READ | GENERIC_WRITE;
-		share_mode = 0;
-		creation_disposition = OPEN_EXISTING;
-		flags_and_attributes = FILE_FLAG_RANDOM_ACCESS;
+		os_mode = os::file_open_mode::read_write;
+		share = os::file_share_mode::none;
 		break;
-
 	case file_open_mode::create:
-		desired_access = GENERIC_WRITE;
-		share_mode = FILE_SHARE_WRITE;
-		creation_disposition = CREATE_ALWAYS;
+		os_mode = os::file_open_mode::create;
+		share = os::file_share_mode::write;
+		break;
+	case file_open_mode::create_exclusive:
+		os_mode = os::file_open_mode::create;
+		share = os::file_share_mode::read;
+		break;
+	case file_open_mode::create_new:
+		os_mode = os::file_open_mode::create_new;
+		share = os::file_share_mode::read;
 		break;
 	case file_open_mode::sequential_scan:
-		flags_and_attributes = FILE_FLAG_SEQUENTIAL_SCAN;
+		os_mode = os::file_open_mode::sequential_scan;
+		share = os::file_share_mode::read;
 		break;
-	default: ;
 	}
 
+	const auto file = os::open_file(path.pack(), os_mode, share);
+	return file ? std::make_shared<file_impl>(file) : nullptr;
+}
+
+platform::file_ptr platform::open_file_lock(const df::file_path path, const file_lock_mode mode)
+{
 	const auto path_w = to_file_system_path(path);
-	auto* const file = CreateFile(path_w.c_str(), desired_access, share_mode, nullptr, creation_disposition,
-	                              flags_and_attributes, nullptr);
-
-	if (INVALID_HANDLE_VALUE == file)
+	const auto attributes = GetFileAttributesW(path_w.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) return {};
+	const bool reading = mode == file_lock_mode::read;
+	const auto flags = FILE_FLAG_OPEN_REPARSE_POINT |
+		((attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN);
+	const auto access = reading ? GENERIC_READ :
+		(attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_READ_ATTRIBUTES | DELETE : GENERIC_READ | DELETE;
+	const auto share = FILE_SHARE_READ | (reading ? FILE_SHARE_DELETE : 0);
+	auto* handle = CreateFileW(path_w.c_str(), access, share, nullptr, OPEN_EXISTING, flags, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) return {};
+	const df::scope_exit close_on_failure([&handle]
 	{
-		return {};
+		if (handle != INVALID_HANDLE_VALUE)
+		{
+			const auto error = GetLastError();
+			CloseHandle(handle);
+			SetLastError(error);
+		}
+	});
+	if (reading)
+	{
+		BY_HANDLE_FILE_INFORMATION info{};
+		if (!GetFileInformationByHandle(handle, &info)) return {};
+		if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+		{
+			SetLastError(ERROR_CANT_ACCESS_FILE);
+			return {};
+		}
 	}
+	auto result = std::make_shared<file_impl>(handle);
+	handle = INVALID_HANDLE_VALUE;
+	return result;
+}
 
-	return std::make_shared<file_impl>(file);
+platform::file_op_result platform::move_file(const platform::file_ptr& existing,
+                                             const df::file_path destination, const bool fail_if_exists)
+{
+	const auto locked = std::dynamic_pointer_cast<file_impl>(existing);
+	if (!locked)
+		return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
+	return locked->rename_to(destination, fail_if_exists);
+}
+
+platform::file_op_result platform::delete_file(const platform::file_ptr& existing)
+{
+	const auto locked = std::dynamic_pointer_cast<file_impl>(existing);
+	if (!locked)
+		return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
+	return locked->remove();
 }
 
 platform::file_ptr platform::make_file_from_handle(const HANDLE h)
@@ -1896,6 +2038,11 @@ uint32_t platform::tick_count()
 	return GetTickCount();
 }
 
+uint64_t platform::tick_count64()
+{
+	return GetTickCount64();
+}
+
 uint32_t platform::caret_blink_time()
 {
 	const auto milliseconds = GetCaretBlinkTime();
@@ -1905,6 +2052,11 @@ uint32_t platform::caret_blink_time()
 uint32_t platform::current_thread_id()
 {
 	return GetCurrentThreadId();
+}
+
+uint32_t platform::process_id()
+{
+	return GetCurrentProcessId();
 }
 
 static HANDLE g_startup_scope = nullptr;

@@ -12,6 +12,7 @@
 #pragma once
 
 #include "libdesktop/util_map.h"
+#include <system_error>
 
 namespace df
 {
@@ -173,9 +174,18 @@ namespace platform
 		bool is_readonly = false;
 		bool is_offline = false;
 		bool is_hidden = false;
+		bool is_reparse = false;
 		uint64_t modified = 0;
 		uint64_t created = 0;
 		uint64_t size = 0;
+		struct identity_t
+		{
+			uint64_t volume = 0;
+			uint64_t index = 0;
+			bool valid = false;
+
+			bool operator==(const identity_t&) const = default;
+		} identity;
 
 		bool exists() const { return presence == file_presence::found; }
 		bool confirmed_missing() const { return presence == file_presence::not_found; }
@@ -248,6 +258,24 @@ namespace platform
 		virtual uint64_t size() const = 0;
 		virtual uint64_t read(uint8_t* buf, uint64_t buf_size) const = 0;
 		virtual uint64_t write(const uint8_t* data, uint64_t size) = 0;
+		// Positional I/O leaves the current stream position unchanged. Backends override these with
+		// native positional calls where available; the default keeps older adapters source-compatible.
+		virtual uint64_t read_at(uint64_t offset, uint8_t* buf, uint64_t buf_size) const
+		{
+			const auto old = pos();
+			if (old == UINT64_MAX || seek(offset, whence::begin) == UINT64_MAX) return 0;
+			const auto result = read(buf, buf_size);
+			seek(old, whence::begin);
+			return result;
+		}
+		virtual uint64_t write_at(uint64_t offset, const uint8_t* data, uint64_t size)
+		{
+			const auto old = pos();
+			if (old == UINT64_MAX || seek(offset, whence::begin) == UINT64_MAX) return 0;
+			const auto result = write(data, size);
+			seek(old, whence::begin);
+			return result;
+		}
 		// Makes earlier writes durable enough to report success. A false result means the caller
 		// cannot claim the requested file was fully persisted.
 		virtual bool flush() const = 0;
@@ -312,8 +340,14 @@ namespace platform
 		read,
 		write,
 		create,
+		// Truncates on open but shares read access only, so a second live writer fails with a
+		// sharing violation while a closed log can be replaced.
+		create_exclusive,
+		create_new,
 		sequential_scan,
 		read_write,
+		// Read sources while allowing other readers, writers and renames.
+		read_shared,
 	};
 
 	// The path form the OS and native third-party libraries take. Windows needs UTF-16, with the
@@ -359,8 +393,15 @@ namespace platform
 
 	df::folder_path known_path(known_folder f);
 	file_ptr open_file(df::file_path path, file_open_mode mode);
+	enum class file_lock_mode { read, rename_delete };
+	// Pins the object without following reparse points. On Windows, both modes exclude writers;
+	// read permits renames, while rename_delete also excludes other rename/delete handles.
+	file_ptr open_file_lock(df::file_path path, file_lock_mode mode = file_lock_mode::rename_delete);
 	uint32_t file_crc32(df::file_path path);
 	uint32_t file_crc32(df::file_path path, const df::cancel_token& token);
+	using sha256_digest = std::array<uint8_t, 32>;
+	std::optional<sha256_digest> file_sha256(df::file_path path, const df::cancel_token& token = {});
+	std::optional<sha256_digest> file_sha256(const file_ptr& file, const df::cancel_token& token = {});
 
 	// The same checksum, with "could not read it" distinguished from "it checksummed to zero". A
 	// caller that acts on the answer - Sync deletes a file whose content still matches what it
@@ -408,6 +449,8 @@ namespace platform
 		// than a df::date_t because date_t is only forward-declared here (see pch.h include order).
 		file_ptr coherent_handle;
 		uint64_t modified = 0;
+		// Preserves the backend error for portable conditions such as cross_device_link.
+		std::error_code error{};
 
 		bool success() const
 		{
@@ -422,6 +465,10 @@ namespace platform
 		std::string format_error(std::string_view text = {}, std::string_view more_text = {}) const;
 	};
 
+	// Identity-pinned operations. A backend that cannot bind the operation to the open token returns
+	// FAILED rather than falling back to a check-then-rename/delete sequence.
+	file_op_result move_file(const file_ptr& existing, df::file_path destination, bool fail_if_exists);
+	file_op_result delete_file(const file_ptr& existing);
 
 	file_op_result delete_items(const std::vector<df::file_path>& files, const std::vector<df::folder_path>& folders,
 	                            bool allow_undo);
@@ -440,11 +487,19 @@ namespace platform
 
 	file_op_result delete_file(df::file_path path);
 	file_op_result make_file_writable(df::file_path path);
+	// Applies only the supplied attributes. A timestamp is in FILETIME ticks (the same units as
+	// file_attributes_t); an unset field is left unchanged.
+	file_op_result set_file_attributes(df::file_path path, std::optional<uint64_t> modified = {},
+	                                   std::optional<bool> readonly = {});
+	std::optional<double> file_age_seconds(df::file_path path);
 	file_attributes_t file_attributes(df::file_path path);
 	file_attributes_t file_attributes(df::folder_path path);
 	file_op_result copy_file(df::file_path existing, df::file_path destination, bool fail_if_exists,
 	                         bool can_create_folder);
 	file_op_result move_file(df::file_path existing, df::file_path destination, bool fail_if_exists);
+	// Disabling copying lets an application stage a cross-volume fallback behind its own review gate.
+	file_op_result move_file(df::file_path existing, df::file_path destination, bool fail_if_exists,
+	                         bool allow_copy);
 	file_op_result move_file(df::folder_path existing, df::folder_path destination);
 	file_op_result replacement_flush_result(bool flushed, std::string error_message = {});
 	file_op_result replace_file(df::file_path destination, df::file_path existing, bool create_originals = false,
@@ -1216,8 +1271,12 @@ namespace platform
 
 	void sync_app_window_enabled();
 	uint32_t tick_count();
+	// Monotonic uptime in milliseconds, including time spent suspended; unlike tick_count it does
+	// not wrap at 32 bits.
+	uint64_t tick_count64();
 	uint32_t caret_blink_time();
 	uint32_t current_thread_id();
+	uint32_t process_id();
 	extern thread_event event_exit;
 
 	// Claimed while this launch has not yet reached the user, and released once it has. Answers false

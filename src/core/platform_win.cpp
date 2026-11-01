@@ -31,6 +31,9 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <sddl.h>
+#include <commctrl.h>
+#include <objidl.h>
+#include <winhttp.h>
 #include <spellcheck.h>
 
 #include <iostream>
@@ -38,6 +41,8 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #include <functional>
 #include <map>
@@ -73,9 +78,8 @@ constexpr uint32_t xrgb(const uint32_t r, const uint32_t g, const uint32_t b)
 
 bool pf::file_path::exists() const
 {
-	const auto attribs = GetFileAttributesW(utf8_to_utf16(_path).c_str());
-	return attribs != INVALID_FILE_ATTRIBUTES &&
-		(attribs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	const auto attributes = os::query_file(_path);
+	return attributes.exists() && !attributes.directory;
 }
 
 pf::file_path pf::file_path::module_folder()
@@ -100,6 +104,57 @@ pf::file_path pf::local_app_data_path()
 		return {};
 	}
 	return file_path(path);
+}
+
+pf::file_path pf::roaming_app_data_path()
+{
+	uint32_t status = 0;
+	const auto path = os::known_folder_path(os::known_folder::roaming_app_data, false, &status);
+	if (path.empty())
+	{
+		debug_trace(std::format("SHGetKnownFolderPath(RoamingAppData) failed ({:#x})", status));
+		return {};
+	}
+	return file_path(path);
+}
+
+static pf::file_operation_result file_failure(DWORD error, std::string message = {});
+
+std::optional<double> pf::file_age_seconds(const file_path& path)
+{
+	const auto attributes = os::query_file(path.view());
+	if (!attributes.exists()) return {};
+
+	FILETIME now = {};
+	GetSystemTimeAsFileTime(&now);
+	const auto current = (static_cast<uint64_t>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+	if (current <= attributes.modified) return 0.0;
+	return static_cast<double>(current - attributes.modified) / 10'000'000.0;
+}
+
+pf::file_query_result pf::query_file(const file_path& path)
+{
+	const auto source = os::query_file(path.view());
+	file_query_result result;
+	result.attributes.is_readonly = source.readonly;
+	result.attributes.is_offline = source.offline;
+	result.attributes.is_hidden = source.hidden;
+	result.attributes.is_reparse = source.reparse;
+	result.attributes.modified = source.modified;
+	result.attributes.created = source.created;
+	result.attributes.size = source.size;
+	result.attributes.identity.volume = source.identity.volume;
+	result.attributes.identity.index = source.identity.index;
+	result.attributes.identity.valid = source.identity.valid;
+	if (source.exists())
+	{
+		result.status = file_query_status::found;
+		return result;
+	}
+
+	result.status = source.confirmed_missing() ? file_query_status::no_such_file : file_query_status::failed;
+	result.error = file_failure(source.error);
+	return result;
 }
 
 namespace
@@ -169,6 +224,20 @@ pf::instance_lock_result pf::try_lock_instance(const std::string_view name)
 	return {std::move(lock), false, {}};
 }
 
+pf::instance_lock_result pf::try_lock_named_instance(const std::string_view name)
+{
+	if (name.empty() || name.size() > 256 || name.find('\0') != std::string_view::npos)
+		return instance_lock_error("Named instance lock validation", ERROR_INVALID_NAME);
+
+	auto lock = std::make_unique<win_instance_lock>();
+	SetLastError(ERROR_SUCCESS);
+	lock->handle = CreateMutexW(nullptr, FALSE, utf8_to_utf16(name).c_str());
+	const auto error = GetLastError();
+	if (!lock->handle) return instance_lock_error("CreateMutex", error);
+	if (error == ERROR_ALREADY_EXISTS) return {nullptr, true, {}};
+	return {std::move(lock), false, {}};
+}
+
 pf::file_path tmp_folder()
 {
 	wchar_t raw_path[MAX_PATH];
@@ -188,6 +257,54 @@ static HMENU g_hMenu = nullptr;
 static HACCEL g_hAccel = nullptr;
 static std::vector<pf::menu_command> g_menuDef;
 static int g_nCmdShow = SW_SHOW;
+static std::atomic_bool g_test_tray_publication_failure = false;
+static std::unordered_map<UINT, std::function<void()>> g_instance_signals;
+static std::atomic<pf::atomic_file_test_failure> g_test_atomic_file_failure{
+	pf::atomic_file_test_failure::none};
+
+static pf::file_operation_result file_failure(const DWORD error, std::string message)
+{
+	pf::file_operation_result result;
+	result.native_code = error;
+	result.code = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+		              ? pf::file_error::no_such_file
+		              : error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
+		                    ? pf::file_error::already_exists
+		                    : error == ERROR_ACCESS_DENIED
+		                          ? pf::file_error::access_denied
+		                          : error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+		                                ? pf::file_error::sharing_violation
+		                                : error == ERROR_INVALID_NAME || error == ERROR_BAD_PATHNAME ||
+		                                      error == ERROR_FILENAME_EXCED_RANGE
+		                                      ? pf::file_error::invalid_path
+		                                      : pf::file_error::io_error;
+	if (message.empty())
+	{
+		SetLastError(error);
+		message = pf::platform_last_error_message();
+	}
+	if (message.empty()) message = std::format("Windows error {}", error);
+	result.message = std::move(message);
+	return result;
+}
+
+static pf::file_operation_result os_failure(const os::file_operation& operation)
+{
+	return file_failure(operation.error, operation.diagnostic);
+}
+
+static UINT instance_signal_message(const std::string_view name)
+{
+	if (name.empty() || name.size() > 128 ||
+		!std::all_of(name.begin(), name.end(), [](const char c)
+		{
+			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+		}))
+		return 0;
+	const auto message_name = std::wstring(L"libdesktop.instance.") + pf::utf8_to_utf16(name);
+	return RegisterWindowMessageW(message_name.c_str());
+}
 
 // Look up a pf::menu_command by ID and invoke its action
 static bool dispatch_menu_command(const std::vector<pf::menu_command>& items, const int cmd_id)
@@ -205,6 +322,28 @@ static bool dispatch_menu_command(const std::vector<pf::menu_command>& items, co
 			return true;
 	}
 	return false;
+}
+
+static bool dispatch_instance_signal(const UINT message)
+{
+	const auto it = g_instance_signals.find(message);
+	if (it == g_instance_signals.end()) return false;
+	if (it->second) it->second();
+	return true;
+}
+
+bool pf::register_instance_signal(const std::string_view name, std::function<void()> callback)
+{
+	const auto message = instance_signal_message(name);
+	if (!message || !callback) return false;
+	g_instance_signals[message] = std::move(callback);
+	return true;
+}
+
+bool pf::signal_existing_instance(const std::string_view name)
+{
+	const auto message = instance_signal_message(name);
+	return message != 0 && PostMessageW(HWND_BROADCAST, message, 0, 0) != FALSE;
 }
 
 // Find pf::menu_command by ID in the global menu definition tree
@@ -340,6 +479,8 @@ static std::optional<pf::message_type> map_message(const UINT uMsg)
 	case WM_DPICHANGED: return pf::message_type::dpi_changed;
 	case WM_INITDIALOG: return pf::message_type::init_dialog;
 	case WM_DROPFILES: return pf::message_type::drop_files;
+	case WM_CAPTURECHANGED: return pf::message_type::capture_changed;
+	case WM_ENDSESSION: return pf::message_type::end_session;
 	default: return std::nullopt;
 	}
 }
@@ -413,19 +554,20 @@ static HFONT create_platform_font(const pf::font& f)
 	const auto family = map_font_name(f.name);
 	const bool is_icon = f.name == pf::font_name::segoe_icons;
 	return ::CreateFont(
-		-f.size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+		f.size_mode == pf::font_size_mode::cell ? f.size : -f.size,
+		0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
 		CLEARTYPE_QUALITY,
 		is_icon ? (DEFAULT_PITCH | FF_DONTCARE) : (FIXED_PITCH | FF_MODERN),
 		family);
 }
 
-// Font cache â€” keyed on (size, font_name), HFONTs live until process exit
-static std::map<std::pair<int, pf::font_name>, HFONT> s_font_cache;
+// Font cache — keyed on (size, name, size mode), HFONTs live until process exit
+static std::map<std::tuple<int, pf::font_name, pf::font_size_mode>, HFONT> s_font_cache;
 
 static HFONT get_cached_font(const pf::font& f)
 {
-	const auto key = std::make_pair(f.size, f.name);
+	const auto key = std::make_tuple(f.size, f.name, f.size_mode);
 	const auto it = s_font_cache.find(key);
 	if (it != s_font_cache.end())
 		return it->second;
@@ -593,6 +735,83 @@ public:
 		              DIB_RGB_COLORS,
 		              SRCCOPY);
 		SetStretchBltMode(_hdc, prev_mode);
+	}
+
+	void fill_blend_rect(const pf::irect& rc, const pf::color_t color) override
+	{
+		if (rc.width() <= 0 || rc.height() <= 0 || color.a == 0) return;
+		BITMAPINFO info = {};
+		info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		info.bmiHeader.biWidth = 1;
+		info.bmiHeader.biHeight = -1;
+		info.bmiHeader.biPlanes = 1;
+		info.bmiHeader.biBitCount = 32;
+		info.bmiHeader.biCompression = BI_RGB;
+		void* bits = nullptr;
+		const auto bitmap = CreateDIBSection(_hdc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+		if (!bitmap || !bits)
+		{
+			if (bitmap) DeleteObject(bitmap);
+			return;
+		}
+		const auto premultiply = [color](const uint8_t c)
+		{
+			return static_cast<uint8_t>((static_cast<uint16_t>(c) * color.a + 127) / 255);
+		};
+		*static_cast<uint32_t*>(bits) = premultiply(color.b) |
+			(static_cast<uint32_t>(premultiply(color.g)) << 8) |
+			(static_cast<uint32_t>(premultiply(color.r)) << 16) |
+			(static_cast<uint32_t>(color.a) << 24);
+		const auto source = CreateCompatibleDC(_hdc);
+		const auto old = SelectObject(source, bitmap);
+		BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+		AlphaBlend(_hdc, rc.left, rc.top, rc.width(), rc.height(),
+		           source, 0, 0, 1, 1, blend);
+		SelectObject(source, old);
+		DeleteDC(source);
+		DeleteObject(bitmap);
+	}
+
+	void draw_bitmap(const pf::irect& dest, const pf::bitmap& bmp, const bool alpha) override
+	{
+		if (!alpha)
+		{
+			draw_bitmap(dest, bmp);
+			return;
+		}
+		if (bmp.empty() || dest.width() <= 0 || dest.height() <= 0) return;
+		BITMAPINFO info = {};
+		info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		info.bmiHeader.biWidth = bmp.width;
+		info.bmiHeader.biHeight = -bmp.height;
+		info.bmiHeader.biPlanes = 1;
+		info.bmiHeader.biBitCount = 32;
+		info.bmiHeader.biCompression = BI_RGB;
+		void* bits = nullptr;
+		const auto bitmap = CreateDIBSection(_hdc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+		if (!bitmap || !bits)
+		{
+			if (bitmap) DeleteObject(bitmap);
+			return;
+		}
+		auto* output = static_cast<uint32_t*>(bits);
+		for (size_t i = 0; i != bmp.pixels.size(); ++i)
+		{
+			const auto pixel = bmp.pixels[i];
+			const auto a = static_cast<uint8_t>(pixel >> 24);
+			output[i] = (static_cast<uint32_t>((static_cast<uint16_t>(pixel & 0xff) * a + 127) / 255)) |
+			            (static_cast<uint32_t>((static_cast<uint16_t>(pixel >> 8 & 0xff) * a + 127) / 255) << 8) |
+			            (static_cast<uint32_t>((static_cast<uint16_t>(pixel >> 16 & 0xff) * a + 127) / 255) << 16) |
+			            (static_cast<uint32_t>(a) << 24);
+		}
+		const auto source = CreateCompatibleDC(_hdc);
+		const auto old = SelectObject(source, bitmap);
+		BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+		AlphaBlend(_hdc, dest.left, dest.top, dest.width(), dest.height(),
+		           source, 0, 0, bmp.width, bmp.height, blend);
+		SelectObject(source, old);
+		DeleteDC(source);
+		DeleteObject(bitmap);
 	}
 
 	void draw_text_h(const int x, const int y, const std::string_view text,
@@ -780,6 +999,11 @@ class win_impl final : public win, public pf::window_frame
 	pf::frame_reactor_ptr _reactor;
 	pf::window_frame_ptr _self_ref; // cleared on WM_DESTROY
 	uint16_t _pending_lead = 0; // first half of a WM_CHAR surrogate pair
+	pf::isize _minimum_client_size;
+	WINDOWPLACEMENT _windowed_placement = {};
+	LONG _windowed_style = 0;
+	LONG _windowed_exstyle = 0;
+	bool _fullscreen = false;
 
 	// Cached back buffer for flicker-free painting
 	HDC _hdc_back = nullptr;
@@ -917,6 +1141,13 @@ public:
 		return {p.x, p.y};
 	}
 
+	pf::ipoint client_to_screen(const pf::ipoint pt) const override
+	{
+		POINT p = {pt.x, pt.y};
+		ClientToScreen(m_hWnd, &p);
+		return {p.x, p.y};
+	}
+
 	void set_cursor_shape(const pf::cursor_shape shape) override
 	{
 		LPCWSTR id = IDC_ARROW;
@@ -986,6 +1217,53 @@ public:
 		wp.showCmd = p.maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
 		std::memcpy(&wp.rcNormalPosition, &p.normal_bounds, sizeof(RECT));
 		SetWindowPlacement(m_hWnd, &wp);
+	}
+
+	void set_minimum_client_size(const pf::isize size) override
+	{
+		_minimum_client_size = {std::max(0, size.cx), std::max(0, size.cy)};
+		if (IsWindow(m_hWnd)) SetWindowPos(m_hWnd, nullptr, 0, 0, 0, 0,
+		                                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+	}
+
+	void set_fullscreen(const bool fullscreen) override
+	{
+		if (!IsWindow(m_hWnd) || fullscreen == _fullscreen) return;
+
+		if (fullscreen)
+		{
+			_windowed_style = GetWindowLongW(m_hWnd, GWL_STYLE);
+			_windowed_exstyle = GetWindowLongW(m_hWnd, GWL_EXSTYLE);
+			_windowed_placement.length = sizeof(_windowed_placement);
+			GetWindowPlacement(m_hWnd, &_windowed_placement);
+
+			MONITORINFO monitor = {sizeof(monitor)};
+			GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitor);
+			SetWindowLongW(m_hWnd, GWL_STYLE,
+			              _windowed_style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
+			                                  WS_MAXIMIZEBOX | WS_SYSMENU));
+			SetWindowLongW(m_hWnd, GWL_EXSTYLE, _windowed_exstyle & ~WS_EX_DLGMODALFRAME);
+			SetWindowPos(m_hWnd, HWND_TOP,
+			             monitor.rcMonitor.left, monitor.rcMonitor.top,
+			             monitor.rcMonitor.right - monitor.rcMonitor.left,
+			             monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+			             SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+			_fullscreen = true;
+		}
+		else
+		{
+			SetWindowLongW(m_hWnd, GWL_STYLE, _windowed_style);
+			SetWindowLongW(m_hWnd, GWL_EXSTYLE, _windowed_exstyle);
+			SetWindowPlacement(m_hWnd, &_windowed_placement);
+			SetWindowPos(m_hWnd, nullptr, 0, 0, 0, 0,
+			             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+			_fullscreen = false;
+		}
+	}
+
+	bool is_fullscreen() const override
+	{
+		return _fullscreen;
 	}
 
 	void track_mouse_leave() override
@@ -1129,14 +1407,78 @@ public:
 		DragAcceptFiles(m_hWnd, accept ? TRUE : FALSE);
 	}
 
+	void configure_gestures(const bool zoom, const bool pan) override
+	{
+		const auto flags = zoom || pan ? TWF_WANTPALM : 0;
+		if (zoom || pan)
+			RegisterTouchWindow(m_hWnd, flags);
+		else
+			UnregisterTouchWindow(m_hWnd);
+	}
+
 	pf::toolbar_frame_ptr create_address_bar(const pf::address_bar_config& cfg) override;
 
 	//  Win32 message handling 
 
 	virtual LRESULT handle_message(const HWND hWnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam)
 	{
-		if (!_reactor)
+		if (dispatch_instance_signal(uMsg)) return 0;
+		const auto reactor = _reactor;
+		if (!reactor)
+		{
+			if (uMsg == WM_DESTROY)
+			{
+				_self_ref.reset();
+				if (GetParent(hWnd) == nullptr) PostQuitMessage(0);
+			}
 			return DefWindowProc(hWnd, uMsg, wParam, lParam);
+
+		if (uMsg == WM_GESTURE)
+		{
+			GESTUREINFO info = {};
+			info.cbSize = sizeof(info);
+			if (GetGestureInfo(reinterpret_cast<HGESTUREINFO>(lParam), &info))
+			{
+				const auto kind = info.dwID == GID_ZOOM ? pf::gesture_kind::zoom
+				                                       : info.dwID == GID_PAN ? pf::gesture_kind::pan
+				                                                             : pf::gesture_kind::pan;
+				if ((info.dwID == GID_ZOOM || info.dwID == GID_PAN) && self())
+				{
+					POINT point = {info.ptsLocation.x, info.ptsLocation.y};
+					ScreenToClient(hWnd, &point);
+					pf::gesture_params params;
+					params.kind = kind;
+					params.point = {point.x, point.y};
+					params.argument = info.ullArguments;
+					params.begin = (info.dwFlags & GF_BEGIN) != 0;
+					params.end = (info.dwFlags & GF_END) != 0;
+					reactor->handle_gesture(_self_ref, params);
+				}
+				CloseGestureInfoHandle(reinterpret_cast<HGESTUREINFO>(lParam));
+				return 0;
+			}
+		}
+		}
+
+		if (uMsg == WM_GETMINMAXINFO && (_minimum_client_size.cx > 0 || _minimum_client_size.cy > 0))
+		{
+			auto* const info = reinterpret_cast<MINMAXINFO*>(lParam);
+			RECT client = {
+				0, 0,
+				std::max<LONG>(0, _minimum_client_size.cx),
+				std::max<LONG>(0, _minimum_client_size.cy)
+			};
+			const auto dpi = GetDpiForWindow(hWnd);
+			if (!AdjustWindowRectExForDpi(&client, static_cast<DWORD>(GetWindowLongW(hWnd, GWL_STYLE)),
+			                              FALSE, static_cast<DWORD>(GetWindowLongW(hWnd, GWL_EXSTYLE)), dpi))
+			{
+				AdjustWindowRectEx(&client, static_cast<DWORD>(GetWindowLongW(hWnd, GWL_STYLE)),
+				                   FALSE, static_cast<DWORD>(GetWindowLongW(hWnd, GWL_EXSTYLE)));
+			}
+			info->ptMinTrackSize.x = std::max(info->ptMinTrackSize.x, client.right - client.left);
+			info->ptMinTrackSize.y = std::max(info->ptMinTrackSize.y, client.bottom - client.top);
+			return 0;
+		}
 
 		// Special-case WM_NCHITTEST: expand resize border for easier grabbing
 		if (uMsg == WM_NCHITTEST && GetWindowLong(hWnd, GWL_STYLE) & WS_THICKFRAME)
@@ -1200,7 +1542,7 @@ public:
 				{
 					win_draw_context draw_ctx(_hdc_back, clip);
 					auto self = _self_ref;
-					_reactor->handle_paint(self, draw_ctx);
+					reactor->handle_paint(self, draw_ctx);
 				}
 
 				RestoreDC(_hdc_back, saved);
@@ -1214,7 +1556,7 @@ public:
 				// buffer could not be created.
 				win_draw_context draw_ctx(hdc, clip);
 				auto self = _self_ref;
-				_reactor->handle_paint(self, draw_ctx);
+				reactor->handle_paint(self, draw_ctx);
 			}
 
 			EndPaint(m_hWnd, &ps);
@@ -1228,7 +1570,7 @@ public:
 			const auto hdc = GetDC(hWnd);
 			win_measure_context measure_ctx(hdc);
 			auto self = _self_ref;
-			_reactor->handle_size(self, extent, measure_ctx);
+			reactor->handle_size(self, extent, measure_ctx);
 			ReleaseDC(hWnd, hdc);
 			return 0;
 		}
@@ -1253,7 +1595,7 @@ public:
 					pf::message_params params;
 					params.dpi_scale = LOWORD(wParam) / 96.0;
 					params.suggested_bounds = {rc->left, rc->top, rc->right, rc->bottom};
-					_reactor->handle_message(self, pf::message_type::dpi_changed, params);
+					reactor->handle_message(self, pf::message_type::dpi_changed, params);
 				}
 				SetWindowPos(hWnd, nullptr,
 				             rc->left, rc->top,
@@ -1290,20 +1632,32 @@ public:
 					dropped = decode_dropped_files(reinterpret_cast<HDROP>(wParam));
 					params.dropped_paths = dropped;
 					break;
+				case WM_ENDSESSION:
+					params.session_ending = wParam != 0;
+					break;
 				default:
 					break;
 				}
 
-				const auto result = _reactor->handle_message(self, *mt, params);
+				const auto result = reactor->handle_message(self, *mt, params);
 
 				if (uMsg == WM_DESTROY)
 				{
+					// Keep the callback alive for the duration of dispatch, then break the
+					// frame -> reactor -> application ownership cycle before app_destroy.
+					_reactor.reset();
 					_self_ref.reset();
 					if (GetParent(hWnd) == nullptr)
 						PostQuitMessage(0);
 				}
 
 				return result;
+			}
+			if (uMsg == WM_DESTROY)
+			{
+				_reactor.reset();
+				_self_ref.reset();
+				if (GetParent(hWnd) == nullptr) PostQuitMessage(0);
 			}
 		}
 
@@ -1350,7 +1704,7 @@ public:
 					}
 				}
 
-				return _reactor->handle_keyboard(self, *kmt, params);
+				return reactor->handle_keyboard(self, *kmt, params);
 			}
 		}
 
@@ -1383,7 +1737,7 @@ public:
 				if (*mmt == pf::mouse_message_type::set_cursor)
 					params.hit_test = static_cast<uint32_t>(lParam & 0xFFFF);
 
-				const auto result = _reactor->handle_mouse(self, *mmt, params);
+				const auto result = reactor->handle_mouse(self, *mmt, params);
 
 				// DefWindowProc turns a right-button release into WM_CONTEXTMENU, which
 				// is how every context menu here opens; the release is reported as well
@@ -1471,7 +1825,8 @@ public:
 
 	void create_window(const LPCWSTR class_name, const HWND parent, const pf::color_t wnd_clr, const uint32_t style,
 	                   const uint32_t exstyle = 0,
-	                   const uintptr_t id = 0)
+	                   const uintptr_t id = 0,
+	                   const pf::window_options& options = {})
 	{
 		const auto default_cursor = LoadCursor(nullptr, IDC_ARROW);
 
@@ -1498,21 +1853,390 @@ public:
 			const bool is_child = (style & WS_CHILD) != 0;
 			const int x = is_child ? 0 : CW_USEDEFAULT;
 			const int y = is_child ? 0 : CW_USEDEFAULT;
-			const int w = is_child ? 0 : CW_USEDEFAULT;
-			const int h = is_child ? 0 : CW_USEDEFAULT;
+			const auto dpi = GetDpiForSystem();
+			auto window_style = static_cast<DWORD>(style);
+			if (!is_child && !options.resizable)
+				window_style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+
+			int w = is_child ? 0 : CW_USEDEFAULT;
+			int h = is_child ? 0 : CW_USEDEFAULT;
+			if (!is_child && options.initial_client_size.cx > 0 && options.initial_client_size.cy > 0)
+			{
+				RECT client = {0, 0, options.initial_client_size.cx, options.initial_client_size.cy};
+				if (AdjustWindowRectExForDpi(&client, window_style, FALSE, exstyle, dpi))
+				{
+					w = client.right - client.left;
+					h = client.bottom - client.top;
+				}
+			}
 
 			m_hWnd = CreateWindowEx(
 				exstyle,
 				class_name,
 				nullptr,
-				style,
+				window_style,
 				x, y, w, h,
 				parent, std::bit_cast<HMENU>(id),
 				resource_instance,
 				this);
+			if (m_hWnd)
+			{
+				_minimum_client_size = options.minimum_client_size;
+				if (options.fullscreen) set_fullscreen(true);
+			}
 		}
 	}
 };
+
+namespace pf::platform_win
+{
+	uintptr_t native_window_handle(const pf::window_frame_ptr& frame)
+	{
+		const auto* const native = dynamic_cast<const win_impl*>(frame.get());
+		return native ? reinterpret_cast<uintptr_t>(native->m_hWnd) : 0;
+	}
+
+	bool set_fullscreen(const pf::window_frame_ptr& frame, const bool fullscreen)
+	{
+		auto* const native = dynamic_cast<win_impl*>(frame.get());
+		if (!native) return false;
+		native->set_fullscreen(fullscreen);
+		return native->is_fullscreen() == fullscreen;
+	}
+}
+
+namespace
+{
+	class win_tray_service final : public pf::tray_service
+	{
+		static constexpr UINT callback_message = WM_APP + 0x34;
+
+		HWND _window = nullptr;
+		HICON _icon = nullptr;
+		UINT _id = 0;
+		UINT _taskbar_created = 0;
+		bool _visible = false;
+		std::wstring _tooltip;
+		pf::tray_callbacks _callbacks;
+		std::string _diagnostics;
+
+		static ATOM register_window_class()
+		{
+			static const ATOM atom = []
+			{
+				WNDCLASSW wc = {};
+				wc.lpfnWndProc = &window_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.lpszClassName = L"LibdesktopTrayWindow";
+				return RegisterClassW(&wc);
+			}();
+			return atom;
+		}
+
+		static std::string last_error_text()
+		{
+			const auto error = GetLastError();
+			return error ? std::format("Windows error {}", error) : "The tray operation failed.";
+		}
+
+		static LRESULT CALLBACK window_proc(const HWND hwnd, const UINT message,
+		                                   const WPARAM wParam, const LPARAM lParam)
+		{
+			auto* self = reinterpret_cast<win_tray_service*>(
+				GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			if (message == WM_NCCREATE)
+			{
+				const auto* const create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+				self = static_cast<win_tray_service*>(create->lpCreateParams);
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+			}
+			if (!self) return DefWindowProcW(hwnd, message, wParam, lParam);
+
+			if (message == self->_taskbar_created)
+			{
+				self->republish();
+				return 0;
+			}
+			if (message == WM_ENDSESSION)
+			{
+				if (self->_callbacks.on_end_session)
+					self->_callbacks.on_end_session(wParam != 0);
+				return 0;
+			}
+			if (message != callback_message) return DefWindowProcW(hwnd, message, wParam, lParam);
+
+			switch (static_cast<UINT>(lParam))
+			{
+			case WM_LBUTTONUP:
+			case WM_LBUTTONDBLCLK:
+			case NIN_SELECT:
+				if (self->_callbacks.on_activate) self->_callbacks.on_activate();
+				break;
+			case WM_CONTEXTMENU:
+			case WM_RBUTTONUP:
+			case NIN_KEYSELECT:
+				self->context_menu(static_cast<UINT>(lParam) == NIN_KEYSELECT);
+				break;
+			case NIN_BALLOONUSERCLICK:
+				if (self->_callbacks.on_balloon_click) self->_callbacks.on_balloon_click();
+				break;
+			default:
+				break;
+			}
+			return 0;
+		}
+
+		void context_menu(const bool keyboard_anchor)
+		{
+			POINT point = {};
+			if (keyboard_anchor)
+			{
+				NOTIFYICONIDENTIFIER identifier = {};
+				identifier.cbSize = sizeof(identifier);
+				identifier.hWnd = _window;
+				identifier.uID = _id;
+				RECT rect = {};
+				if (FAILED(Shell_NotifyIconGetRect(&identifier, &rect)))
+				{
+					GetCursorPos(&point);
+				}
+				else
+				{
+					point.x = rect.left;
+					point.y = rect.bottom;
+				}
+			}
+			else
+			{
+				GetCursorPos(&point);
+			}
+			if (_callbacks.on_context_menu)
+				_callbacks.on_context_menu({point.x, point.y}, keyboard_anchor);
+		}
+
+		HICON make_icon(const pf::tray_icon_image image)
+		{
+			if (image.extent.cx <= 0 || image.extent.cy <= 0 ||
+				image.extent.cx > 256 || image.extent.cy > 256 ||
+				image.bgra_pixels.size() < static_cast<size_t>(image.extent.cx) * image.extent.cy)
+			{
+				_diagnostics = "The tray icon dimensions or pixel buffer are invalid.";
+				return nullptr;
+			}
+
+			BITMAPINFO info = {};
+			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			info.bmiHeader.biWidth = image.extent.cx;
+			info.bmiHeader.biHeight = -image.extent.cy;
+			info.bmiHeader.biPlanes = 1;
+			info.bmiHeader.biBitCount = 32;
+			info.bmiHeader.biCompression = BI_RGB;
+
+			void* bits = nullptr;
+			const auto dc = GetDC(nullptr);
+			const auto color = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+			ReleaseDC(nullptr, dc);
+			if (!color || !bits)
+			{
+				if (color) DeleteObject(color);
+				_diagnostics = "Unable to allocate the tray icon bitmap.";
+				return nullptr;
+			}
+			std::memcpy(bits, image.bgra_pixels.data(),
+			            static_cast<size_t>(image.extent.cx) * image.extent.cy * sizeof(uint32_t));
+
+			const auto mask_bytes = (image.extent.cx + 7) / 8 * image.extent.cy;
+			std::vector<uint8_t> mask(mask_bytes, 0);
+			const auto mask_bitmap = CreateBitmap(image.extent.cx, image.extent.cy, 1, 1, mask.data());
+			if (!mask_bitmap)
+			{
+				DeleteObject(color);
+				_diagnostics = "Unable to allocate the tray icon mask.";
+				return nullptr;
+			}
+
+			ICONINFO icon_info = {};
+			icon_info.fIcon = TRUE;
+			icon_info.hbmColor = color;
+			icon_info.hbmMask = mask_bitmap;
+			const auto icon = CreateIconIndirect(&icon_info);
+			DeleteObject(color);
+			DeleteObject(mask_bitmap);
+			if (!icon) _diagnostics = "Unable to create the tray icon.";
+			return icon;
+		}
+
+		NOTIFYICONDATAW notification() const
+		{
+			NOTIFYICONDATAW result = {};
+			result.cbSize = sizeof(result);
+			result.hWnd = _window;
+			result.uID = _id;
+			result.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+			result.uCallbackMessage = callback_message;
+			result.hIcon = _icon;
+			wcsncpy_s(result.szTip, _tooltip.c_str(), _TRUNCATE);
+			return result;
+		}
+
+		bool publish()
+		{
+			if (g_test_tray_publication_failure.load(std::memory_order_relaxed))
+			{
+				_diagnostics = "Tray publication was rejected by the test seam.";
+				return false;
+			}
+			auto notification_data = notification();
+			if (!Shell_NotifyIconW(NIM_ADD, &notification_data))
+			{
+				_diagnostics = last_error_text();
+				return false;
+			}
+			notification_data.uVersion = NOTIFYICON_VERSION_4;
+			if (!Shell_NotifyIconW(NIM_SETVERSION, &notification_data))
+			{
+				_diagnostics = last_error_text();
+				Shell_NotifyIconW(NIM_DELETE, &notification_data);
+				return false;
+			}
+			_visible = true;
+			_diagnostics.clear();
+			return true;
+		}
+
+		void republish()
+		{
+			if (_icon && _visible) publish();
+		}
+
+	public:
+		win_tray_service(const pf::tray_icon_image image, const std::string_view tooltip,
+		                 pf::tray_callbacks callbacks)
+			: _id([] { static std::atomic_uint32_t next = 1; return next.fetch_add(1); }()),
+			  _taskbar_created(RegisterWindowMessageW(L"TaskbarCreated")),
+			  _callbacks(std::move(callbacks))
+		{
+			if (!register_window_class())
+			{
+				_diagnostics = last_error_text();
+				return;
+			}
+			_window = CreateWindowExW(0, L"LibdesktopTrayWindow", L"", 0, 0, 0, 0, 0,
+			                          HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), this);
+			if (!_window)
+			{
+				_diagnostics = last_error_text();
+				return;
+			}
+			set_tooltip(tooltip);
+			set_icon(image);
+		}
+
+		~win_tray_service() override
+		{
+			if (_window && _visible)
+			{
+				auto notification_data = notification();
+				Shell_NotifyIconW(NIM_DELETE, &notification_data);
+			}
+			if (_icon) DestroyIcon(_icon);
+			if (_window) DestroyWindow(_window);
+		}
+
+		bool available() const override
+		{
+			return _window != nullptr && _icon != nullptr;
+		}
+
+		std::string diagnostics() const override { return _diagnostics; }
+
+		bool set_icon(const pf::tray_icon_image image) override
+		{
+			const auto icon = make_icon(image);
+			if (!icon) return false;
+			if (_icon) DestroyIcon(_icon);
+			_icon = icon;
+			if (!_visible) return true;
+			auto data = notification();
+			if (Shell_NotifyIconW(NIM_MODIFY, &data) != FALSE) return true;
+			_diagnostics = last_error_text();
+			return false;
+		}
+
+		bool set_tooltip(const std::string_view text) override
+		{
+			_tooltip = pf::utf8_to_utf16(text.substr(0, 127));
+			if (!_visible) return true;
+			auto data = notification();
+			if (Shell_NotifyIconW(NIM_MODIFY, &data) != FALSE) return true;
+			_diagnostics = last_error_text();
+			return false;
+		}
+
+		bool show() override
+		{
+			if (_visible) return true;
+			if (!_window || !_icon) return false;
+			return publish();
+		}
+
+		bool hide() override
+		{
+			if (!_visible) return true;
+			auto data = notification();
+			if (!Shell_NotifyIconW(NIM_DELETE, &data))
+			{
+				_diagnostics = last_error_text();
+				return false;
+			}
+			_visible = false;
+			return true;
+		}
+
+		bool show_balloon(const std::string_view title, const std::string_view text,
+		                 const pf::tray_balloon_kind kind) override
+		{
+			if (!_visible) return false;
+			auto data = notification();
+			data.uFlags = NIF_INFO;
+			wcsncpy_s(data.szInfoTitle, pf::utf8_to_utf16(title).c_str(), _TRUNCATE);
+			wcsncpy_s(data.szInfo, pf::utf8_to_utf16(text).c_str(), _TRUNCATE);
+			data.dwInfoFlags = kind == pf::tray_balloon_kind::warning
+				                   ? NIIF_WARNING
+				                   : kind == pf::tray_balloon_kind::error ? NIIF_ERROR : NIIF_INFO;
+			if (Shell_NotifyIconW(NIM_MODIFY, &data) != FALSE) return true;
+			_diagnostics = last_error_text();
+			return false;
+		}
+	};
+}
+
+pf::tray_service_ptr pf::create_tray_service(const pf::tray_icon_image image,
+                                              const std::string_view tooltip,
+                                              pf::tray_callbacks callbacks)
+{
+	auto result = std::make_shared<win_tray_service>(image, tooltip, std::move(callbacks));
+	result->show();
+	return result;
+}
+
+void pf::test_set_tray_publication_failure(const bool fail)
+{
+	g_test_tray_publication_failure.store(fail, std::memory_order_relaxed);
+}
+
+bool pf::post_key_event(const pf::window_frame_ptr& window, const unsigned int key, const bool down)
+{
+	auto* const native = dynamic_cast<win_impl*>(window.get());
+	if (!native || !IsWindow(native->m_hWnd)) return false;
+	const LPARAM parameters = down ? 0 : (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31);
+	return PostMessageW(native->m_hWnd, down ? WM_KEYDOWN : WM_KEYUP, key, parameters) != FALSE;
+}
+
+bool pf::post_key_events(const pf::window_frame_ptr& window, const unsigned int key, const bool down)
+{
+	return post_key_event(window, key, down);
+}
 
 inline void set_font(const HWND h, HFONT f)
 {
@@ -1737,7 +2461,7 @@ pf::font_handle pf::create_font_handle(const font_def& def, font_metrics_data* o
 {
 	const auto wface = utf8_to_utf16(def.face);
 	LOGFONTW lf = {};
-	lf.lfHeight = -def.size;
+	lf.lfHeight = def.size_mode == font_size_mode::cell ? def.size : -def.size;
 	lf.lfWeight = def.weight;
 	lf.lfItalic = def.italic ? TRUE : FALSE;
 	lf.lfUnderline = def.underline ? TRUE : FALSE;
@@ -1799,6 +2523,632 @@ int pf::line_height_for_font(const font_handle h)
 	TEXTMETRICW tm = {};
 	GetTextMetricsW(hdc, &tm);
 	return tm.tmHeight;
+}
+
+namespace pf
+{
+class pixel_surface_draw_context final : public pf::draw_context
+{
+	pf::pixel_surface& _surface;
+	HDC _dc = nullptr;
+	HBITMAP _bitmap = nullptr;
+	HGDIOBJ _old_bitmap = nullptr;
+	void* _bits = nullptr;
+	std::unique_ptr<win_draw_context> _draw;
+
+public:
+	pixel_surface_draw_context(pf::pixel_surface& surface, const pf::irect clip)
+		: _surface(surface)
+	{
+		BITMAPINFO info = {};
+		info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		info.bmiHeader.biWidth = surface.width;
+		info.bmiHeader.biHeight = -surface.height;
+		info.bmiHeader.biPlanes = 1;
+		info.bmiHeader.biBitCount = 32;
+		info.bmiHeader.biCompression = BI_RGB;
+
+		_dc = CreateCompatibleDC(nullptr);
+		if (!_dc) return;
+		_bitmap = CreateDIBSection(_dc, &info, DIB_RGB_COLORS, &_bits, nullptr, 0);
+		if (!_bitmap || !_bits) return;
+		_old_bitmap = SelectObject(_dc, _bitmap);
+		std::memcpy(_bits, surface.pixels.data(),
+		            surface.pixels.size() * sizeof(uint32_t));
+		_draw = std::make_unique<win_draw_context>(_dc, clip);
+	}
+
+	~pixel_surface_draw_context() override
+	{
+		_draw.reset();
+		if (_bits && !_surface.pixels.empty())
+			std::memcpy(_surface.pixels.data(), _bits, _surface.pixels.size() * sizeof(uint32_t));
+		if (_dc && _old_bitmap) SelectObject(_dc, _old_bitmap);
+		if (_bitmap) DeleteObject(_bitmap);
+		if (_dc) DeleteDC(_dc);
+	}
+
+	bool valid() const { return _draw != nullptr; }
+
+	irect clip_rect() const override { return _draw->clip_rect(); }
+	void fill_solid_rect(const irect& rc, const color_t color) override { _draw->fill_solid_rect(rc, color); }
+	void fill_solid_rect(const int x, const int y, const int cx, const int cy,
+	                     const color_t color) override { _draw->fill_solid_rect(x, y, cx, cy, color); }
+	void draw_text(const int x, const int y, const irect& clip, const std::string_view text,
+	               const font& f, const color_t text_color, const color_t bg_color) override
+	{
+		_draw->draw_text(x, y, clip, text, f, text_color, bg_color);
+	}
+	isize measure_text(const std::string_view text, const font& f) const override
+	{
+		return _draw->measure_text(text, f);
+	}
+	void draw_text_h(const int x, const int y, const std::string_view text,
+	                 const font_handle handle, const color_t text_color) override
+	{
+		_draw->draw_text_h(x, y, text, handle, text_color);
+	}
+	isize measure_text_h(const std::string_view text, const font_handle handle) const override
+	{
+		return _draw->measure_text_h(text, handle);
+	}
+	void draw_lines(const std::span<const ipoint> points, const color_t color) override
+	{
+		_draw->draw_lines(points, color);
+	}
+	void draw_solid_line(const ipoint a, const ipoint b, const color_t color, const int width) override
+	{
+		_draw->draw_solid_line(a, b, color, width);
+	}
+	void draw_ellipse(const int x, const int y, const int w, const int h,
+	                  const color_t color, const int line_width) override
+	{
+		_draw->draw_ellipse(x, y, w, h, color, line_width);
+	}
+	void fill_ellipse(const int x, const int y, const int w, const int h,
+	                  const color_t color) override
+	{
+		_draw->fill_ellipse(x, y, w, h, color);
+	}
+	void set_clip_rect(const irect& rc) override { _draw->set_clip_rect(rc); }
+	void clear_clip_rect() override { _draw->clear_clip_rect(); }
+	void draw_bitmap(const int x, const int y, const bitmap& bmp) override
+	{
+		_draw->draw_bitmap(x, y, bmp);
+	}
+	void draw_bitmap(const irect& dest, const bitmap& bmp) override
+	{
+		_draw->draw_bitmap(dest, bmp);
+	}
+	void fill_blend_rect(const irect& rc, const color_t color) override
+	{
+		_draw->fill_blend_rect(rc, color);
+	}
+	void draw_bitmap(const irect& dest, const bitmap& bmp, const bool alpha) override
+	{
+		_draw->draw_bitmap(dest, bmp, alpha);
+	}
+	void sync_surface_to_pixels() override
+	{
+		if (_bits && !_surface.pixels.empty())
+			std::memcpy(_surface.pixels.data(), _bits, _surface.pixels.size() * sizeof(uint32_t));
+	}
+	void sync_pixels_to_surface() override
+	{
+		if (_bits && !_surface.pixels.empty())
+			std::memcpy(_bits, _surface.pixels.data(), _surface.pixels.size() * sizeof(uint32_t));
+	}
+};
+
+std::unique_ptr<draw_context> create_pixel_surface_context(pixel_surface& surface, const irect clip)
+{
+	if (surface.width <= 0 || surface.height <= 0 ||
+		surface.pixels.size() != static_cast<size_t>(surface.width) * surface.height)
+		return {};
+	const irect actual_clip = clip.width() > 0 && clip.height() > 0
+		                           ? clip
+		                           : irect(0, 0, surface.width, surface.height);
+	auto result = std::make_unique<pixel_surface_draw_context>(surface, actual_clip);
+	if (!result->valid()) return {};
+	return result;
+}
+}
+
+namespace
+{
+	class win_shell_tree final : public pf::shell_tree
+	{
+		pf::window_frame_ptr _owner;
+		pf::window_frame_ptr _frame;
+		pf::shell_tree_options _options;
+		pf::file_path _current;
+		std::unordered_map<HTREEITEM, std::unique_ptr<pf::file_path>> _items;
+		UINT_PTR _subclass_id = 0;
+
+		HWND native(const pf::window_frame_ptr& frame) const
+		{
+			auto* const impl = dynamic_cast<win_impl*>(frame.get());
+			return impl ? impl->m_hWnd : nullptr;
+		}
+
+		static LRESULT CALLBACK owner_subclass(HWND hwnd, UINT message, WPARAM wparam,
+		                                       LPARAM lparam, UINT_PTR id, DWORD_PTR data)
+		{
+			auto* const self = reinterpret_cast<win_shell_tree*>(data);
+			if (self && message == WM_NOTIFY)
+			{
+				const auto* const header = reinterpret_cast<const NMHDR*>(lparam);
+				if (header && header->hwndFrom == self->native(self->_frame) &&
+				    header->code == TVN_SELCHANGEDW)
+				{
+					const auto* const change = reinterpret_cast<const NMTREEVIEWW*>(lparam);
+					const auto found = self->_items.find(change->itemNew.hItem);
+					if (found != self->_items.end() && self->_options.selection_changed)
+						self->_options.selection_changed(*found->second);
+				}
+			}
+			return DefSubclassProc(hwnd, message, wparam, lparam);
+		}
+
+		static LRESULT CALLBACK tree_subclass(HWND hwnd, UINT message, WPARAM wparam,
+		                                      LPARAM lparam, UINT_PTR id, DWORD_PTR data)
+		{
+			auto* const self = reinterpret_cast<win_shell_tree*>(data);
+			if (self && message == WM_DROPFILES)
+			{
+				const auto drop = reinterpret_cast<HDROP>(wparam);
+				const auto paths = decode_dropped_files(drop);
+				if (self->_options.files_dropped)
+					self->_options.files_dropped(self->_current, paths, false);
+				return 0;
+			}
+			return DefSubclassProc(hwnd, message, wparam, lparam);
+		}
+
+		void add_item(const pf::file_path& path, const std::wstring_view label,
+		              HTREEITEM parent, const bool has_children)
+		{
+			auto stored = std::make_unique<pf::file_path>(path);
+			TVINSERTSTRUCTW insert = {};
+			insert.hParent = parent;
+			insert.hInsertAfter = TVI_LAST;
+			insert.item.mask = TVIF_TEXT | TVIF_PARAM | (has_children ? TVIF_CHILDREN : 0);
+			insert.item.pszText = const_cast<LPWSTR>(label.data());
+			insert.item.cChildren = has_children ? 1 : 0;
+			insert.item.lParam = reinterpret_cast<LPARAM>(stored.get());
+			const auto item = TreeView_InsertItem(native(_frame), &insert);
+			if (item) _items.emplace(item, std::move(stored));
+		}
+
+	public:
+		win_shell_tree(const pf::window_frame_ptr& owner, pf::shell_tree_options options)
+			: _owner(owner), _options(std::move(options))
+		{
+			if (!_owner) return;
+			_frame = _owner->create_child("SysTreeView32",
+			                              pf::window_style::child | pf::window_style::visible,
+			                              {});
+			if (!_frame) return;
+			static std::atomic_uintptr_t next_id = 1;
+			_subclass_id = next_id.fetch_add(1);
+			if (const auto owner_hwnd = native(_owner))
+				SetWindowSubclass(owner_hwnd, owner_subclass, _subclass_id,
+				                  reinterpret_cast<DWORD_PTR>(this));
+			if (const auto tree_hwnd = native(_frame))
+			{
+				SetWindowSubclass(tree_hwnd, tree_subclass, _subclass_id,
+				                  reinterpret_cast<DWORD_PTR>(this));
+				DragAcceptFiles(tree_hwnd, TRUE);
+			}
+		}
+
+		~win_shell_tree() override
+		{
+			if (const auto owner_hwnd = native(_owner))
+				RemoveWindowSubclass(owner_hwnd, owner_subclass, _subclass_id);
+			if (const auto tree_hwnd = native(_frame))
+			{
+				DragAcceptFiles(tree_hwnd, FALSE);
+				RemoveWindowSubclass(tree_hwnd, tree_subclass, _subclass_id);
+			}
+		}
+
+		pf::window_frame_ptr frame() override { return _frame; }
+		void set_bounds(const pf::irect bounds) override
+		{
+			if (_frame) _frame->move_window(bounds);
+		}
+		void show(const bool visible) override
+		{
+			if (_frame) _frame->show(visible);
+		}
+		void set_focus() override
+		{
+			if (_frame) _frame->set_focus();
+		}
+		bool has_focus() const override
+		{
+			return _frame && _frame->has_focus();
+		}
+		void set_current_path(const pf::file_path path) override
+		{
+			_current = path;
+			refresh();
+		}
+		void refresh() override
+		{
+			const auto tree = native(_frame);
+			if (!tree) return;
+			TreeView_DeleteAllItems(tree);
+			_items.clear();
+			if (_current.empty()) return;
+			const auto root = _current.name();
+			add_item(_current, pf::utf8_to_utf16(root), TVI_ROOT, true);
+			const auto contents = pf::iterate_file_items(_current, false);
+			for (const auto& folder : contents.folders)
+				add_item(folder.path, pf::utf8_to_utf16(folder.path.name()), TVI_ROOT, true);
+			for (const auto& file : contents.files)
+				add_item(file.path, pf::utf8_to_utf16(file.path.name()), TVI_ROOT, false);
+			if (_options.files_changed) _options.files_changed();
+		}
+	};
+}
+
+pf::shell_tree_ptr pf::create_shell_tree(const pf::window_frame_ptr& owner,
+                                         pf::shell_tree_options options)
+{
+	auto result = std::make_shared<win_shell_tree>(owner, std::move(options));
+	return result->frame() ? result : nullptr;
+}
+
+namespace
+{
+	class drag_format_enum final : public IEnumFORMATETC
+	{
+		ULONG _refs = 1;
+		std::vector<FORMATETC> _formats;
+		ULONG _index = 0;
+
+	public:
+		explicit drag_format_enum(std::vector<FORMATETC> formats) : _formats(std::move(formats)) {}
+
+		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
+		{
+			if (!object) return E_POINTER;
+			*object = nullptr;
+			if (iid == IID_IUnknown || iid == IID_IEnumFORMATETC)
+			{
+				*object = static_cast<IEnumFORMATETC*>(this);
+				AddRef();
+				return S_OK;
+			}
+			return E_NOINTERFACE;
+		}
+		ULONG STDMETHODCALLTYPE AddRef() override { return ++_refs; }
+		ULONG STDMETHODCALLTYPE Release() override
+		{
+			const auto refs = --_refs;
+			if (!refs) delete this;
+			return refs;
+		}
+		HRESULT STDMETHODCALLTYPE Next(ULONG count, FORMATETC* result, ULONG* fetched) override
+		{
+			if (!result) return E_POINTER;
+			ULONG copied = 0;
+			while (copied < count && _index < _formats.size())
+			{
+				result[copied++] = _formats[_index++];
+			}
+			if (fetched) *fetched = copied;
+			return copied == count ? S_OK : S_FALSE;
+		}
+		HRESULT STDMETHODCALLTYPE Skip(ULONG count) override
+		{
+			_index = std::min<ULONG>(_index + count, static_cast<ULONG>(_formats.size()));
+			return _index == _formats.size() ? S_FALSE : S_OK;
+		}
+		HRESULT STDMETHODCALLTYPE Reset() override { _index = 0; return S_OK; }
+		HRESULT STDMETHODCALLTYPE Clone(IEnumFORMATETC** result) override
+		{
+			if (!result) return E_POINTER;
+			auto copy = std::make_unique<drag_format_enum>(_formats);
+			copy->_index = _index;
+			*result = copy.release();
+			return S_OK;
+		}
+	};
+
+	class file_drag_data_object final : public IDataObject
+	{
+		ULONG _refs = 1;
+		std::vector<std::wstring> _paths;
+		UINT _preferred_effect = 0;
+
+		HGLOBAL make_hdrop() const
+		{
+			size_t chars = 1;
+			for (const auto& path : _paths) chars += path.size() + 1;
+			const auto bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+			const auto memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+			if (!memory) return nullptr;
+			auto* const drop = static_cast<DROPFILES*>(GlobalLock(memory));
+			if (!drop)
+			{
+				GlobalFree(memory);
+				return nullptr;
+			}
+			drop->pFiles = sizeof(DROPFILES);
+			drop->fWide = TRUE;
+			auto* target = reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(drop) + sizeof(DROPFILES));
+			for (const auto& path : _paths)
+			{
+				std::copy(path.begin(), path.end(), target);
+				target += path.size() + 1;
+			}
+			GlobalUnlock(memory);
+			return memory;
+		}
+
+		static FORMATETC drop_format()
+		{
+			return {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+		}
+		FORMATETC effect_format() const
+		{
+			return {static_cast<CLIPFORMAT>(_preferred_effect), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+		}
+
+	public:
+		explicit file_drag_data_object(const std::span<const pf::file_path> files)
+			: _preferred_effect(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT))
+		{
+			_paths.reserve(files.size());
+			for (const auto& path : files)
+				_paths.push_back(pf::utf8_to_utf16(path.view()));
+		}
+
+		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
+		{
+			if (!object) return E_POINTER;
+			*object = nullptr;
+			if (iid == IID_IUnknown || iid == IID_IDataObject)
+			{
+				*object = static_cast<IDataObject*>(this);
+				AddRef();
+				return S_OK;
+			}
+			return E_NOINTERFACE;
+		}
+		ULONG STDMETHODCALLTYPE AddRef() override { return ++_refs; }
+		ULONG STDMETHODCALLTYPE Release() override
+		{
+			const auto refs = --_refs;
+			if (!refs) delete this;
+			return refs;
+		}
+		HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override
+		{
+			if (!format || !medium) return E_POINTER;
+			if (format->tymed != TYMED_HGLOBAL || format->dwAspect != DVASPECT_CONTENT)
+				return DV_E_FORMATETC;
+			ZeroMemory(medium, sizeof(*medium));
+			medium->tymed = TYMED_HGLOBAL;
+			if (format->cfFormat == CF_HDROP)
+				medium->hGlobal = make_hdrop();
+			else if (format->cfFormat == _preferred_effect)
+			{
+				medium->hGlobal = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+				if (medium->hGlobal)
+				{
+					auto* const effect = static_cast<DWORD*>(GlobalLock(medium->hGlobal));
+					if (effect) *effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+					GlobalUnlock(medium->hGlobal);
+				}
+			}
+			else
+				return DV_E_FORMATETC;
+			if (!medium->hGlobal) return E_OUTOFMEMORY;
+			return S_OK;
+		}
+		HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return DATA_E_FORMATETC; }
+		HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override
+		{
+			if (!format || format->tymed != TYMED_HGLOBAL || format->dwAspect != DVASPECT_CONTENT)
+				return DV_E_FORMATETC;
+			return format->cfFormat == CF_HDROP || format->cfFormat == _preferred_effect
+				       ? S_OK
+				       : DV_E_FORMATETC;
+		}
+		HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* result) override
+		{
+			if (!result) return E_POINTER;
+			result->ptd = nullptr;
+			return E_NOTIMPL;
+		}
+		HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+		HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** result) override
+		{
+			if (!result) return E_POINTER;
+			if (direction != DATADIR_GET) return E_NOTIMPL;
+			*result = new drag_format_enum({drop_format(), effect_format()});
+			return S_OK;
+		}
+		HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+		HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+		HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+	};
+
+	class file_drag_source final : public IDropSource
+	{
+		ULONG _refs = 1;
+
+	public:
+		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
+		{
+			if (!object) return E_POINTER;
+			*object = nullptr;
+			if (iid == IID_IUnknown || iid == IID_IDropSource)
+			{
+				*object = static_cast<IDropSource*>(this);
+				AddRef();
+				return S_OK;
+			}
+			return E_NOINTERFACE;
+		}
+		ULONG STDMETHODCALLTYPE AddRef() override { return ++_refs; }
+		ULONG STDMETHODCALLTYPE Release() override
+		{
+			const auto refs = --_refs;
+			if (!refs) delete this;
+			return refs;
+		}
+		HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD key_state) override
+		{
+			if (escape) return DRAGDROP_S_CANCEL;
+			if (!(key_state & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON))) return DRAGDROP_S_DROP;
+			return S_OK;
+		}
+		HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+	};
+}
+
+bool pf::begin_file_drag(const pf::window_frame_ptr&, const std::span<const pf::file_path> files)
+{
+	if (files.empty()) return false;
+	const auto ole = OleInitialize(nullptr);
+	if (FAILED(ole)) return false;
+	auto* const data = new file_drag_data_object(files);
+	auto* const source = new file_drag_source();
+	DWORD effect = DROPEFFECT_NONE;
+	const auto result = DoDragDrop(data, source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &effect);
+	data->Release();
+	source->Release();
+	OleUninitialize();
+	return result == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE;
+}
+
+namespace
+{
+	class win_text_input final : public pf::text_input
+	{
+		pf::window_frame_ptr _owner;
+		pf::window_frame_ptr _frame;
+		pf::text_input_options _options;
+		pf::font_handle _font = 0;
+		UINT_PTR _subclass_id = 0;
+
+		HWND native(const pf::window_frame_ptr& frame) const
+		{
+			auto* const impl = dynamic_cast<win_impl*>(frame.get());
+			return impl ? impl->m_hWnd : nullptr;
+		}
+
+		static LRESULT CALLBACK owner_subclass(HWND hwnd, UINT message, WPARAM wparam,
+		                                       LPARAM lparam, UINT_PTR id, DWORD_PTR data)
+		{
+			auto* const self = reinterpret_cast<win_text_input*>(data);
+			if (self && message == WM_COMMAND &&
+			    reinterpret_cast<HWND>(lparam) == self->native(self->_frame) &&
+			    HIWORD(wparam) == EN_CHANGE && self->_options.changed)
+				self->_options.changed(self->text());
+			return DefSubclassProc(hwnd, message, wparam, lparam);
+		}
+
+		static LRESULT CALLBACK edit_subclass(HWND hwnd, UINT message, WPARAM wparam,
+		                                      LPARAM lparam, UINT_PTR id, DWORD_PTR data)
+		{
+			auto* const self = reinterpret_cast<win_text_input*>(data);
+			if (self && message == WM_KEYDOWN)
+			{
+				if (wparam == VK_RETURN && self->_options.accepted)
+				{
+					self->_options.accepted(self->text());
+					return 0;
+				}
+				if (wparam == VK_ESCAPE && self->_options.escaped)
+				{
+					self->_options.escaped();
+					return 0;
+				}
+				if (wparam == VK_TAB && self->_options.tabbed)
+				{
+					self->_options.tabbed((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+					return 0;
+				}
+			}
+			return DefSubclassProc(hwnd, message, wparam, lparam);
+		}
+
+	public:
+		win_text_input(const pf::window_frame_ptr& owner, pf::text_input_options options)
+			: _owner(owner), _options(std::move(options))
+		{
+			if (!owner) return;
+			_frame = owner->create_child("EDIT", pf::window_style::child | pf::window_style::visible, {});
+			if (!_frame) return;
+			static std::atomic_uintptr_t next_id = 1;
+			_subclass_id = next_id.fetch_add(1);
+			const auto edit = native(_frame);
+			if (!edit) return;
+			SetWindowLongPtrW(edit, GWL_STYLE,
+			                  GetWindowLongPtrW(edit, GWL_STYLE) | WS_TABSTOP | ES_AUTOHSCROLL);
+			if (!_options.cue.empty())
+				SendMessageW(edit, EM_SETCUEBANNER, TRUE,
+				             reinterpret_cast<LPARAM>(pf::utf8_to_utf16(_options.cue).c_str()));
+			SetWindowSubclass(edit, edit_subclass, _subclass_id, reinterpret_cast<DWORD_PTR>(this));
+			if (const auto hwnd = native(_owner))
+				SetWindowSubclass(hwnd, owner_subclass, _subclass_id, reinterpret_cast<DWORD_PTR>(this));
+		}
+
+		~win_text_input() override
+		{
+			if (const auto hwnd = native(_owner))
+				RemoveWindowSubclass(hwnd, owner_subclass, _subclass_id);
+			if (const auto edit = native(_frame))
+			{
+				RemoveWindowSubclass(edit, edit_subclass, _subclass_id);
+				DestroyWindow(edit);
+			}
+			if (_font) pf::delete_font_handle(_font);
+		}
+
+		pf::window_frame_ptr frame() override { return _frame; }
+		void set_bounds(const pf::irect bounds) override { if (_frame) _frame->move_window(bounds); }
+		void show(const bool visible) override { if (_frame) _frame->show(visible); }
+		void set_focus() override { if (_frame) _frame->set_focus(); }
+		bool has_focus() const override { return _frame && _frame->has_focus(); }
+		std::string text() const override
+		{
+			const auto edit = native(_frame);
+			if (!edit) return {};
+			const auto length = GetWindowTextLengthW(edit);
+			std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+			if (length) GetWindowTextW(edit, value.data(), length + 1);
+			value.resize(static_cast<size_t>(length));
+			return pf::utf16_to_utf8(value);
+		}
+		void set_text(const std::string_view value) override
+		{
+			if (const auto edit = native(_frame))
+				SetWindowTextW(edit, pf::utf8_to_utf16(value).c_str());
+		}
+		void set_font(const pf::font_def& definition) override
+		{
+			const auto next = pf::create_font_handle(definition);
+			if (!next) return;
+			if (const auto edit = native(_frame))
+				SendMessageW(edit, WM_SETFONT, static_cast<WPARAM>(next), TRUE);
+			if (_font) pf::delete_font_handle(_font);
+			_font = next;
+		}
+	};
+}
+
+pf::text_input_ptr pf::create_text_input(const pf::window_frame_ptr& owner,
+                                         pf::text_input_options options)
+{
+	auto result = std::make_shared<win_text_input>(owner, std::move(options));
+	return result->frame() ? result : nullptr;
 }
 
 std::unique_ptr<pf::draw_context> pf::wrap_native_dc(const uintptr_t native_dc, const irect& clip)
@@ -1954,6 +3304,11 @@ double pf::platform_get_time()
 	QueryPerformanceCounter(&now);
 	return static_cast<double>(now.QuadPart - g_perfStart.QuadPart)
 		/ static_cast<double>(g_perfFreq.QuadPart);
+}
+
+uint64_t pf::platform_uptime_ms()
+{
+	return GetTickCount64();
 }
 
 void pf::platform_sleep(const int milliseconds)
@@ -3529,8 +4884,7 @@ pf::child_process_ptr pf::spawn_child_process(const file_path& exe,
 
 bool pf::platform_move_file_replace(const char* source, const char* dest)
 {
-	return MoveFileExW(utf8_to_utf16(source).c_str(), utf8_to_utf16(dest).c_str(),
-	                   MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+	return os::move_file(source, dest, false).success();
 }
 
 std::string pf::platform_temp_file_path(const char* prefix)
@@ -3567,38 +4921,27 @@ std::string pf::platform_last_error_message()
 
 bool pf::platform_recycle_file(const file_path& path)
 {
-	// SHFileOperationW requires double-null-terminated path
-	auto w_path = utf8_to_utf16(path.view());
-	w_path.push_back(L'\0');
-
-	SHFILEOPSTRUCTW op = {};
-	op.wFunc = FO_DELETE;
-	op.pFrom = w_path.c_str();
-	op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-	return SHFileOperationW(&op) == 0;
+	return os::recycle_file(path.view()).success();
 }
 
 bool pf::platform_rename_file(const file_path& old_path, const file_path& new_path)
 {
-	return MoveFileW(utf8_to_utf16(old_path.view()).c_str(),
-	                 utf8_to_utf16(new_path.view()).c_str()) != 0;
+	return os::move_file(old_path.view(), new_path.view(), true).success();
 }
 
 bool pf::platform_delete_file(const file_path& path)
 {
-	return DeleteFileW(utf8_to_utf16(path.view()).c_str()) != 0;
+	return os::delete_file(path.view()).success();
 }
 
 bool pf::platform_create_directory(const file_path& path)
 {
-	return CreateDirectoryW(utf8_to_utf16(path.view()).c_str(), nullptr) != 0;
+	return os::create_folder(path.view()).success();
 }
 
 bool pf::platform_copy_file(const file_path& source, const file_path& dest, const bool fail_if_exists)
 {
-	return CopyFileW(utf8_to_utf16(source.view()).c_str(),
-	                 utf8_to_utf16(dest.view()).c_str(),
-	                 fail_if_exists ? TRUE : FALSE) != 0;
+	return os::copy_file(source.view(), dest.view(), fail_if_exists).success();
 }
 
 static std::vector<pf::file_path> decode_dropped_files(const HDROP hDrop)
@@ -3643,14 +4986,40 @@ bool pf::platform_text_to_clipboard(const std::string_view text)
 //  Configuration (INI file) â”€
 
 static std::string s_config_app_name = "app";
+static std::optional<pf::file_path> s_config_path;
+static std::optional<std::string> s_config_registry_root;
+static os::ini_store_ptr s_config_store;
 
 void pf::config_set_app_name(const std::string_view app_name)
 {
 	s_config_app_name = app_name;
+	s_config_store.reset();
+}
+
+void pf::config_set_path(const file_path& path)
+{
+	if (path.empty())
+		s_config_path.reset();
+	else
+		s_config_path = path;
+	s_config_registry_root.reset();
+	s_config_store.reset();
+}
+
+void pf::config_set_registry_root(const std::string_view root_key)
+{
+	if (root_key.empty())
+		s_config_registry_root.reset();
+	else
+		s_config_registry_root = std::string(root_key);
+	s_config_path.reset();
+	s_config_store.reset();
 }
 
 static pf::file_path get_config_path()
 {
+	if (s_config_path) return *s_config_path;
+
 	// Try next to the exe first
 	wchar_t w_exe_path[MAX_PATH];
 	GetModuleFileNameW(nullptr, w_exe_path, MAX_PATH);
@@ -3660,22 +5029,15 @@ static pf::file_path get_config_path()
 	// Probe writability without creating a sentinel file: try to open
 	// the existing ini for write, or create a temp file in the same
 	// folder and immediately delete it.
-	const auto w_ini = pf::utf8_to_utf16(ini_path.view());
-	const auto h = CreateFileW(w_ini.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-	                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (h != INVALID_HANDLE_VALUE)
+	if (os::open_file(ini_path.view(), os::file_open_mode::write))
 	{
-		CloseHandle(h);
 		return ini_path;
 	}
 
 	// File doesn't exist — try to create it. If creation succeeds the
 	// directory is writable and we keep the (empty) file.
-	const auto h2 = CreateFileW(w_ini.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-	                            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (h2 != INVALID_HANDLE_VALUE)
+	if (os::open_file(ini_path.view(), os::file_open_mode::create_new))
 	{
-		CloseHandle(h2);
 		return ini_path;
 	}
 
@@ -3683,39 +5045,41 @@ static pf::file_path get_config_path()
 	return tmp_folder().combine(s_config_app_name, "ini");
 }
 
+static os::ini_store_ptr config_store()
+{
+	if (!s_config_store)
+	{
+		s_config_store = s_config_registry_root
+			                 ? os::open_registry_store(*s_config_registry_root)
+			                 : os::open_ini_store(get_config_path().view());
+	}
+	return s_config_store;
+}
+
 std::string pf::config_read(const std::string_view section, const std::string_view key,
                             const std::string_view default_value)
 {
-	static const auto ini_path = get_config_path();
-	wchar_t buf[4096];
-	const auto len = GetPrivateProfileStringW(
-		utf8_to_utf16(section).c_str(),
-		utf8_to_utf16(key).c_str(),
-		utf8_to_utf16(default_value).c_str(),
-		buf, _countof(buf),
-		utf8_to_utf16(ini_path.view()).c_str());
-	return utf16_to_utf8(std::wstring_view(buf, len));
+	const auto store = config_store();
+	if (!store) return std::string(default_value);
+	const auto value = store->read(section, key);
+	return value ? os::unescape_ini_value(*value) : std::string(default_value);
 }
 
 void pf::config_write(const std::string_view section, const std::string_view key, const std::string_view value)
 {
-	static const auto ini_path = get_config_path();
-	WritePrivateProfileStringW(
-		utf8_to_utf16(section).c_str(),
-		utf8_to_utf16(key).c_str(),
-		utf8_to_utf16(value).c_str(),
-		utf8_to_utf16(ini_path.view()).c_str());
+	if (const auto store = config_store())
+		store->write(section, key, os::escape_ini_value(value));
 }
 
 void pf::config_flush()
 {
-	// config_write goes straight to the ini file, so there is nothing buffered.
+	if (const auto store = config_store()) store->flush();
 }
 
 bool pf::is_directory(const file_path& path)
 {
-	const auto attribs = GetFileAttributesW(utf8_to_utf16(path.view()).c_str());
-	return attribs != INVALID_FILE_ATTRIBUTES && (attribs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	const auto attributes = os::query_file(path.view());
+	return attributes.exists() && attributes.directory;
 }
 
 pf::file_path pf::current_directory()
@@ -3726,87 +5090,380 @@ pf::file_path pf::current_directory()
 	return {};
 }
 
-static constexpr wchar_t default_filter[] = L"All Files (*.*)\0*.*\0Text Files (*.txt)\0*.txt\0\0";
+static std::vector<os::file_dialog_filter> core_dialog_filters(const std::string_view filters)
+{
+	if (filters.empty()) return {{"All Files", "*.*"}, {"Text Files", "*.txt"}};
+
+	std::vector<os::file_dialog_filter> result;
+	size_t offset = 0;
+	while (offset < filters.size())
+	{
+		const auto text_end = filters.find('\0', offset);
+		if (text_end == std::string_view::npos || text_end == offset) break;
+		const auto extension_begin = text_end + 1;
+		if (extension_begin >= filters.size()) break;
+		const auto extension_end = filters.find('\0', extension_begin);
+		if (extension_end == std::string_view::npos || extension_end == extension_begin) break;
+		result.push_back({std::string(filters.substr(offset, text_end - offset)),
+		                  std::string(filters.substr(extension_begin, extension_end - extension_begin))});
+		offset = extension_end + 1;
+	}
+	return result;
+}
 
 pf::file_path pf::open_file_path(const std::string_view title, const std::string_view filters)
 {
-	wchar_t szFile[MAX_PATH] = {};
-	const auto wtitle = utf8_to_utf16(title);
-	const auto wfilters = utf8_to_utf16(filters);
-	OPENFILENAMEW ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = g_hWnd;
-	ofn.lpstrFile = szFile;
-	ofn.nMaxFile = MAX_PATH;
-	ofn.lpstrTitle = wtitle.c_str();
-	ofn.lpstrFilter = filters.empty() ? default_filter : wfilters.c_str();
-	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-	if (GetOpenFileNameW(&ofn))
-		return file_path{utf16_to_utf8(szFile)};
-	return {};
+	const auto result = os::open_file_dialog(reinterpret_cast<uintptr_t>(g_hWnd), title,
+	                                         core_dialog_filters(filters), false);
+	return result.accepted() ? file_path{result.paths.front()} : file_path{};
 }
 
 pf::file_path pf::save_file_path(const std::string_view title, const file_path& default_path,
                                  const std::string_view filters)
 {
-	wchar_t szFile[MAX_PATH] = {};
-	if (!default_path.empty())
-	{
-		const auto wpath = utf8_to_utf16(default_path.view());
-		wcsncpy_s(szFile, wpath.c_str(), MAX_PATH - 1);
-	}
-
-	const auto wtitle = utf8_to_utf16(title);
-	const auto wfilters = utf8_to_utf16(filters);
-	OPENFILENAMEW ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = g_hWnd;
-	ofn.lpstrFile = szFile;
-	ofn.nMaxFile = MAX_PATH;
-	ofn.lpstrTitle = wtitle.c_str();
-	ofn.lpstrFilter = filters.empty() ? default_filter : wfilters.c_str();
-	ofn.Flags = OFN_OVERWRITEPROMPT;
-
-	if (GetSaveFileNameW(&ofn))
-		return file_path{utf16_to_utf8(szFile)};
-	return {};
+	const auto result = os::save_file_dialog(reinterpret_cast<uintptr_t>(g_hWnd), title, default_path.view(),
+	                                         core_dialog_filters(filters));
+	return result.accepted() ? file_path{result.paths.front()} : file_path{};
 }
 
 pf::file_path pf::pick_folder_path(const std::string_view title)
 {
-	IFileOpenDialog* dialog = nullptr;
-	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-	                            IID_PPV_ARGS(&dialog))) || !dialog)
-		return {};
+	const auto result = os::folder_dialog(reinterpret_cast<uintptr_t>(g_hWnd), title);
+	return result.accepted() ? file_path{result.paths.front()} : file_path{};
+}
 
-	file_path result;
-	DWORD options = 0;
-
-	if (SUCCEEDED(dialog->GetOptions(&options)) &&
-		SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)))
+int pf::show_choice(const pf::window_frame_ptr& owner, const pf::choice_definition& definition)
+{
+	if (definition.buttons.empty()) return 0;
+	std::vector<std::wstring> labels;
+	std::vector<TASKDIALOG_BUTTON> buttons;
+	labels.reserve(definition.buttons.size());
+	buttons.reserve(definition.buttons.size());
+	for (const auto& [id, label] : definition.buttons)
 	{
-		if (!title.empty())
-			dialog->SetTitle(utf8_to_utf16(title).c_str());
-
-		if (SUCCEEDED(dialog->Show(g_hWnd)))
-		{
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dialog->GetResult(&item)) && item)
-			{
-				PWSTR path = nullptr;
-				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path)
-				{
-					result = file_path{utf16_to_utf8(path)};
-					CoTaskMemFree(path);
-				}
-				item->Release();
-			}
-		}
+		labels.push_back(utf8_to_utf16(label));
+		buttons.push_back({id, labels.back().c_str()});
 	}
 
-	dialog->Release();
-	return result;
+	TASKDIALOGCONFIG config = {};
+	config.cbSize = sizeof(config);
+	config.hwndParent = owner ? reinterpret_cast<HWND>(
+		pf::platform_win::native_window_handle(owner)) : nullptr;
+	const auto title = utf8_to_utf16(definition.title);
+	const auto heading = utf8_to_utf16(definition.heading);
+	const auto message = utf8_to_utf16(definition.message);
+	config.pszWindowTitle = title.c_str();
+	config.pszMainInstruction = heading.c_str();
+	config.pszContent = message.c_str();
+	config.pButtons = buttons.data();
+	config.cButtons = static_cast<UINT>(buttons.size());
+	config.nDefaultButton = definition.default_id;
+	config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+	config.pszMainIcon = definition.warning ? TD_WARNING_ICON : TD_INFORMATION_ICON;
+
+	int selected = 0;
+	return SUCCEEDED(TaskDialogIndirect(&config, &selected, nullptr, nullptr)) ? selected : 0;
+}
+
+namespace
+{
+	class modal_dialog_host
+	{
+		pf::modal_definition _definition;
+		HWND _owner = nullptr;
+		HWND _window = nullptr;
+		std::map<uint32_t, HWND> _controls;
+		std::unordered_map<int, size_t> _command_fields;
+		std::vector<HBITMAP> _preview_bitmaps;
+		std::optional<std::map<uint32_t, pf::modal_value>> _result;
+
+		static ATOM dialog_class()
+		{
+			static const ATOM atom = []
+			{
+				WNDCLASSW wc = {};
+				wc.lpfnWndProc = &window_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+				wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+				wc.lpszClassName = L"LibdesktopModalDialog";
+				return RegisterClassW(&wc);
+			}();
+			return atom;
+		}
+
+		static LRESULT CALLBACK window_proc(const HWND hwnd, const UINT message,
+		                                   const WPARAM wparam, const LPARAM lparam)
+		{
+			auto* self = reinterpret_cast<modal_dialog_host*>(
+				GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			if (message == WM_NCCREATE)
+			{
+				const auto* const create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+				self = static_cast<modal_dialog_host*>(create->lpCreateParams);
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+			}
+			if (!self) return DefWindowProcW(hwnd, message, wparam, lparam);
+
+			if (message == WM_COMMAND && HIWORD(wparam) == BN_CLICKED)
+			{
+				const auto id = LOWORD(wparam);
+				if (id == 1)
+				{
+					self->accept();
+					return 0;
+				}
+				if (id == 2)
+				{
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				const auto field = self->_command_fields.find(id);
+				if (field != self->_command_fields.end())
+				{
+					auto& item = self->_definition.fields[field->second];
+					if (item.action) item.action();
+					return 0;
+				}
+			}
+			if (message == WM_CLOSE)
+			{
+				DestroyWindow(hwnd);
+				return 0;
+			}
+			if (message == WM_NCDESTROY)
+			{
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+				self->_window = nullptr;
+			}
+			return DefWindowProcW(hwnd, message, wparam, lparam);
+		}
+
+		void add_control(const size_t index, const int y)
+		{
+			auto& field = _definition.fields[index];
+			const auto label = pf::utf8_to_utf16(field.label);
+			if (field.kind != pf::modal_field_kind::check_box &&
+			    field.kind != pf::modal_field_kind::action)
+				CreateWindowExW(0, L"STATIC", label.c_str(), WS_CHILD | WS_VISIBLE,
+				                12, y + 4, 150, 22, _window, nullptr,
+				                GetModuleHandleW(nullptr), nullptr);
+
+			const auto id = static_cast<int>(1000 + index);
+			HWND control = nullptr;
+			switch (field.kind)
+			{
+			case pf::modal_field_kind::text:
+			{
+				const auto initial_text = pf::utf8_to_utf16(std::get<std::string>(field.value));
+				control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+				                          initial_text.c_str(),
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+				                          170, y, 300, 24, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          GetModuleHandleW(nullptr), nullptr);
+				break;
+			}
+			case pf::modal_field_kind::check_box:
+				control = CreateWindowExW(0, L"BUTTON", label.c_str(),
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+				                          12, y, 458, 24, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          GetModuleHandleW(nullptr), nullptr);
+				if (std::get<bool>(field.value)) SendMessageW(control, BM_SETCHECK, BST_CHECKED, 0);
+				break;
+			case pf::modal_field_kind::choice:
+				control = CreateWindowExW(0, L"COMBOBOX", nullptr,
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+				                          170, y, 300, 180, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          GetModuleHandleW(nullptr), nullptr);
+				for (const auto& choice : field.choices)
+					SendMessageW(control, CB_ADDSTRING, 0,
+					             reinterpret_cast<LPARAM>(pf::utf8_to_utf16(choice.first).c_str()));
+				break;
+			case pf::modal_field_kind::search_list:
+				control = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY,
+				                          170, y, 300, 80, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          GetModuleHandleW(nullptr), nullptr);
+				for (const auto& choice : field.choices)
+					SendMessageW(control, LB_ADDSTRING, 0,
+					             reinterpret_cast<LPARAM>(pf::utf8_to_utf16(choice.first).c_str()));
+				break;
+			case pf::modal_field_kind::action:
+				control = CreateWindowExW(0, L"BUTTON", label.c_str(),
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+				                          12, y, 458, 26, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          GetModuleHandleW(nullptr), nullptr);
+				_command_fields[id] = index;
+				break;
+			}
+			if (control)
+			{
+				EnableWindow(control, field.enabled ? TRUE : FALSE);
+				_controls[field.id] = control;
+			}
+		}
+
+		HBITMAP make_preview(const pf::modal_preview& preview)
+		{
+			if (preview.width <= 0 || preview.height <= 0 ||
+			    preview.bgra_pixels.size() < static_cast<size_t>(preview.width) * preview.height)
+				return nullptr;
+			BITMAPINFO info = {};
+			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			info.bmiHeader.biWidth = preview.width;
+			info.bmiHeader.biHeight = -preview.height;
+			info.bmiHeader.biPlanes = 1;
+			info.bmiHeader.biBitCount = 32;
+			info.bmiHeader.biCompression = BI_RGB;
+			void* bits = nullptr;
+			const auto dc = GetDC(_window);
+			const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+			ReleaseDC(_window, dc);
+			if (!bitmap || !bits)
+			{
+				if (bitmap) DeleteObject(bitmap);
+				return nullptr;
+			}
+			std::memcpy(bits, preview.bgra_pixels.data(),
+			            static_cast<size_t>(preview.width) * preview.height * sizeof(uint32_t));
+			return bitmap;
+		}
+
+		void accept()
+		{
+			std::map<uint32_t, pf::modal_value> values;
+			for (size_t i = 0; i != _definition.fields.size(); ++i)
+			{
+				auto& field = _definition.fields[i];
+				const auto found = _controls.find(field.id);
+				if (found == _controls.end()) continue;
+				const auto control = found->second;
+				if (field.kind == pf::modal_field_kind::text)
+				{
+					const auto length = GetWindowTextLengthW(control);
+					std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+					GetWindowTextW(control, value.data(), length + 1);
+					value.resize(static_cast<size_t>(length));
+					values[field.id] = pf::utf16_to_utf8(value);
+				}
+				else if (field.kind == pf::modal_field_kind::check_box)
+					values[field.id] = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+				else if (field.kind == pf::modal_field_kind::choice)
+				{
+					const auto selected = static_cast<int>(SendMessageW(control, CB_GETCURSEL, 0, 0));
+					values[field.id] = selected >= 0 && selected < static_cast<int>(field.choices.size())
+						                   ? field.choices[selected].second
+						                   : int64_t{0};
+				}
+				else if (field.kind == pf::modal_field_kind::search_list)
+				{
+					const auto selected = static_cast<int>(SendMessageW(control, LB_GETCURSEL, 0, 0));
+					values[field.id] = selected >= 0 && selected < static_cast<int>(field.choices.size())
+						                   ? field.choices[selected].second
+						                   : int64_t{0};
+				}
+			}
+			if (_definition.validate)
+			{
+				if (const auto error = _definition.validate(values))
+				{
+					MessageBoxW(_window, pf::utf8_to_utf16(*error).c_str(),
+					            pf::utf8_to_utf16(_definition.title).c_str(), MB_OK | MB_ICONWARNING);
+					return;
+				}
+			}
+			_result = std::move(values);
+			DestroyWindow(_window);
+		}
+
+	public:
+		~modal_dialog_host()
+		{
+			for (const auto bitmap : _preview_bitmaps)
+				if (bitmap) DeleteObject(bitmap);
+		}
+
+		modal_dialog_host(HWND owner, pf::modal_definition definition)
+			: _definition(std::move(definition)), _owner(owner)
+		{
+			dialog_class();
+			const auto title = pf::utf8_to_utf16(_definition.title);
+			const auto height = 120 + static_cast<int>(_definition.fields.size()) * 38 +
+			                    static_cast<int>(_definition.previews.size()) * 104;
+			_window = CreateWindowExW(WS_EX_DLGMODALFRAME, L"LibdesktopModalDialog", title.c_str(),
+			                          WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+			                          CW_USEDEFAULT, CW_USEDEFAULT, 500, height,
+			                          owner, nullptr, GetModuleHandleW(nullptr), this);
+			if (!_window) return;
+			const auto message = pf::utf8_to_utf16(_definition.message);
+			CreateWindowExW(0, L"STATIC", message.c_str(), WS_CHILD | WS_VISIBLE,
+			                12, 10, 458, 32, _window, nullptr, GetModuleHandleW(nullptr), nullptr);
+			int y = 48;
+			for (const auto& preview : _definition.previews)
+			{
+				const auto bitmap = make_preview(preview);
+				if (bitmap)
+				{
+					const auto width = std::min(458, preview.width);
+					const auto height = std::min(96, preview.height);
+					const auto control = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", nullptr,
+					                                    WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE,
+					                                    12, y, width, height, _window, nullptr,
+					                                    GetModuleHandleW(nullptr), nullptr);
+					SendMessageW(control, STM_SETIMAGE, IMAGE_BITMAP,
+					             reinterpret_cast<LPARAM>(bitmap));
+					_preview_bitmaps.push_back(bitmap);
+				}
+				y += 104;
+			}
+			for (size_t i = 0; i != _definition.fields.size(); ++i, y += 38)
+				add_control(i, y);
+			CreateWindowExW(0, L"BUTTON", pf::utf8_to_utf16(_definition.accept).c_str(),
+			                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+			                300, height - 58, 80, 28, _window, reinterpret_cast<HMENU>(1),
+			                GetModuleHandleW(nullptr), nullptr);
+			CreateWindowExW(0, L"BUTTON", pf::utf8_to_utf16(_definition.cancel).c_str(),
+			                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+			                390, height - 58, 80, 28, _window, reinterpret_cast<HMENU>(2),
+			                GetModuleHandleW(nullptr), nullptr);
+		}
+
+		std::optional<std::map<uint32_t, pf::modal_value>> run()
+		{
+			if (!_window) return std::nullopt;
+			const auto was_enabled = _owner && IsWindowEnabled(_owner);
+			if (_owner) EnableWindow(_owner, FALSE);
+			SetForegroundWindow(_window);
+			MSG message = {};
+			while (_window && GetMessageW(&message, nullptr, 0, 0) > 0)
+			{
+				if (!IsDialogMessageW(_window, &message))
+				{
+					TranslateMessage(&message);
+					DispatchMessageW(&message);
+				}
+			}
+			if (_owner)
+			{
+				EnableWindow(_owner, was_enabled ? TRUE : FALSE);
+				SetActiveWindow(_owner);
+			}
+			return _result;
+		}
+	};
+}
+
+std::optional<std::map<uint32_t, pf::modal_value>> pf::show_modal_dialog(
+	const pf::window_frame_ptr& owner, pf::modal_definition definition)
+{
+	const auto hwnd = owner ? reinterpret_cast<HWND>(
+		pf::platform_win::native_window_handle(owner)) : nullptr;
+	return modal_dialog_host(hwnd, std::move(definition)).run();
 }
 
 //  Platform locale 
@@ -3996,25 +5653,22 @@ std::unique_ptr<pf::spell_checker> pf::create_spell_checker()
 	return std::make_unique<win_spell_checker>();
 }
 
-//  Platform File I/O 
+//  Platform File I/O
 
 struct win_file_handle final : pf::file_handle
 {
-	HANDLE _h = INVALID_HANDLE_VALUE;
+	os::file_ptr _file;
 	uint32_t _size = 0;
 
-	win_file_handle(const HANDLE h, const uint32_t sz) : _h(h), _size(sz)
+	win_file_handle(os::file_ptr file, const uint32_t size) : _file(std::move(file)), _size(size)
 	{
 	}
 
-	~win_file_handle() override { if (_h != INVALID_HANDLE_VALUE) CloseHandle(_h); }
-
 	bool read(uint8_t* buffer, const uint32_t bytesToRead, uint32_t* bytesRead) override
 	{
-		DWORD dwRead = 0;
-		const auto ok = ReadFile(_h, buffer, bytesToRead, &dwRead, nullptr);
-		if (bytesRead) *bytesRead = dwRead;
-		return ok != FALSE;
+		const auto count = _file ? _file->read(buffer, bytesToRead) : 0;
+		if (bytesRead) *bytesRead = static_cast<uint32_t>(count);
+		return bytesToRead == 0 || count > 0;
 	}
 
 	uint32_t size() const override { return _size; }
@@ -4022,49 +5676,190 @@ struct win_file_handle final : pf::file_handle
 
 pf::file_handle_ptr pf::open_for_read(const file_path& path)
 {
-	const auto h = CreateFileW(utf8_to_utf16(path.view()).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-	                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (h == INVALID_HANDLE_VALUE) return nullptr;
-	DWORD high = 0;
-	const auto sz = GetFileSize(h, &high);
-	if (high != 0)
+	return open_for_read_result(path).file;
+}
+
+pf::file_open_result pf::open_for_read_result(const file_path& path, const bool sequential_scan)
+{
+	const auto mode = sequential_scan ? os::file_open_mode::sequential_scan : os::file_open_mode::read;
+	const auto file = os::open_file(path.view(), mode);
+	if (!file)
+		return {nullptr, file_failure(GetLastError())};
+	const auto size = file->size();
+	if (size > UINT32_MAX)
+		return {nullptr, file_failure(ERROR_FILE_TOO_LARGE, "The file is larger than the 32-bit read API.")};
+	return {std::make_shared<win_file_handle>(file, static_cast<uint32_t>(size)), {}};
+}
+
+class win_atomic_file_writer final : public pf::atomic_file_writer
+{
+	os::file_ptr _stage;
+	pf::file_path _stage_path;
+	pf::file_path _destination;
+	bool _committed = false;
+	pf::file_operation_result _failure;
+
+	pf::file_operation_result remember_failure(pf::file_operation_result result)
 	{
-		CloseHandle(h);
-		return nullptr; // file > 4GB not supported
+		if (_failure.success()) _failure = result;
+		return _failure;
 	}
-	return std::make_shared<win_file_handle>(h, sz);
+
+	void discard_stage()
+	{
+		if (!_stage_path.empty())
+		{
+			_stage.reset();
+			const auto removed = os::delete_file(_stage_path.view());
+			if (!removed.success())
+				pf::debug_trace(std::format("Atomic stage cleanup failed: {}", removed.diagnostic));
+		}
+	}
+
+public:
+	win_atomic_file_writer(os::file_ptr stage, pf::file_path stage_path, pf::file_path destination)
+		: _stage(std::move(stage)), _stage_path(std::move(stage_path)), _destination(std::move(destination))
+	{
+	}
+
+	~win_atomic_file_writer() override
+	{
+		if (!_committed) discard_stage();
+	}
+
+	pf::file_operation_result write(const std::span<const uint8_t> bytes) override
+	{
+		if (!_failure.success()) return _failure;
+		if (g_test_atomic_file_failure.load(std::memory_order_relaxed) ==
+		    pf::atomic_file_test_failure::write)
+			return remember_failure(file_failure(ERROR_WRITE_FAULT, "The atomic writer write was forced to fail."));
+		if (!_stage) return remember_failure(file_failure(ERROR_INVALID_HANDLE));
+		const auto written = _stage->write(bytes.data(), bytes.size());
+		if (written == bytes.size()) return {};
+		return remember_failure(file_failure(GetLastError(),
+		                                    "The atomic writer wrote fewer bytes than requested."));
+	}
+
+	pf::file_operation_result flush() override
+	{
+		if (!_failure.success()) return _failure;
+		if (g_test_atomic_file_failure.load(std::memory_order_relaxed) ==
+		    pf::atomic_file_test_failure::flush)
+			return remember_failure(file_failure(ERROR_WRITE_FAULT, "The atomic writer flush was forced to fail."));
+		if (!_stage || !_stage->flush()) return remember_failure(file_failure(GetLastError()));
+		return {};
+	}
+
+	pf::file_operation_result commit() override
+	{
+		if (!_failure.success()) return _failure;
+		if (_committed) return file_failure(ERROR_INVALID_FUNCTION, "The atomic writer was already committed.");
+		if (g_test_atomic_file_failure.load(std::memory_order_relaxed) ==
+		    pf::atomic_file_test_failure::commit)
+			return remember_failure(file_failure(ERROR_WRITE_FAULT, "The atomic writer commit was forced to fail."));
+
+		const auto flushed = flush();
+		if (!flushed.success()) return flushed;
+
+		_stage.reset();
+		const auto moved = os::move_file(_stage_path.view(), _destination.view(), false);
+		if (!moved.success())
+		{
+			const auto result = remember_failure(os_failure(moved));
+			const auto removed = os::delete_file(_stage_path.view());
+			if (!removed.success())
+				pf::debug_trace(std::format("Atomic stage cleanup failed: {}", removed.diagnostic));
+			return result;
+		}
+		_committed = true;
+		return {};
+	}
+
+	pf::file_path staged_path() const override
+	{
+		return _stage_path;
+	}
+};
+
+pf::atomic_file_writer_open_result pf::create_atomic_file_writer_result(const file_path& destination)
+{
+	if (destination.empty())
+		return {nullptr, file_failure(ERROR_INVALID_NAME, "The atomic writer destination is empty.")};
+	if (g_test_atomic_file_failure.load(std::memory_order_relaxed) ==
+	    atomic_file_test_failure::open)
+		return {nullptr, file_failure(ERROR_ACCESS_DENIED, "The atomic writer open was forced to fail.")};
+
+	static std::atomic_uint32_t sequence = 0;
+	bool force_collision = g_test_atomic_file_failure.load(std::memory_order_relaxed) ==
+	                       atomic_file_test_failure::stage_collision;
+	for (unsigned attempt = 0; attempt != 64; ++attempt)
+	{
+		if (force_collision)
+		{
+			force_collision = false;
+			continue;
+		}
+
+		const auto name = std::format(".libdesktop-stage-{:08x}-{:08x}.tmp",
+		                              static_cast<uint32_t>(GetCurrentProcessId()),
+		                              sequence.fetch_add(1, std::memory_order_relaxed));
+		const auto stage_path = destination.folder().combine(name);
+		const auto stage = os::open_file(stage_path.view(), os::file_open_mode::create_new);
+		if (stage)
+		{
+			try
+			{
+				return {std::make_shared<win_atomic_file_writer>(stage, stage_path, destination), {}};
+			}
+			catch (...)
+			{
+				const auto removed = os::delete_file(stage_path.view());
+				if (!removed.success())
+					pf::debug_trace(std::format("Atomic stage allocation cleanup failed: {}",
+					                            removed.diagnostic));
+				throw;
+			}
+		}
+
+		const auto error = GetLastError();
+		if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+			return {nullptr, file_failure(error)};
+	}
+
+	return {nullptr, file_failure(ERROR_ALREADY_EXISTS, "Unable to claim a unique atomic stage path.")};
+}
+
+pf::atomic_file_writer_ptr pf::create_atomic_file_writer(const file_path& destination)
+{
+	return create_atomic_file_writer_result(destination).writer;
+}
+
+void pf::test_set_atomic_file_failure(const atomic_file_test_failure failure)
+{
+	g_test_atomic_file_failure.store(failure, std::memory_order_relaxed);
 }
 
 //  Writable File Handle â”€
 
 struct win_writable_file_handle final : pf::writable_file_handle
 {
-	HANDLE _h = INVALID_HANDLE_VALUE;
+	os::file_ptr _file;
 
-	explicit win_writable_file_handle(const HANDLE h) : _h(h)
+	explicit win_writable_file_handle(os::file_ptr file) : _file(std::move(file))
 	{
-	}
-
-	~win_writable_file_handle() override
-	{
-		if (_h != INVALID_HANDLE_VALUE) CloseHandle(_h);
 	}
 
 	uint32_t write(const uint8_t* buffer, const uint32_t bytes) override
 	{
-		DWORD written = 0;
-		if (!WriteFile(_h, buffer, bytes, &written, nullptr))
-			return 0;
-		return written;
+		return _file ? static_cast<uint32_t>(_file->write(buffer, bytes)) : 0;
 	}
 };
 
 pf::writable_file_handle_ptr pf::open_file_for_write(const file_path& path)
 {
-	const auto h = CreateFileW(utf8_to_utf16(path.view()).c_str(), GENERIC_WRITE, 0, nullptr,
-	                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (h == INVALID_HANDLE_VALUE) return nullptr;
-	return std::make_shared<win_writable_file_handle>(h);
+	const auto file = os::open_file(path.view(), os::file_open_mode::create);
+	if (!file) return nullptr;
+	return std::make_shared<win_writable_file_handle>(file);
 }
 
 static BOOL SetProcessDpiAwarenessContextIndirect(const DPI_AWARENESS_CONTEXT dpiContext)
@@ -4121,6 +5916,8 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	if (!init_result.start_gui)
 	{
 		dispatcher().shutdown(false);
+		g_instance_signals.clear();
+		app_destroy();
 		CloseHandle(exit_h);
 		exit_h = nullptr;
 		LocalFree(argv);
@@ -4132,9 +5929,23 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	pf::debug_trace("WinMain: before create\n");
 
 	app_statedow->create_window(L"LibdesktopWnd", nullptr, {},
-	                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN);
+	                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, init_result.window);
 
 	pf::debug_trace("WinMain: after create\n");
+
+	if (!app_statedow->m_hWnd)
+	{
+		pf::debug_trace(init_result.error_message.empty()
+			                ? "WinMain: unable to create the application window\n"
+			                : init_result.error_message + "\n");
+		dispatcher().shutdown(false);
+		CloseHandle(exit_h);
+		exit_h = nullptr;
+		g_instance_signals.clear();
+		app_destroy();
+		CoUninitialize();
+		return init_result.exit_code != 0 ? init_result.exit_code : 1;
+	}
 
 	g_hWnd = app_statedow->m_hWnd;
 
@@ -4157,6 +5968,15 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 
 	const int result = init_result.main_loop ? init_result.main_loop() : pf::platform_run();
 
+	// A custom loop may return without destroying its frame. Close it while the application's
+	// reactor and services are still alive; WM_DESTROY then breaks the frame ownership cycle.
+	if (g_hWnd && IsWindow(g_hWnd))
+	{
+		DestroyWindow(g_hWnd);
+		g_hWnd = nullptr;
+	}
+	g_instance_signals.clear();
+
 	// The README promises app_destroy, and the applications release what they
 	// hold in it — workers, network sessions, a COM spell checker. The task queue
 	// stops first (platform_run has already stopped it; a main_loop has not), so
@@ -4171,114 +5991,47 @@ INT WINAPI WinMain(const HINSTANCE hInstance, HINSTANCE, LPSTR, const int nCmdSh
 	return result;
 }
 
-static bool is_folder(const DWORD attributes)
-{
-	return attributes != INVALID_FILE_ATTRIBUTES &&
-		attributes & FILE_ATTRIBUTE_DIRECTORY;
-}
-
-uint64_t ft_to_ts(const FILETIME& ft)
-{
-	return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-}
-
-static uint64_t fs_to_i64(const DWORD nFileSizeHigh, const DWORD nFileSizeLow)
-{
-	return (static_cast<uint64_t>(nFileSizeHigh) << 32) | nFileSizeLow;
-}
-
-static bool is_offline_attribute(const DWORD attributes)
-{
-	constexpr auto offline_mask = FILE_ATTRIBUTE_OFFLINE |
-		FILE_ATTRIBUTE_RECALL_ON_OPEN |
-		FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS |
-		FILE_ATTRIBUTE_VIRTUAL;
-
-	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & offline_mask) != 0;
-}
-
-static void populate_file_attributes(pf::file_attributes_t& fi, const WIN32_FIND_DATA& fad)
-{
-	fi.created = ft_to_ts(fad.ftCreationTime);
-	fi.modified = ft_to_ts(fad.ftLastWriteTime);
-	fi.size = fs_to_i64(fad.nFileSizeHigh, fad.nFileSizeLow);
-	fi.is_readonly = 0 != (fad.dwFileAttributes & FILE_ATTRIBUTE_READONLY);
-	fi.is_hidden = 0 != (fad.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN);
-	fi.is_offline = 0 != is_offline_attribute(fad.dwFileAttributes);
-}
-
-static bool is_dots(const wchar_t* name)
-{
-	const auto* p = name;
-	while (*p)
-	{
-		if (*p != '.') return false;
-		p += 1;
-	}
-
-	return !pf::is_empty(name);
-}
-
-static bool can_show_entry(const wchar_t* name, const DWORD attributes, const bool show_hidden, const bool want_folder)
-{
-	if (pf::is_empty(name)) return false;
-	if (attributes == INVALID_FILE_ATTRIBUTES) return false;
-	if (!show_hidden && (attributes & FILE_ATTRIBUTE_HIDDEN) != 0) return false;
-	if (is_folder(attributes) != want_folder) return false;
-	return !is_dots(name);
-}
-
-static bool can_show_file(const wchar_t* name, const DWORD attributes, const bool show_hidden)
-{
-	return can_show_entry(name, attributes, show_hidden, false);
-}
-
-static bool can_show_folder(const wchar_t* name, const DWORD attributes, const bool show_hidden)
-{
-	return can_show_entry(name, attributes, show_hidden, true);
-}
-
 pf::folder_contents pf::iterate_file_items(const file_path& folder, const bool show_hidden)
 {
+	const auto source = os::enumerate_files(folder.view(), show_hidden);
 	folder_contents results;
-	WIN32_FIND_DATA fd;
-
-	const auto file_search_path = utf8_to_utf16(std::format("{}\\*.*", folder.view()));
-	auto* const files = FindFirstFileExW(file_search_path.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
-	                                     nullptr,
-	                                     FIND_FIRST_EX_LARGE_FETCH);
-
-	results.files.reserve(64);
-	results.folders.reserve(16);
-
-	if (files != INVALID_HANDLE_VALUE)
+	results.files.reserve(source.entries.size());
+	results.folders.reserve(source.entries.size());
+	for (const auto& entry : source.entries)
 	{
-		do
+		const auto path = folder.combine(entry.name);
+		if (entry.attributes.directory)
 		{
-			if (is_folder(fd.dwFileAttributes))
-			{
-				if (can_show_folder(fd.cFileName, fd.dwFileAttributes, show_hidden))
-				{
-					folder_info i;
-					i.path = folder.combine(utf16_to_utf8(fd.cFileName));
-					populate_file_attributes(i.attributes, fd);
-					results.folders.emplace_back(i);
-				}
-			}
-			else
-			{
-				if (can_show_file(fd.cFileName, fd.dwFileAttributes, show_hidden))
-				{
-					file_info i;
-					i.path = folder.combine(utf16_to_utf8(fd.cFileName));
-					populate_file_attributes(i.attributes, fd);
-					results.files.emplace_back(i);
-				}
-			}
+			folder_info item;
+			item.path = path;
+			item.attributes.is_readonly = entry.attributes.readonly;
+			item.attributes.is_offline = entry.attributes.offline;
+			item.attributes.is_hidden = entry.attributes.hidden;
+			item.attributes.is_reparse = entry.attributes.reparse;
+			item.attributes.modified = entry.attributes.modified;
+			item.attributes.created = entry.attributes.created;
+			item.attributes.size = entry.attributes.size;
+			item.attributes.identity.volume = entry.attributes.identity.volume;
+			item.attributes.identity.index = entry.attributes.identity.index;
+			item.attributes.identity.valid = entry.attributes.identity.valid;
+			results.folders.emplace_back(std::move(item));
 		}
-		while (FindNextFile(files, &fd) != 0);
-
-		FindClose(files);
+		else
+		{
+			file_info item;
+			item.path = path;
+			item.attributes.is_readonly = entry.attributes.readonly;
+			item.attributes.is_offline = entry.attributes.offline;
+			item.attributes.is_hidden = entry.attributes.hidden;
+			item.attributes.is_reparse = entry.attributes.reparse;
+			item.attributes.modified = entry.attributes.modified;
+			item.attributes.created = entry.attributes.created;
+			item.attributes.size = entry.attributes.size;
+			item.attributes.identity.volume = entry.attributes.identity.volume;
+			item.attributes.identity.index = entry.attributes.identity.index;
+			item.attributes.identity.valid = entry.attributes.identity.valid;
+			results.files.emplace_back(std::move(item));
+		}
 	}
 
 	return results;
@@ -4286,10 +6039,7 @@ pf::folder_contents pf::iterate_file_items(const file_path& folder, const bool s
 
 uint64_t pf::file_modified_time(const file_path& path)
 {
-	WIN32_FILE_ATTRIBUTE_DATA attr{};
-	if (GetFileAttributesExW(utf8_to_utf16(path.view()).c_str(), GetFileExInfoStandard, &attr))
-		return ft_to_ts(attr.ftLastWriteTime);
-	return 0;
+	return os::query_file(path.view()).modified;
 }
 
 
@@ -4443,7 +6193,7 @@ struct pf::web_host
 pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool secure, const int port,
                                      const std::string_view user_agent)
 {
-	auto native = os::connect_to_host(host, secure, port, user_agent.empty() ? "PotatoApp/1.0" : user_agent);
+	auto native = os::connect_to_host(host, secure, port, user_agent.empty() ? "libdesktop/1.0" : user_agent);
 	if (!native) return nullptr;
 	auto result = std::make_shared<web_host>();
 	result->native = std::move(native);
@@ -4493,153 +6243,8 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 // These implementations sit at the bottom of the file so they can be reviewed
 // (and eventually moved out) as a single block.
 
-#include <wincodec.h>
-#include <winhttp.h>
+// WIC bitmap loading was extracted to src/core/platform_win_image.cpp.
 
-#pragma comment(lib, "windowscodecs.lib")
-#pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "comctl32.lib")
-
-namespace
-{
-	// COM smart pointer (minimal â€” used only inside this file).
-	template <class T>
-	class com_ptr
-	{
-		T* _p = nullptr;
-
-	public:
-		com_ptr() = default;
-		com_ptr(const com_ptr&) = delete;
-		com_ptr& operator=(const com_ptr&) = delete;
-
-		com_ptr(com_ptr&& o) noexcept : _p(o._p) { o._p = nullptr; }
-
-		com_ptr& operator=(com_ptr&& o) noexcept
-		{
-			if (this != &o)
-			{
-				if (_p) _p->Release();
-				_p = o._p;
-				o._p = nullptr;
-			}
-			return *this;
-		}
-
-		~com_ptr() { if (_p) _p->Release(); }
-
-		T** put()
-		{
-			if (_p)
-			{
-				_p->Release();
-				_p = nullptr;
-			}
-			return &_p;
-		}
-
-		T* get() const { return _p; }
-		T* operator->() const { return _p; }
-		explicit operator bool() const { return _p != nullptr; }
-
-		void attach(T* p)
-		{
-			if (_p) _p->Release();
-			_p = p;
-		}
-	};
-
-	// Lazily-created process-wide WIC factory.
-	IWICImagingFactory* wic_factory()
-	{
-		static IWICImagingFactory* s_factory = []() -> IWICImagingFactory*
-		{
-			IWICImagingFactory* f = nullptr;
-			const auto hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-			                                 IID_PPV_ARGS(&f));
-			return SUCCEEDED(hr) ? f : nullptr;
-		}();
-		return s_factory;
-	}
-
-	pf::bitmap_ptr decode_with_wic(IWICBitmapDecoder* decoder)
-	{
-		com_ptr<IWICBitmapFrameDecode> frame;
-		if (FAILED(decoder->GetFrame(0, frame.put())) || !frame) return nullptr;
-
-		com_ptr<IWICFormatConverter> converter;
-		if (FAILED(wic_factory()->CreateFormatConverter(converter.put())) || !converter) return nullptr;
-
-		// GUID_WICPixelFormat32bppBGRA â€” top-down 32-bit BGRA, no premultiplication.
-		if (FAILED(converter->Initialize(
-			frame.get(),
-			GUID_WICPixelFormat32bppBGRA,
-			WICBitmapDitherTypeNone,
-			nullptr, 0.0,
-			WICBitmapPaletteTypeMedianCut)))
-			return nullptr;
-
-		UINT w = 0, h = 0;
-		if (FAILED(converter->GetSize(&w, &h)) || w == 0 || h == 0) return nullptr;
-
-		std::vector<uint32_t> pixels(static_cast<size_t>(w) * h);
-		const UINT stride = w * 4;
-		const UINT cb = stride * h;
-		if (FAILED(converter->CopyPixels(nullptr, stride, cb,
-			reinterpret_cast<BYTE*>(pixels.data()))))
-			return nullptr;
-
-		return std::make_shared<pf::bitmap>(static_cast<int>(w), static_cast<int>(h), std::move(pixels));
-	}
-}
-
-pf::bitmap_ptr pf::load_bitmap_file(const file_path& path)
-{
-	auto* const factory = wic_factory();
-	if (!factory) return nullptr;
-
-	com_ptr<IWICBitmapDecoder> decoder;
-	if (FAILED(factory->CreateDecoderFromFilename(
-		utf8_to_utf16(path.view()).c_str(),
-		nullptr, GENERIC_READ,
-		WICDecodeMetadataCacheOnLoad,
-		decoder.put())) || !decoder)
-		return nullptr;
-
-	return decode_with_wic(decoder.get());
-}
-
-pf::bitmap_ptr pf::load_bitmap_memory(const uint8_t* data, const size_t size)
-{
-	auto* const factory = wic_factory();
-	if (!factory || !data || size == 0) return nullptr;
-
-	com_ptr<IWICStream> stream;
-	if (FAILED(factory->CreateStream(stream.put())) || !stream) return nullptr;
-	if (FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(data), static_cast<DWORD>(size)))) return nullptr;
-
-	com_ptr<IWICBitmapDecoder> decoder;
-	if (FAILED(factory->CreateDecoderFromStream(stream.get(), nullptr,
-		WICDecodeMetadataCacheOnLoad,
-		decoder.put())) || !decoder)
-		return nullptr;
-
-	return decode_with_wic(decoder.get());
-}
-
-pf::bitmap_ptr pf::load_bitmap_named_resource(const std::string_view name, const std::string_view type)
-{
-	const auto wname = utf8_to_utf16(name);
-	const auto wtype = utf8_to_utf16(type);
-	const HRSRC hres = FindResourceW(resource_instance, wname.c_str(), wtype.c_str());
-	if (!hres) return nullptr;
-	const HGLOBAL hdata = LoadResource(resource_instance, hres);
-	if (!hdata) return nullptr;
-	const auto* const ptr = static_cast<const uint8_t*>(LockResource(hdata));
-	const auto size = SizeofResource(resource_instance, hres);
-	if (!ptr || size == 0) return nullptr;
-	return load_bitmap_memory(ptr, size);
-}
 
 //  Async HTTP (WinHTTP) 
 
@@ -5081,7 +6686,7 @@ namespace
 
 pf::async_http_session_ptr pf::create_async_http_session(const std::string_view user_agent)
 {
-	const auto agent = user_agent.empty() ? std::wstring(L"PotatoApp/1.0") : utf8_to_utf16(user_agent);
+	const auto agent = user_agent.empty() ? std::wstring(L"libdesktop/1.0") : utf8_to_utf16(user_agent);
 	return std::make_shared<win_async_http_session>(agent);
 }
 

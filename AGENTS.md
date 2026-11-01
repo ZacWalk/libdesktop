@@ -1,9 +1,11 @@
 # AGENTS.md
 
-libdesktop is the platform layer shared by five applications. Four build on
-libdesktop-core (`dde`, `libdos`, `potato` and `stuntcarracer`), and Diffractor
-builds on libdesktop-system, libdesktop-render and libdesktop-text. It is a library with no
-application of its own.
+libdesktop is the platform layer shared by twelve applications. `dde`,
+`libdos`, `potato`, `stuntcarracer`, `lib8bit`'s host, `fast-draw`, `low-ban`
+and `zpilot` build on libdesktop-core; `sys-mate` also uses libdesktop-ui.
+ImageWalker 3.0 and `ergo-active` use core, ui and system, while ImageWalker's
+shared imaging adapters use core and system. Diffractor builds on system,
+render and text. It is a library with no application of its own.
 
 It ships six static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
 (`pf::ui`), `libdesktop-text` (the part of `pf::ui` that is standard C++ alone:
@@ -23,7 +25,7 @@ libdesktop-ui's ownership boundary is described in
 ## Non-negotiables
 
 1. **`src/core/platform.h` includes no OS headers.** Not `windows.h`, not
-   transitively. The Windows SDK appears only in `src/core/platform_win.cpp`;
+   transitively. The Windows SDK stays in `src/core/platform_win*.cpp`;
    `src/core/platform_audio.cpp` is standard C++ over libdesktop-os.
 2. **The API must be expressible on another OS.** Nothing Win32-shaped may leak
    into a signature: no `HWND`, no `HRESULT`, no hundredths-of-a-decibel volume,
@@ -33,11 +35,13 @@ libdesktop-ui's ownership boundary is described in
 3. **App-specific knowledge stays out.** No app names, no resource identifiers,
    no game constants. `config_set_app_name` exists precisely so the layer never
    has to know who is calling.
-4. **A change here breaks seven repos.** Adding to `window_frame` or
+   Windows backend character-set definitions are private; consumers choose
+   their own character set rather than inheriting Unicode from core.
+4. **A change here reaches every consumer.** Adding to `window_frame` or
    `frame_reactor` is a breaking change for every app and their test stubs.
    Build all of them before you consider a change done — see below.
    `libdesktop::core` and `libdesktop::ui` are the names every one of them
-   links; renaming either moves all seven in the same step.
+   links; renaming either moves its consumers in the same step.
 5. **Add a test with a capability.** `tests/platform_tests.cpp`,
    `tests/ui_tests.cpp` and `tests/text_tests.cpp` are console programs;
    anything checkable without a window belongs in one of them.
@@ -60,6 +64,10 @@ Run the repository gate after changes here:
 
 The gate builds and tests the `libdesktop`, `libdesktop-ui`, `libdesktop-text`,
 `libdesktop-system`, `libdesktop-render` and `libdesktop-os` CTest labels, in Debug and Release.
+The os and ui suites share a CTest resource lock because both change the real
+clipboard during their round trips; preserve that lock when adding suites.
+Their fixtures also bound retries for a temporarily busy clipboard; they do
+not skip failed round trips or change the production APIs' failure behavior.
 libdesktop-system, libdesktop-render and libdesktop-text also build on Linux: run
 the commands in the [README](README.md#build-and-test) there too after changing
 any of them. The
@@ -78,10 +86,10 @@ documented in its own repository.
 
 The workspace's root AGENTS.md has the cross-repository gate for every consumer.
 
-Four apps — dde, potato, stuntcarracer and libdos — use a sibling
-`../libdesktop` checkout automatically, whatever its HEAD, so a local edit here
-reaches them with no publish step; Diffractor does the same for
-libdesktop-system and libdesktop-render.
+Every workspace consumer uses a sibling `../libdesktop` checkout
+automatically, whatever its HEAD, so a local edit reaches them with no publish
+step. Local success does not validate their published pins; use the workspace
+gate and publish the library before advancing consumer revisions.
 Open work, including the candidate second adopters of each module, is in
 [docs/todo.md](docs/todo.md).
 
@@ -102,6 +110,10 @@ The foundation and OS services that began as Diffractor's, described in
 [docs/system.md](docs/system.md). It is opt-in: no `pf::` application builds it
 unless it sets `LIBDESKTOP_SYSTEM`, so a change here reaches only the
 applications that do.
+
+Windows backend character-set definitions are private. A consumer chooses its
+own character set; in particular, linking system must not force ImageWalker's
+historical `_MBCS` release to compile as Unicode.
 
 1. **The API headers include no OS header.** `platform.h`, the `util*.h` headers
    and `system.h` are portable; the Windows SDK appears only in
@@ -150,8 +162,9 @@ reaching only the applications that set `LIBDESKTOP_RENDER`.
 ## libdesktop-os
 
 The OS services libdesktop-core and libdesktop-system share, so each has one
-implementation to maintain and to port: today the web client, clipboard text,
-the known folders and the audio endpoint. `pf::` and `platform::` keep their own
+implementation to maintain and to port: files, dialogs, escaped INI storage,
+the web client, clipboard text, known folders and the audio endpoint.
+`pf::` and `platform::` keep their own
 APIs and wrap it; neither exposes it, and no application includes
 `libdesktop/os.h`.
 

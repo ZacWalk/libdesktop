@@ -16,6 +16,7 @@ add_library(libdesktop-system STATIC
     include/libdesktop/platform_compat.h
     include/libdesktop/platform.h
     include/libdesktop/platform_environment.h
+    include/libdesktop/detail/cpu_features.h
     include/libdesktop/util.h
     include/libdesktop/util_base64.h
     include/libdesktop/util_date.h
@@ -48,6 +49,7 @@ target_precompile_headers(libdesktop-system PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 if(MSVC)
     # /utf-8 is public because the headers hold UTF-8 literals that a consumer compiles too.
     target_compile_options(libdesktop-system PUBLIC /utf-8 PRIVATE /bigobj /W3 /sdl)
+    libdesktop_enable_msvc_exceptions(libdesktop-system)
 else()
     target_compile_options(libdesktop-system PRIVATE -Wall -Wno-unknown-pragmas -Wno-multichar)
 endif()
@@ -64,7 +66,7 @@ if(WIN32)
         src/system/platform_win_web.cpp
     )
 
-    target_compile_definitions(libdesktop-system PUBLIC UNICODE _UNICODE)
+    target_compile_definitions(libdesktop-system PRIVATE UNICODE _UNICODE)
 
     # The services platform:: shares with libdesktop-core (include/libdesktop/os.h).
     target_link_libraries(libdesktop-system PRIVATE libdesktop::os)

@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.21)
 
 project(libdesktop LANGUAGES CXX VERSION 0.1.0)
 
+function(libdesktop_enable_msvc_exceptions target)
+    if(MSVC)
+        string(FIND "${CMAKE_CXX_FLAGS}" "/EHsc" libdesktop_ehsc_pos)
+        if(libdesktop_ehsc_pos EQUAL -1)
+            target_compile_options(${target} PRIVATE /EHsc)
+        endif()
+    endif()
+endfunction()
+
 # --- libdesktop-os: the OS services libdesktop-core and libdesktop-system share ---
 # A service here names no application and writes no log, so both stacks call it: libdesktop-core's
 # backend for pf::, libdesktop-system's Windows backend for platform:: (docs/system.md). Its backend
@@ -21,6 +30,7 @@ if(WIN32)
     if(MSVC)
         target_compile_options(libdesktop-os PRIVATE /W3)
     endif()
+    libdesktop_enable_msvc_exceptions(libdesktop-os)
     target_link_libraries(libdesktop-os PUBLIC wininet winhttp user32 shell32 ole32 avrt)
 
     if(PROJECT_IS_TOP_LEVEL)
@@ -32,9 +42,11 @@ if(WIN32)
         if(MSVC)
             target_compile_options(libdesktop_os_tests PRIVATE /W3)
         endif()
+        libdesktop_enable_msvc_exceptions(libdesktop_os_tests)
 
         add_test(NAME libdesktop-os COMMAND libdesktop_os_tests)
-        set_tests_properties(libdesktop-os PROPERTIES LABELS libdesktop-os)
+        set_tests_properties(libdesktop-os PROPERTIES
+            LABELS libdesktop-os RESOURCE_LOCK libdesktop-clipboard)
     endif()
 endif()
 
@@ -64,6 +76,7 @@ if(LIBDESKTOP_SYSTEM)
         else()
             target_compile_options(libdesktop_system_tests PRIVATE -Wall -Wno-unknown-pragmas)
         endif()
+        libdesktop_enable_msvc_exceptions(libdesktop_system_tests)
 
         add_test(NAME libdesktop-system COMMAND libdesktop_system_tests)
         set_tests_properties(libdesktop-system PROPERTIES LABELS libdesktop-system)
@@ -84,6 +97,7 @@ if(LIBDESKTOP_RENDER)
     if(PROJECT_IS_TOP_LEVEL)
         add_executable(libdesktop_render_tests tests/render_tests.cpp tests/system_test.h)
         if(WIN32)
+            target_compile_definitions(libdesktop_render_tests PRIVATE UNICODE _UNICODE)
             target_sources(libdesktop_render_tests PRIVATE tests/render_win_tests.cpp tests/render_tests.rc
                 tests/system_tests.manifest)
             libdesktop_render_resources(tests/render_tests.rc)
@@ -96,6 +110,7 @@ if(LIBDESKTOP_RENDER)
         else()
             target_compile_options(libdesktop_render_tests PRIVATE -Wall -Wno-unknown-pragmas)
         endif()
+        libdesktop_enable_msvc_exceptions(libdesktop_render_tests)
 
         add_test(NAME libdesktop-render COMMAND libdesktop_render_tests)
         set_tests_properties(libdesktop-render PROPERTIES LABELS libdesktop-render)
@@ -116,6 +131,7 @@ target_compile_features(libdesktop-text PUBLIC cxx_std_20)
 
 # Reached as #include "ui/syntax.h", the spelling libdesktop-ui and its consumers already use.
 target_include_directories(libdesktop-text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+libdesktop_enable_msvc_exceptions(libdesktop-text)
 
 if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
@@ -127,6 +143,7 @@ if(PROJECT_IS_TOP_LEVEL)
     else()
         target_compile_options(libdesktop_text_tests PRIVATE -Wall -Wno-unknown-pragmas)
     endif()
+    libdesktop_enable_msvc_exceptions(libdesktop_text_tests)
 
     add_test(NAME libdesktop-text COMMAND libdesktop_text_tests)
     set_tests_properties(libdesktop-text PROPERTIES LABELS libdesktop-text)
@@ -145,10 +162,14 @@ endif()
 add_library(libdesktop-core STATIC
     src/core/platform.h
     src/core/platform_common.cpp
+    src/core/platform_pixel.cpp
 )
 add_library(libdesktop::core ALIAS libdesktop-core)
 
 target_compile_features(libdesktop-core PUBLIC cxx_std_20)
+if(MSVC)
+    libdesktop_enable_msvc_exceptions(libdesktop-core)
+endif()
 
 # Keeps #include "platform.h" resolving for every consumer after the move.
 target_include_directories(libdesktop-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/core")
@@ -160,12 +181,34 @@ if(WIN32)
 
     enable_language(RC)
 
-    target_sources(libdesktop-core PRIVATE src/core/platform_win.cpp src/core/platform_audio.h
-        src/core/platform_audio.cpp)
+    target_sources(libdesktop-core PRIVATE src/core/platform_win.cpp src/core/platform_win_image.cpp
+        src/core/platform_win_compound.cpp src/core/platform_audio.h src/core/platform_audio.cpp
+        src/core/platform_win_interop.h)
+
+    # Keep the AVX2 code in its own object: the rest of Core must retain its
+    # runtime-dispatch baseline and remain buildable for non-x86 targets.
+    set(libdesktop_x86 FALSE)
+    if(CMAKE_GENERATOR_PLATFORM MATCHES "^(x64|Win32)$")
+        set(libdesktop_x86 TRUE)
+    elseif(NOT CMAKE_GENERATOR_PLATFORM)
+        # Ninja does not expose a platform name. The MSVC compiler path still
+        # ends in x64/x86 (and in arm64 for the scalar-only build).
+        get_filename_component(libdesktop_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        if(libdesktop_compiler_bin MATCHES "[/\\\\](x64|x86)$")
+            set(libdesktop_x86 TRUE)
+        endif()
+    endif()
+    if(libdesktop_x86)
+        target_sources(libdesktop-core PRIVATE src/core/platform_pixel_avx2.cpp)
+        set_source_files_properties(src/core/platform_pixel_avx2.cpp
+            PROPERTIES COMPILE_OPTIONS /arch:AVX2)
+        target_compile_definitions(libdesktop-core PRIVATE PF_PIXEL_AVX2_TU)
+    endif()
 
     # WIN32_LEAN_AND_MEAN / NOMINMAX are defined by platform_win.cpp itself;
     # defining them here as well would be a macro redefinition.
-    target_compile_definitions(libdesktop-core PUBLIC WIN32 _WINDOWS UNICODE _UNICODE)
+    target_compile_definitions(libdesktop-core PUBLIC WIN32 _WINDOWS)
+    target_compile_definitions(libdesktop-core PRIVATE UNICODE _UNICODE)
 
     # The services pf:: shares with libdesktop-system, its audio endpoint among them. Private: an
     # application links it through libdesktop-core and never includes it.
@@ -175,7 +218,7 @@ if(WIN32)
     # them here is what a non-MSVC backend will rely on once the pragmas go.
     target_link_libraries(libdesktop-core PUBLIC
         shell32 comdlg32 shlwapi windowscodecs winhttp comctl32
-        ole32 oleaut32 user32 gdi32 advapi32
+        ole32 oleaut32 user32 gdi32 advapi32 msimg32
     )
 else()
     message(FATAL_ERROR "libdesktop has a Win32 backend only; add src for this platform first.")
@@ -213,6 +256,9 @@ add_library(libdesktop-ui STATIC
 add_library(libdesktop::ui ALIAS libdesktop-ui)
 
 target_link_libraries(libdesktop-ui PUBLIC libdesktop::core libdesktop::text)
+if(MSVC)
+    libdesktop_enable_msvc_exceptions(libdesktop-ui)
+endif()
 
 # Reached as #include "ui/widgets.h", so generic names like widgets.h or theme.h
 # cannot collide with an application's own headers.
@@ -230,6 +276,8 @@ if(PROJECT_IS_TOP_LEVEL)
         DESCRIPTION "libdesktop unit tests"
         EMBED       tests/data/sample.css
     )
+    libdesktop_enable_msvc_exceptions(libdesktop_tests)
+    target_compile_definitions(libdesktop_tests PRIVATE UNICODE _UNICODE)
 
     add_test(NAME libdesktop COMMAND libdesktop_tests)
     set_tests_properties(libdesktop PROPERTIES LABELS libdesktop)
@@ -238,7 +286,10 @@ if(PROJECT_IS_TOP_LEVEL)
         SOURCES     tests/ui_tests.cpp
         DESCRIPTION "libdesktop-ui unit tests"
     )
+    libdesktop_enable_msvc_exceptions(libdesktop_ui_tests)
+    target_compile_definitions(libdesktop_ui_tests PRIVATE UNICODE _UNICODE)
 
     add_test(NAME libdesktop-ui COMMAND libdesktop_ui_tests)
-    set_tests_properties(libdesktop-ui PROPERTIES LABELS libdesktop-ui)
+    set_tests_properties(libdesktop-ui PROPERTIES
+        LABELS libdesktop-ui RESOURCE_LOCK libdesktop-clipboard)
 endif()

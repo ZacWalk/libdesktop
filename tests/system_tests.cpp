@@ -339,6 +339,57 @@ static void should_save_a_blob_without_truncating_the_destination()
 	assert_equal(1_z, contents.files.size(), "the save leaves only the destination behind");
 }
 
+static void should_adopt_vector_bytes_without_copying()
+{
+	std::vector<uint8_t> encoded = {1, 2, 3, 4};
+	const auto* const allocation = encoded.data();
+	const df::blob adopted(std::move(encoded));
+
+	assert_equal(true, adopted.data() == allocation, "adopting a vector keeps its allocation");
+	assert_equal(4_z, adopted.size(), "adopting a vector keeps its size");
+	assert_equal(uint8_t{3}, adopted[2], "adopting a vector keeps its bytes");
+}
+
+static void should_hash_a_file_with_sha256()
+{
+	const auto scratch = _temps.next_folder("sha256");
+	const auto path = scratch.combine_file("payload.bin");
+	write_test_file(path, "abc");
+
+	const auto digest = platform::file_sha256(path);
+	assert_equal(true, digest.has_value(), "a readable file has a SHA-256 digest");
+	if (digest)
+	{
+		const platform::sha256_digest expected = {
+			0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+			0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+			0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+			0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+		};
+		assert_equal(true, *digest == expected, "the SHA-256 bytes are standard");
+	}
+	{
+		const auto ordinary = platform::open_file(path, platform::file_open_mode::read);
+		assert_equal(true, ordinary != nullptr, "a restrictive ordinary reader is held");
+		assert_equal(true, platform::file_sha256(path) == digest, "hashing requires no delete access");
+	}
+	const auto reader = platform::open_file_lock(path, platform::file_lock_mode::read);
+	assert_equal(true, reader != nullptr, "a content verification token opens");
+	if (reader)
+	{
+		reader->seek(1, platform::file::whence::begin);
+		assert_equal(true, platform::file_sha256(reader) == digest, "hashing uses the held file");
+		assert_equal(uint64_t{1}, reader->pos(), "positional hashing preserves the caller's cursor");
+		const auto moved = scratch.combine_file("renamed.bin");
+		assert_equal(true, platform::move_file(path, moved, true, false).success(),
+			"a read token permits renaming");
+		assert_equal(true, platform::file_sha256(reader) == digest, "the renamed held file still hashes");
+		assert_equal(false, platform::file_sha256(path).has_value(), "the old pathname is not reopened");
+	}
+	assert_equal(false, platform::file_sha256(df::file_path(scratch.text())).has_value(),
+		"a directory is not hashed as an empty file");
+}
+
 // An INI line cannot hold a line break. A setting holding one item per line - the folders a collection
 // adds, say - came back as its first line after a restart, and a later line holding '=' came back as a
 // setting of its own.
@@ -1174,12 +1225,30 @@ static void should_bucket_performance_latency()
 #ifdef _WIN32
 // The Windows backend's own tests, in system_win_tests.cpp.
 void register_win_tests(test_registry& tests);
+#else
+static void should_allow_the_caller_to_own_copy_fallback()
+{
+	const auto root = _temps.next_folder("rename-only");
+	const auto source = root.combine_file("source.txt");
+	const auto destination = root.combine_file("destination.txt");
+	write_test_file(source, "original");
+	platform::test_linux_move_file_failures({true, true});
+	const df::scope_exit restore([] { platform::test_linux_clear_move_file_failures(); });
+	const auto refused = platform::move_file(source, destination, true, false);
+	assert_equal(true, refused.failed() && static_cast<bool>(refused.error), "the unavailable rename retains its error");
+	assert_equal(true, source.exists() && !destination.exists(), "rename-only never falls back to copying");
+	assert_equal(true, platform::move_file(source, destination, true).success(), "the existing move policy still copies");
+	assert_equal(true, !source.exists() && destination.exists(), "the default completes the move");
+	assert_equal_strict("original", read_test_file(destination), "the copied contents are intact");
+}
 #endif
 
 static void register_tests(test_registry& tests)
 {
 #ifdef _WIN32
 	register_win_tests(tests);
+#else
+	tests.add("Should allow the caller to own copy fallback"s, should_allow_the_caller_to_own_copy_fallback);
 #endif
 	tests.add("Should name files after the application"s, should_name_files_after_the_application);
 	tests.add("Should natural compare"s, should_icmp_natural);
@@ -1189,6 +1258,8 @@ static void register_tests(test_registry& tests)
 	tests.add("Should report file presence"s, should_report_file_presence);
 	tests.add("Should map files"s, should_map_files);
 	tests.add("Should save a blob without truncating the destination"s, should_save_a_blob_without_truncating_the_destination);
+	tests.add("Should adopt vector bytes without copying"s, should_adopt_vector_bytes_without_copying);
+	tests.add("Should hash a file with SHA-256"s, should_hash_a_file_with_sha256);
 	tests.add("Should keep line breaks in INI settings"s, should_keep_line_breaks_in_ini_settings);
 	tests.add("Should read back an empty setting"s, should_read_back_an_empty_setting);
 	tests.add("Should not replace an unchecked destination without its backup"s,

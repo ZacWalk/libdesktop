@@ -7,6 +7,7 @@
 #include "loopback_http.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -15,10 +16,21 @@
 #include <cstring>
 #include <format>
 #include <future>
+#include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#pragma push_macro("near")
+#include <objbase.h>
+#include <ole2.h>
+#include <wrl/client.h>
+#pragma pop_macro("near")
+#endif
 
 namespace
 {
@@ -122,6 +134,29 @@ namespace
 		CHECK_STR(pf::utf8_encode(U'\U00010348'), "\xF0\x90\x8D\x88");
 	}
 
+	void test_neutral_window_messages()
+	{
+		CHECK(pf::message_type::capture_changed != pf::message_type::end_session);
+		pf::message_params params;
+		CHECK(!params.session_ending);
+		params.session_ending = true;
+		CHECK(params.session_ending);
+	}
+
+	void test_tray_publication_failure()
+	{
+		const std::array<uint32_t, 1> pixel = {0xff336699};
+		pf::test_set_tray_publication_failure(true);
+		const auto tray = pf::create_tray_service({pixel, {1, 1}}, "libdesktop-test");
+		CHECK(tray != nullptr);
+		if (tray)
+		{
+			CHECK(tray->available());
+			CHECK(!tray->diagnostics().empty());
+		}
+		pf::test_set_tray_publication_failure(false);
+	}
+
 	// NTFS names and clipboard text can carry lone surrogates; converting them
 	// must substitute U+FFFD rather than throw.
 	void test_invalid_text()
@@ -165,6 +200,67 @@ namespace
 
 		CHECK(pf::file_path("c:\\A\\B.TXT") == pf::file_path("c:\\a\\b.txt"));
 		CHECK(pf::file_path().empty());
+	}
+
+	void test_atomic_file_writer()
+	{
+		const pf::file_path seed(pf::platform_temp_file_path("pfw"));
+		const pf::file_path destination(std::string(seed.view()) + ".atomic");
+		pf::platform_delete_file(destination);
+		pf::platform_delete_file(seed);
+
+		auto opened = pf::create_atomic_file_writer_result(destination);
+		CHECK(opened.success());
+		if (opened.writer)
+		{
+			const std::array<uint8_t, 5> bytes = {'h', 'e', 'l', 'l', 'o'};
+			CHECK(opened.writer->write(bytes).success());
+			CHECK(opened.writer->flush().success());
+			CHECK(opened.writer->commit().success());
+		}
+
+		const auto read = pf::open_for_read_result(destination);
+		CHECK(read.success());
+		if (read.file)
+		{
+			std::array<uint8_t, 5> bytes = {};
+			uint32_t count = 0;
+			CHECK(read.file->read(bytes.data(), static_cast<uint32_t>(bytes.size()), &count));
+			CHECK_EQ(count, 5u);
+			CHECK(std::string(bytes.begin(), bytes.end()) == "hello");
+		}
+
+		pf::test_set_atomic_file_failure(pf::atomic_file_test_failure::flush);
+		auto failed = pf::create_atomic_file_writer_result(destination);
+		CHECK(failed.success());
+		if (failed.writer)
+		{
+			const std::array<uint8_t, 3> bytes = {'n', 'e', 'w'};
+			CHECK(failed.writer->write(bytes).success());
+			CHECK(!failed.writer->flush().success());
+		}
+		pf::test_set_atomic_file_failure(pf::atomic_file_test_failure::none);
+
+		const auto missing = pf::query_file(pf::file_path(std::string(destination.view()) + ".missing"));
+		CHECK(missing.no_such_file());
+		pf::platform_delete_file(destination);
+	}
+
+	void test_pixel_surface_context()
+	{
+		pf::pixel_surface surface(16, 16);
+		auto context = pf::create_pixel_surface_context(surface);
+		CHECK(context != nullptr);
+		if (context)
+		{
+			context->fill_solid_rect(0, 0, 16, 16, pf::color_t(0x33, 0x66, 0x99));
+			context->draw_solid_line({0, 0}, {15, 15}, pf::color_t(0xff, 0, 0), 1);
+			context->sync_surface_to_pixels();
+			surface.pixels[1 * 16 + 1] = 0xff102030;
+			context->sync_pixels_to_surface();
+		}
+		context.reset();
+		CHECK_EQ(surface.pixels[1 * 16 + 1], 0xff102030u);
 	}
 
 	void test_geometry()
@@ -1225,6 +1321,517 @@ namespace
 			f->write(reinterpret_cast<const uint8_t*>(text.data()), static_cast<uint32_t>(text.size()));
 	}
 
+#ifdef _WIN32
+	void fixture_word(std::vector<uint8_t>& bytes, const size_t offset, const uint16_t value)
+	{
+		bytes[offset] = static_cast<uint8_t>(value);
+		bytes[offset + 1] = static_cast<uint8_t>(value >> 8);
+	}
+
+	void fixture_dword(std::vector<uint8_t>& bytes, const size_t offset, const uint32_t value)
+	{
+		fixture_word(bytes, offset, static_cast<uint16_t>(value));
+		fixture_word(bytes, offset + 2, static_cast<uint16_t>(value >> 16));
+	}
+
+	constexpr std::array<uint32_t, 6> wic_fixture_colors{
+		0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00, 0xff00ffff, 0xffff00ff};
+
+	std::vector<uint8_t> wic_tiff_fixture(const uint16_t orientation)
+	{
+		// A single-strip, uncompressed 2x3 RGB TIFF with an orientation tag.
+		constexpr uint32_t samples_offset = 8 + 2 + 11 * 12 + 4;
+		constexpr uint32_t pixels_offset = samples_offset + 6;
+		const std::array<std::array<uint32_t, 4>, 11> fields{{
+			{256, 3, 1, 2},
+			{257, 3, 1, 3},
+			{258, 3, 3, samples_offset},
+			{259, 3, 1, 1},
+			{262, 3, 1, 2},
+			{273, 4, 1, pixels_offset},
+			{274, 3, 1, orientation},
+			{277, 3, 1, 3},
+			{278, 4, 1, 3},
+			{279, 4, 1, 18},
+			{284, 3, 1, 1}}};
+		std::vector<uint8_t> bytes(pixels_offset + wic_fixture_colors.size() * 3);
+		bytes[0] = bytes[1] = 'I';
+		fixture_word(bytes, 2, 42);
+		fixture_dword(bytes, 4, 8);
+		fixture_word(bytes, 8, static_cast<uint16_t>(fields.size()));
+		for (size_t i = 0; i < fields.size(); ++i)
+		{
+			const auto offset = 10 + i * 12;
+			fixture_word(bytes, offset, static_cast<uint16_t>(fields[i][0]));
+			fixture_word(bytes, offset + 2, static_cast<uint16_t>(fields[i][1]));
+			fixture_dword(bytes, offset + 4, fields[i][2]);
+			fixture_dword(bytes, offset + 8, fields[i][3]);
+		}
+		for (size_t i = 0; i < 3; ++i)
+			fixture_word(bytes, samples_offset + i * 2, 8);
+		for (size_t i = 0; i < wic_fixture_colors.size(); ++i)
+		{
+			const auto color = wic_fixture_colors[i];
+			bytes[pixels_offset + i * 3] = static_cast<uint8_t>(color >> 16);
+			bytes[pixels_offset + i * 3 + 1] = static_cast<uint8_t>(color >> 8);
+			bytes[pixels_offset + i * 3 + 2] = static_cast<uint8_t>(color);
+		}
+		return bytes;
+	}
+
+	std::vector<uint8_t> wic_wide_bmp_fixture()
+	{
+		constexpr uint32_t width = 100001;
+		constexpr uint32_t stride = (width * 3 + 3) & ~3u;
+		std::vector<uint8_t> bytes(54 + stride);
+		bytes[0] = 'B';
+		bytes[1] = 'M';
+		fixture_dword(bytes, 2, static_cast<uint32_t>(bytes.size()));
+		fixture_dword(bytes, 10, 54);
+		fixture_dword(bytes, 14, 40);
+		fixture_dword(bytes, 18, width);
+		fixture_dword(bytes, 22, 1);
+		fixture_word(bytes, 26, 1);
+		fixture_word(bytes, 28, 24);
+		fixture_dword(bytes, 34, stride);
+		return bytes;
+	}
+
+	void test_bgra_pixel_operations()
+	{
+		std::mt19937 generator(0x5eed1234u);
+		const bool sse2 = pf::has_sse2();
+		const bool avx2 = pf::has_avx2();
+		const std::array<size_t, 12> sizes{0, 1, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31};
+		const std::array<uint8_t, 6> alphas{0, 1, 37, 128, 254, 255};
+		for (const auto count : sizes)
+		{
+			std::vector<uint32_t> source(count + 4);
+			for (auto& pixel : source) pixel = generator();
+			for (size_t offset = 0; offset != 4; ++offset)
+			{
+				const auto input = std::span<uint32_t>(source).subspan(offset, count);
+				for (const auto alpha : alphas)
+				{
+					const pf::color_t foreground{37, 149, 231, alpha};
+					auto scalar = std::vector<uint32_t>(input.begin(), input.end());
+					pf::blend_constant_bgra(scalar, foreground, pf::pixel_backend::scalar);
+					if (sse2)
+					{
+						auto simd = std::vector<uint32_t>(input.begin(), input.end());
+						pf::blend_constant_bgra(simd, foreground, pf::pixel_backend::sse2);
+						CHECK(simd == scalar);
+					}
+					if (avx2)
+					{
+						auto simd = std::vector<uint32_t>(input.begin(), input.end());
+						pf::blend_constant_bgra(simd, foreground, pf::pixel_backend::avx2);
+						CHECK(simd == scalar);
+					}
+					auto automatic = std::vector<uint32_t>(input.begin(), input.end());
+					pf::blend_constant_bgra(automatic, foreground);
+					CHECK(automatic == scalar);
+				}
+			}
+		}
+
+		const std::array<uint16_t, 7> fractions{0, 1, 37, 128, 219, 255, 256};
+		for (const auto invalid : {uint16_t{257}, uint16_t{65535}})
+		{
+			bool refused = false;
+			try { pf::interpolate_bgra({}, {}, {}, invalid); }
+			catch (const std::invalid_argument&) { refused = true; }
+			CHECK(refused);
+		}
+		for (const auto count : sizes)
+		{
+			std::vector<uint32_t> first(count + 4), second(count + 4);
+			for (auto& pixel : first) pixel = generator();
+			for (auto& pixel : second) pixel = generator();
+			for (size_t offset = 0; offset != 4; ++offset)
+			{
+				const auto first_row = std::span<const uint32_t>(first).subspan(offset, count);
+				const auto second_row = std::span<const uint32_t>(second).subspan(offset, count);
+				for (const auto fraction : fractions)
+				{
+					std::vector<uint32_t> scalar(count + 2, 0xdeadbeefu);
+					pf::interpolate_bgra(first_row, second_row, scalar, fraction,
+					                     pf::pixel_backend::scalar);
+					CHECK(std::ranges::all_of(scalar.begin() + count, scalar.end(),
+					                          [](const uint32_t pixel) { return pixel == 0xdeadbeefu; }));
+					if (sse2)
+					{
+						std::vector<uint32_t> simd(count + 2, 0xdeadbeefu);
+						pf::interpolate_bgra(first_row, second_row, simd, fraction,
+						                     pf::pixel_backend::sse2);
+						CHECK(std::ranges::equal(simd, scalar));
+					}
+					if (avx2)
+					{
+						std::vector<uint32_t> simd(count + 2, 0xdeadbeefu);
+						pf::interpolate_bgra(first_row, second_row, simd, fraction,
+						                     pf::pixel_backend::avx2);
+						CHECK(std::ranges::equal(simd, scalar));
+					}
+					std::vector<uint32_t> automatic(count + 2, 0xdeadbeefu);
+					pf::interpolate_bgra(first_row, second_row, automatic, fraction);
+					CHECK(std::ranges::equal(automatic, scalar));
+				}
+			}
+		}
+	}
+
+	void test_wic_bitmaps()
+	{
+		constexpr std::array<std::array<size_t, 6>, 8> source_indexes{{
+			{0, 1, 2, 3, 4, 5},
+			{1, 0, 3, 2, 5, 4},
+			{5, 4, 3, 2, 1, 0},
+			{4, 5, 2, 3, 0, 1},
+			{0, 2, 4, 1, 3, 5},
+			{4, 2, 0, 5, 3, 1},
+			{5, 3, 1, 4, 2, 0},
+			{1, 3, 5, 0, 2, 4}}};
+		for (uint16_t orientation = 1; orientation <= 8; ++orientation)
+		{
+			const auto bytes = wic_tiff_fixture(orientation);
+			auto stored = pf::load_bitmap_memory_result(bytes);
+			CHECK(stored.success());
+			if (!stored.image) continue;
+			CHECK_EQ(stored.image->width, 2);
+			CHECK_EQ(stored.image->height, 3);
+			CHECK_EQ(stored.stored_orientation, orientation);
+			CHECK(std::ranges::equal(stored.image->pixels, wic_fixture_colors));
+			const auto metadata = pf::probe_bitmap_memory(bytes);
+			CHECK(metadata.has_value());
+			if (metadata)
+			{
+				CHECK_EQ(metadata->width, 2u);
+				CHECK_EQ(metadata->height, 3u);
+				CHECK_EQ(metadata->orientation, orientation);
+			}
+
+			pf::bitmap_load_options upright;
+			upright.apply_orientation = true;
+			const auto transformed = pf::load_bitmap_memory_result(bytes, upright);
+			CHECK(transformed.success());
+			if (!transformed.image) continue;
+			CHECK_EQ(transformed.image->width, orientation >= 5 ? 3 : 2);
+			CHECK_EQ(transformed.image->height, orientation >= 5 ? 2 : 3);
+			CHECK_EQ(transformed.source_width, orientation >= 5 ? 3u : 2u);
+			CHECK_EQ(transformed.source_height, orientation >= 5 ? 2u : 3u);
+			CHECK_EQ(transformed.stored_orientation, 1);
+			std::array<uint32_t, 6> expected{};
+			for (size_t i = 0; i < expected.size(); ++i)
+				expected[i] = wic_fixture_colors[source_indexes[orientation - 1][i]];
+			CHECK(std::ranges::equal(transformed.image->pixels, expected));
+		}
+
+		pf::bitmap_load_options stored_thumbnail;
+		stored_thumbnail.thumbnail = true;
+		stored_thumbnail.target_width = 2;
+		stored_thumbnail.target_height = 3;
+		const auto unturned_thumbnail = pf::load_bitmap_memory_result(
+			wic_tiff_fixture(6), stored_thumbnail);
+		CHECK(unturned_thumbnail.success());
+		if (unturned_thumbnail.image)
+		{
+			CHECK_EQ(unturned_thumbnail.image->width, 2);
+			CHECK_EQ(unturned_thumbnail.image->height, 3);
+			CHECK_EQ(unturned_thumbnail.stored_orientation, 6);
+			CHECK(std::ranges::equal(unturned_thumbnail.image->pixels, wic_fixture_colors));
+		}
+
+		const auto bytes = wic_tiff_fixture(1);
+		const auto probe = pf::probe_bitmap_memory(bytes);
+		CHECK(probe.has_value());
+		if (probe)
+		{
+			CHECK_EQ(probe->width, 2u);
+			CHECK_EQ(probe->height, 3u);
+			CHECK_EQ(probe->frame_count, 1u);
+			CHECK_STR(probe->container, "tiff");
+		}
+		CHECK(!pf::load_bitmap_memory_result({}).success());
+		CHECK(!pf::probe_bitmap_memory({}).has_value());
+		const auto temporary = pf::platform_temp_file_path("wic");
+		CHECK(!temporary.empty());
+		if (!temporary.empty())
+		{
+			const auto target = temporary + ".tif ";
+			const auto extended = target.starts_with("\\\\")
+				? "\\\\?\\UNC\\" + target.substr(2) : "\\\\?\\" + target;
+			const pf::file_path literal(extended);
+			write_whole_file(literal,
+				std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+			CHECK_EQ(read_whole_file(literal).size(), bytes.size());
+			const auto baseline_file = pf::load_bitmap_file(literal);
+			CHECK(baseline_file != nullptr);
+			const auto file_image = pf::load_bitmap_file_result(pf::file_path(target));
+			CHECK(file_image.success());
+			if (!file_image.success())
+				std::printf("WIC file fixture: %s\n", file_image.diagnostic.c_str());
+			if (file_image.image)
+				CHECK(std::ranges::equal(file_image.image->pixels, wic_fixture_colors));
+			const auto file_probe = pf::probe_bitmap_file(pf::file_path(target));
+			CHECK(file_probe.has_value());
+			if (file_probe)
+			{
+				CHECK_EQ(file_probe->width, 2u);
+				CHECK_EQ(file_probe->height, 3u);
+			}
+			CHECK(pf::platform_delete_file(literal));
+			CHECK(pf::platform_delete_file(pf::file_path(temporary)));
+		}
+		stored_thumbnail.target_width = stored_thumbnail.target_height = 1;
+		stored_thumbnail.max_pixels = 5;
+		CHECK(pf::load_bitmap_memory_result(bytes, stored_thumbnail).error ==
+			pf::bitmap_load_error::too_large);
+
+		pf::bitmap_load_options limited;
+		limited.max_decoded_bytes = 23;
+		const auto refused = pf::load_bitmap_memory_result(bytes, limited);
+		CHECK(refused.error == pf::bitmap_load_error::too_large);
+		CHECK(!refused.image);
+		CHECK(!refused.diagnostic.empty());
+		limited.target_width = limited.target_height = 1;
+		limited.thumbnail = true;
+		limited.max_decoded_bytes = 4;
+		std::vector<std::pair<uint64_t, uint64_t>> progress;
+		limited.progress = [&](const uint64_t done, const uint64_t total)
+		{
+			progress.emplace_back(done, total);
+		};
+		const auto thumbnail = pf::load_bitmap_memory_result(bytes, limited);
+		CHECK(thumbnail.success());
+		if (thumbnail.image)
+		{
+			CHECK_EQ(thumbnail.image->width, 1);
+			CHECK_EQ(thumbnail.image->height, 1);
+			CHECK_EQ(thumbnail.image->pixels.size(), 1u);
+		}
+		CHECK_EQ(progress.size(), 2u);
+		if (progress.size() == 2)
+		{
+			CHECK_EQ(progress[0].first, 0u);
+			CHECK_EQ(progress[0].second, 4u);
+			CHECK_EQ(progress[1].first, 4u);
+			CHECK_EQ(progress[1].second, 4u);
+		}
+
+		pf::bitmap_load_options cancelled;
+		int cancellation_checks = 0;
+		cancelled.cancelled = [&] { return ++cancellation_checks >= 2; };
+		const auto stopped = pf::load_bitmap_memory_result(bytes, cancelled);
+		CHECK(stopped.error == pf::bitmap_load_error::cancelled);
+		CHECK(!stopped.image);
+		CHECK(!stopped.diagnostic.empty());
+		cancelled.cancelled = []() -> bool { throw std::runtime_error("cancel callback"); };
+		bool callback_threw = false;
+		try
+		{
+			pf::load_bitmap_memory_result(bytes, cancelled);
+		}
+		catch (const std::runtime_error& error)
+		{
+			callback_threw = true;
+			CHECK_STR(error.what(), "cancel callback");
+		}
+		CHECK(callback_threw);
+
+		const auto wide = wic_wide_bmp_fixture();
+		const auto legacy = pf::load_bitmap_memory(wide.data(), wide.size());
+		CHECK(legacy != nullptr);
+		if (legacy)
+		{
+			CHECK_EQ(legacy->width, 100001);
+			CHECK_EQ(legacy->height, 1);
+		}
+		CHECK(pf::load_bitmap_memory_result(wide).error == pf::bitmap_load_error::too_large);
+		CHECK(!pf::probe_bitmap_memory(wide).has_value());
+		limited.target_width = limited.target_height = 16;
+		limited.max_decoded_bytes = 64;
+		limited.progress = {};
+		const auto wide_thumbnail = pf::load_bitmap_memory_result(wide, limited);
+		CHECK(wide_thumbnail.success());
+		if (wide_thumbnail.image)
+		{
+			CHECK_EQ(wide_thumbnail.image->width, 16);
+			CHECK_EQ(wide_thumbnail.image->height, 1);
+			CHECK_EQ(wide_thumbnail.source_width, 100001u);
+			CHECK_EQ(wide_thumbnail.source_height, 1u);
+		}
+	}
+
+	void test_wic_com_apartments()
+	{
+		const auto bytes = wic_tiff_fixture(1);
+		auto run_existing_apartment = [&](const DWORD model)
+		{
+			std::promise<bool> promise;
+			auto result = promise.get_future();
+			std::thread worker([&bytes, model, promise = std::move(promise)]() mutable
+			{
+				try
+				{
+					const auto initialized = CoInitializeEx(nullptr, model);
+					if (FAILED(initialized))
+					{
+						promise.set_value(false);
+						return;
+					}
+					const auto loaded = pf::load_bitmap_memory_result(bytes);
+					APTTYPE type{};
+					APTTYPEQUALIFIER qualifier{};
+					const bool caller_apartment_survives =
+						SUCCEEDED(CoGetApartmentType(&type, &qualifier));
+					promise.set_value(loaded.success() && caller_apartment_survives);
+					if (initialized == S_OK || initialized == S_FALSE) CoUninitialize();
+				}
+				catch (...)
+				{
+					promise.set_value(false);
+				}
+			});
+			worker.join();
+			return result.get();
+		};
+
+		std::promise<bool> fresh_promise;
+		auto fresh_result = fresh_promise.get_future();
+		std::thread fresh([&bytes, promise = std::move(fresh_promise)]() mutable
+		{
+			try
+			{
+				const auto loaded = pf::load_bitmap_memory_result(bytes);
+				APTTYPE type{};
+				APTTYPEQUALIFIER qualifier{};
+				const bool still_initialized = SUCCEEDED(CoGetApartmentType(&type, &qualifier));
+				promise.set_value(loaded.success() && !still_initialized);
+			}
+			catch (...)
+			{
+				promise.set_value(false);
+			}
+		});
+		fresh.join();
+		CHECK(fresh_result.get());
+		CHECK(run_existing_apartment(COINIT_APARTMENTTHREADED));
+		CHECK(run_existing_apartment(COINIT_MULTITHREADED));
+	}
+
+	std::vector<uint8_t> compound_preview_fixture()
+	{
+		using Microsoft::WRL::ComPtr;
+		ComPtr<ILockBytes> bytes;
+		if (FAILED(CreateILockBytesOnHGlobal(nullptr, TRUE, &bytes))) return {};
+		ComPtr<IStorage> storage;
+		if (FAILED(StgCreateDocfileOnILockBytes(bytes.Get(),
+			STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, &storage)))
+			return {};
+		ComPtr<IPropertySetStorage> sets;
+		if (FAILED(storage.As(&sets))) return {};
+		ComPtr<IPropertyStorage> properties;
+		if (FAILED(sets->Create(FMTID_SummaryInformation, nullptr, PROPSETFLAG_DEFAULT,
+			STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &properties)))
+			return {};
+
+		const HDC dc = CreateMetaFileW(nullptr);
+		if (!dc) return {};
+		const RECT rectangle{0, 0, 640, 480};
+		FillRect(dc, &rectangle, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+		const HMETAFILE metafile = CloseMetaFile(dc);
+		if (!metafile) return {};
+		const auto metafile_size = GetMetaFileBitsEx(metafile, 0, nullptr);
+		std::vector<uint8_t> thumbnail(12 + metafile_size);
+		const auto copied = GetMetaFileBitsEx(metafile, metafile_size, thumbnail.data() + 12);
+		DeleteMetaFile(metafile);
+		if (copied != metafile_size) return {};
+		const DWORD format = CF_METAFILEPICT;
+		std::memcpy(thumbnail.data(), &format, sizeof(format));
+		CLIPDATA clip{static_cast<ULONG>(thumbnail.size() + sizeof(LONG)), -1, thumbnail.data()};
+		PROPVARIANT value{};
+		PropVariantInit(&value);
+		value.vt = VT_CF;
+		value.pclipdata = &clip;
+		PROPSPEC spec{};
+		spec.ulKind = PRSPEC_PROPID;
+		spec.propid = PIDSI_THUMBNAIL;
+		const auto written = properties->WriteMultiple(1, &spec, &value, PID_FIRST_USABLE);
+		value.vt = VT_EMPTY;
+		value.pclipdata = nullptr;
+		PropVariantClear(&value);
+		if (FAILED(written) || FAILED(properties->Commit(STGC_DEFAULT)) ||
+			FAILED(storage->Commit(STGC_DEFAULT)))
+			return {};
+		properties.Reset();
+		sets.Reset();
+		storage.Reset();
+
+		STATSTG stat{};
+		if (FAILED(bytes->Stat(&stat, STATFLAG_NONAME)) ||
+			stat.cbSize.QuadPart > static_cast<ULONGLONG>(SIZE_MAX))
+			return {};
+		HGLOBAL memory{};
+		if (FAILED(GetHGlobalFromILockBytes(bytes.Get(), &memory))) return {};
+		const auto* input = static_cast<const uint8_t*>(GlobalLock(memory));
+		if (!input) return {};
+		std::vector<uint8_t> result(input, input + static_cast<size_t>(stat.cbSize.QuadPart));
+		GlobalUnlock(memory);
+		return result;
+	}
+
+	void test_compound_preview()
+	{
+		const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		CHECK(SUCCEEDED(initialized));
+		if (FAILED(initialized)) return;
+		struct apartment
+		{
+			HRESULT initialized;
+			~apartment() { if (initialized == S_OK || initialized == S_FALSE) CoUninitialize(); }
+		} cleanup{initialized};
+
+		const auto bytes = compound_preview_fixture();
+		CHECK(!bytes.empty());
+		if (bytes.empty()) return;
+		const auto decoded = pf::load_compound_preview_result(bytes);
+		CHECK(decoded.success());
+		APTTYPE type{};
+		APTTYPEQUALIFIER qualifier{};
+		CHECK(SUCCEEDED(CoGetApartmentType(&type, &qualifier)));
+		if (decoded.image)
+		{
+			CHECK_EQ(decoded.image->width, 640);
+			CHECK_EQ(decoded.image->height, 480);
+			CHECK_EQ(decoded.source_width, 640u);
+			CHECK_EQ(decoded.source_height, 480u);
+			CHECK(std::ranges::any_of(decoded.image->pixels,
+				[](const uint32_t pixel) { return pixel == 0xff000000u; }));
+		}
+
+		pf::bitmap_load_options limited;
+		limited.max_decoded_bytes = 640ull * 480 * sizeof(uint32_t) - 1;
+		CHECK(pf::load_compound_preview_result(bytes, limited).error ==
+			pf::bitmap_load_error::too_large);
+		limited = {};
+		limited.target_width = limited.target_height = 64;
+		limited.thumbnail = true;
+		const auto thumbnail = pf::load_compound_preview_result(bytes, limited);
+		CHECK(thumbnail.success());
+		if (thumbnail.image)
+		{
+			CHECK_EQ(thumbnail.image->width, 64);
+			CHECK_EQ(thumbnail.image->height, 48);
+			CHECK_EQ(thumbnail.source_width, 640u);
+			CHECK_EQ(thumbnail.source_height, 480u);
+		}
+		limited.cancelled = [] { return true; };
+		CHECK(pf::load_compound_preview_result(bytes, limited).error ==
+			pf::bitmap_load_error::cancelled);
+	}
+#endif
+
 	// The synchronous web client against a scripted loopback server: what each request puts on the
 	// wire, and what each response comes back as, including the ways a response can be cut short.
 	void test_web_client()
@@ -1363,13 +1970,13 @@ namespace
 		CHECK(r.error == pf::web_response_error::transport);
 		CHECK(waited < std::chrono::milliseconds(2500));
 
-		// An empty user agent is pf::'s default, which still names Potato.
+		// An empty user agent uses libdesktop's neutral default rather than naming an application.
 		const auto anonymous = pf::connect_to_host("127.0.0.1", false, server.port());
 		CHECK(anonymous != nullptr);
 		if (anonymous)
 		{
 			pf::send_request(anonymous, get);
-			CHECK_STR(loopback::header_value(server.last(), "User-Agent"), "PotatoApp/1.0");
+			CHECK_STR(loopback::header_value(server.last(), "User-Agent"), "libdesktop/1.0");
 		}
 
 		int closed_port = 0;
@@ -1412,8 +2019,12 @@ int main()
 	// Registered before dispatcher creation, so this checks after its teardown has drained.
 	CHECK(std::atexit(check_pool_teardown) == 0);
 	test_text();
+	test_neutral_window_messages();
+	test_tray_publication_failure();
 	test_invalid_text();
 	test_file_path();
+	test_atomic_file_writer();
+	test_pixel_surface_context();
 	test_instance_lock();
 	test_local_app_data_path();
 	test_serial_executor();
@@ -1421,6 +2032,12 @@ int main()
 	test_pool_waiting_on_serial_executor();
 	test_geometry();
 	test_embedded_resources();
+#ifdef _WIN32
+	test_bgra_pixel_operations();
+	test_wic_bitmaps();
+	test_wic_com_apartments();
+	test_compound_preview();
+#endif
 	test_wav_reader();
 	test_mixing_sounds();
 	test_mixing_streams();

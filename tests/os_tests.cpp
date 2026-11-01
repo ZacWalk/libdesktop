@@ -12,6 +12,7 @@
 #include <mmreg.h>
 
 #include <chrono>
+#include <array>
 #include <cstdio>
 #include <filesystem>
 #include <format>
@@ -64,25 +65,80 @@ namespace
 		}
 	}
 
+	void test_files()
+	{
+		const auto root = temp_path("files");
+		std::filesystem::remove_all(root);
+		std::filesystem::create_directories(root);
+		const auto source = root / "source.bin";
+		const auto copied = root / "copied.bin";
+		const auto renamed = root / "renamed.bin";
+		write_file(source, "0123456789");
+
+		const auto attributes = os::query_file(utf8(source));
+		CHECK(attributes.exists());
+		CHECK(!attributes.directory);
+		CHECK(attributes.identity.valid);
+		CHECK_EQ(attributes.size, 10u);
+
+		const auto listing = os::enumerate_files(utf8(root), false);
+		CHECK(listing.success);
+		CHECK_EQ(listing.entries.size(), 1u);
+		if (!listing.entries.empty()) CHECK(listing.entries.front().name == "source.bin");
+
+		const auto file = os::open_file(utf8(source), os::file_open_mode::read);
+		CHECK(file != nullptr);
+		if (file)
+		{
+			std::array<uint8_t, 4> bytes = {};
+			CHECK_EQ(file->read_at(3, bytes.data(), bytes.size()), 4u);
+			CHECK(std::string(bytes.begin(), bytes.end()) == "3456");
+			CHECK_EQ(file->position(), 0u);
+		}
+
+		CHECK(os::copy_file(utf8(source), utf8(copied), true).success());
+		const auto collision = os::copy_file(utf8(source), utf8(copied), true);
+		CHECK(collision.code == os::file_operation_code::already_exists);
+		CHECK(!collision.diagnostic.empty());
+		CHECK(os::move_file(utf8(copied), utf8(renamed), true).success());
+		const auto moved_collision = os::move_file(utf8(source), utf8(renamed), true);
+		CHECK(moved_collision.code == os::file_operation_code::already_exists);
+		CHECK(!moved_collision.diagnostic.empty());
+		CHECK(os::delete_file(utf8(source)).success());
+		CHECK(os::delete_file(utf8(renamed)).success());
+		std::filesystem::remove_all(root);
+	}
+
 	// The user's clipboard text is put back afterwards.
 	void test_clipboard_text()
 	{
-		const auto before = os::read_clipboard_text(0);
+		const auto read = []
+		{
+			return retry_clipboard([] { return os::read_clipboard_text(0); },
+				[](const os::clipboard_text& result) { return !result.opened; });
+		};
+		const auto write = [](const std::string_view text)
+		{
+			return retry_clipboard([&] { return os::write_clipboard_text(0, text); },
+				[](const os::clipboard_write result) { return result == os::clipboard_write::open_failed; });
+		};
+		const auto before = read();
 		CHECK(before.opened);
+		if (!before.opened) return;
 
 		const std::string text = "line one\r\nline two\t\xC3\xA9\xE2\x82\xAC";
-		CHECK(os::write_clipboard_text(0, text) == os::clipboard_write::ok);
+		CHECK(write(text) == os::clipboard_write::ok);
 		CHECK(os::clipboard_has_text());
 
-		const auto after = os::read_clipboard_text(0);
+		const auto after = read();
 		CHECK(after.opened);
 		CHECK(after.text.has_value());
 		CHECK_STR(after.text.value_or(std::string()), text);
 
-		CHECK(os::write_clipboard_text(0, "") == os::clipboard_write::ok);
-		CHECK_STR(os::read_clipboard_text(0).text.value_or("unset"), "");
+		CHECK(write("") == os::clipboard_write::ok);
+		CHECK_STR(read().text.value_or("unset"), "");
 
-		if (before.text) os::write_clipboard_text(0, *before.text);
+		if (before.text) CHECK(write(*before.text) == os::clipboard_write::ok);
 	}
 
 	void test_web_client()
@@ -404,6 +460,7 @@ int main()
 {
 	test_url_encode();
 	test_known_folders();
+	test_files();
 	test_clipboard_text();
 	test_web_client();
 	test_describe_wave_format();

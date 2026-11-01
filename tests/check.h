@@ -5,10 +5,26 @@
 #pragma once
 
 #include <cstdio>
+#include <chrono>
 #include <string_view>
+#include <thread>
 
 inline int g_checks = 0;
 inline int g_failures = 0;
+
+// Clipboard listeners can briefly hold this shared resource after a write.
+template <typename Operation, typename IsBusy>
+auto retry_clipboard(Operation operation, IsBusy is_busy)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+	auto result = operation();
+	while (is_busy(result) && std::chrono::steady_clock::now() < deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		result = operation();
+	}
+	return result;
+}
 
 inline void check(const bool ok, const char* expr, const int line)
 {

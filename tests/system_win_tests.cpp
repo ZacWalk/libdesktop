@@ -633,6 +633,150 @@ static void should_create_folders_on_the_way_down()
 	assert_equal_strict("deep", read_test_file(inside), "and holds a file");
 }
 
+static void should_open_exclusive_create_for_live_logs()
+{
+	const auto path = platform::temp_file(".exclusive-log");
+	auto first = platform::open_file(path, platform::file_open_mode::create_exclusive);
+	assert_equal(true, first != nullptr, "an exclusive log opens");
+
+	auto second = platform::open_file(path, platform::file_open_mode::create_exclusive);
+	assert_equal(true, second == nullptr, "a live log rejects a second writer");
+
+	first.reset();
+	second = platform::open_file(path, platform::file_open_mode::create_exclusive);
+	assert_equal(true, second != nullptr, "a closed log can be truncated and reopened");
+	platform::delete_file(path);
+}
+
+static void should_remove_an_empty_directory_by_its_handle()
+{
+	const auto path = _temps.next_folder("locked-directory");
+	assert_equal(true, platform::create_folder(path).success(), "the directory is created");
+	const auto lock = platform::open_file_lock(df::file_path(path.text()));
+	assert_equal(true, lock != nullptr, "the directory can be opened as an identity token");
+	if (lock)
+	{
+		const auto child = path.combine_file("retained.txt");
+		write_test_file(child, "retained");
+		const auto refused = platform::delete_file(lock);
+		assert_equal(true, refused.failed() && refused.error == std::errc::directory_not_empty,
+			"an occupied directory retains its portable refusal reason");
+		assert_equal_strict("retained", read_test_file(child), "the refusal retains unrelated contents");
+		assert_equal(true, platform::delete_file(child).success(), "the test's child can be removed");
+		assert_equal(true, platform::delete_file(lock).success(), "the empty directory is removed by its token");
+	}
+	assert_equal(false, path.exists(), "the removed directory is gone");
+}
+
+static void should_rename_a_directory_by_its_handle()
+{
+	const auto suffix = std::format("{}", platform::tick_count());
+	const auto source = _temps.next_folder("locked-rename-source-" + suffix);
+	const auto destination = source.parent().combine("locked-rename-destination-" + suffix);
+	assert_equal(true, platform::create_folder(source).success(), "the source directory is created");
+	const auto lock = platform::open_file_lock(df::file_path(source.text()));
+	assert_equal(true, lock != nullptr, "the source directory is locked");
+	if (lock)
+	{
+		const auto refused = platform::move_file(df::file_path(source.text()),
+			df::file_path(destination.text()), true, false);
+		assert_equal(true, refused.failed() && refused.error.value() == ERROR_SHARING_VIOLATION,
+			"another handle cannot rename the pinned directory");
+		assert_equal(true, source.exists() && !destination.exists(), "a refused rename publishes nothing");
+		const auto moved = platform::move_file(lock, df::file_path(destination.text()), true);
+		assert_equal(true, moved.success(), "the source directory is renamed by its token");
+	}
+	assert_equal(false, source.exists(), "the source name is gone");
+	assert_equal(true, destination.exists(), "the destination name is present");
+}
+
+static void should_exclude_mutations_while_verifying_a_locked_file()
+{
+	const auto root = _temps.next_folder("locked-file");
+	const auto source = root.combine_file("source.txt");
+	const auto destination = root.combine_file("renamed.txt");
+	write_test_file(source, "verified");
+	const auto expected = platform::file_sha256(source);
+	const auto mutation = platform::open_file_lock(source);
+	assert_equal(true, mutation != nullptr, "a rename/delete token opens");
+	const auto reader = platform::open_file_lock(source, platform::file_lock_mode::read);
+	assert_equal(true, reader != nullptr, "a content reader coexists with the mutation token");
+	if (!mutation || !reader) return;
+	assert_equal(true, expected.has_value() && platform::file_sha256(reader) == expected,
+		"the held content is hashed without reopening a mutation handle");
+	assert_equal(true, platform::open_file_lock(source) == nullptr, "a second mutation token is refused");
+	const auto source_w = platform::to_file_system_path(source);
+	const auto writer = CreateFileW(source_w.c_str(), GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+	const auto error = GetLastError();
+	if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+	assert_equal(true, writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
+		"even a fully sharing writer cannot edit the verified content");
+	const auto refused = platform::move_file(source, destination, true, false);
+	assert_equal(true, refused.failed() && refused.error.value() == ERROR_SHARING_VIOLATION,
+		"another handle cannot replace the verified pathname");
+	assert_equal(true, platform::move_file(mutation, destination, true).success(),
+		"the held mutation token can rename while its content reader remains open");
+	assert_equal(true, platform::file_sha256(reader) == expected, "the reader retains the renamed identity");
+	assert_equal(false, source.exists(), "the old pathname is absent after the token rename");
+	assert_equal(true, destination.exists(), "the verified destination is present");
+}
+
+static void should_keep_move_failures_and_rename_nonempty_trees()
+{
+	const auto root = _temps.next_folder("rename-policy");
+	const auto source = root.combine_file("source.txt");
+	const auto destination = root.combine_file("destination.txt");
+	write_test_file(source, "original");
+	auto reader = platform::open_file(source, platform::file_open_mode::read);
+	assert_equal(true, reader != nullptr, "a read handle is held without delete sharing");
+	const auto blocked = platform::move_file(source, destination, true, false);
+	assert_equal(true, blocked.failed(), "rename-only reports a sharing failure");
+	assert_equal(true, blocked.error.value() == ERROR_SHARING_VIOLATION, "the native reason survives the wrapper");
+	assert_equal(true, !blocked.error_message.empty(), "the reason is also readable");
+	assert_equal(true, source.exists() && !destination.exists(), "no copy is published after a denied rename");
+	reader.reset();
+	assert_equal(true, platform::move_file(source, destination, true, false).success(), "the rename works after closing");
+	write_test_file(source, "second");
+	const auto collision = platform::move_file(source, destination, true, false);
+	assert_equal(true, collision.failed() && static_cast<bool>(collision.error), "collisions retain their native error");
+	const auto shared_source = root.combine_file("shared-source.txt");
+	const auto shared_destination = root.combine_file("shared-renamed.txt");
+	write_test_file(shared_source, "shared");
+	const auto shared_reader = platform::open_file(shared_source, platform::file_open_mode::read_shared);
+	assert_equal(true, shared_reader != nullptr, "a source can explicitly allow writes and renames");
+	const auto native_name = platform::to_file_system_path(shared_source);
+	auto* const writer = CreateFileW(native_name.c_str(), GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+	assert_equal(true, writer != INVALID_HANDLE_VALUE, "a concurrent writer is not denied by the shared reader");
+	if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+	assert_equal(true, platform::move_file(shared_source, shared_destination, true, false).success(),
+		"the source can be renamed while the shared reader lives");
+	if (shared_reader)
+	{
+		std::array<uint8_t, 6> bytes{};
+		assert_equal(true, shared_reader->read_at(0, bytes.data(), bytes.size()) == bytes.size(),
+			"the same object is still readable after its rename");
+		assert_equal_strict("shared", std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+			"the old token still supplies the original bytes");
+		assert_equal_strict("shared-renamed.txt", shared_reader->path().name().sv(),
+			"its path follows the live object rather than the old cached filename");
+	}
+	for (int i = 0; i < 10; ++i)
+	{
+		const auto tree = root.combine(std::format("tree-{}", i));
+		const auto renamed = root.combine(std::format("renamed-{}", i));
+		assert_equal(true, platform::create_folder(tree.combine("nested")).success(), "the nested source is created");
+		write_test_file(tree.combine("nested").combine_file("child.txt"), "descendant");
+		const auto moved = platform::move_file(df::file_path(tree.text()), df::file_path(renamed.text()), true, false);
+		if (moved.failed()) std::printf("tree rename error %d: %s\n", moved.error.value(), moved.error_message.c_str());
+		assert_equal(true, moved.success(), "a nonempty directory is renamed without a file-copy fallback");
+		assert_equal(true, !tree.exists() && renamed.exists(), "the tree is present under only the new name");
+		assert_equal_strict("descendant", read_test_file(renamed.combine("nested").combine_file("child.txt")),
+			"its descendants move intact");
+	}
+}
+
 static void should_send_web_requests_and_read_their_responses()
 {
 	loopback::server server;
@@ -816,5 +960,11 @@ void register_win_tests(test_registry& tests)
 	tests.add("Should recognise network locations"s, should_recognise_network_locations);
 	tests.add("Should keep tabs and line breaks on the clipboard"s, should_keep_tabs_and_line_breaks_on_the_clipboard);
 	tests.add("Should create folders on the way down"s, should_create_folders_on_the_way_down);
+	tests.add("Should open exclusive create for live logs"s, should_open_exclusive_create_for_live_logs);
+	tests.add("Should remove an empty directory by its handle"s, should_remove_an_empty_directory_by_its_handle);
+	tests.add("Should rename a directory by its handle"s, should_rename_a_directory_by_its_handle);
+	tests.add("Should exclude mutations while verifying a locked file"s,
+		should_exclude_mutations_while_verifying_a_locked_file);
+	tests.add("Should keep move failures and rename nonempty trees"s, should_keep_move_failures_and_rename_nonempty_trees);
 	tests.add("Should send web requests and read their responses"s, should_send_web_requests_and_read_their_responses);
 }

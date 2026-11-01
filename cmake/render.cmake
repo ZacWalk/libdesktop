@@ -22,11 +22,13 @@ target_precompile_headers(libdesktop-render PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 
 if(MSVC)
     target_compile_options(libdesktop-render PRIVATE /bigobj /W3 /sdl)
+    libdesktop_enable_msvc_exceptions(libdesktop-render)
 else()
     target_compile_options(libdesktop-render PRIVATE -Wall -Wno-unknown-pragmas -Wno-multichar)
 endif()
 
 if(WIN32)
+    target_compile_definitions(libdesktop-render PRIVATE UNICODE _UNICODE)
     target_sources(libdesktop-render PRIVATE
         include/libdesktop/platform_win_render.h
         include/libdesktop/platform_win_render_res.h

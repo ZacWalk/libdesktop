@@ -15,6 +15,9 @@
 #define NOMINMAX
 #include <windows.h>
 #include <shlobj.h>
+#include <commdlg.h>
+#include <shellapi.h>
+#include <shobjidl.h>
 #include <WinInet.h>
 #include <winhttp.h>
 
@@ -28,6 +31,10 @@
 #include <charconv>
 #include <climits>
 #include <cstring>
+#include <format>
+#include <mutex>
+#include <optional>
+#include <vector>
 
 namespace
 {
@@ -70,6 +77,439 @@ namespace
 
 		[[nodiscard]] bool is_valid() const { return _h != INVALID_HANDLE_VALUE; }
 		[[nodiscard]] HANDLE get() const { return _h; }
+		HANDLE release()
+		{
+			const auto result = _h;
+			_h = INVALID_HANDLE_VALUE;
+			return result;
+		}
+	};
+
+	std::wstring native_path(const std::string_view path)
+	{
+		auto result = widen(path);
+		if (result.empty() || result.starts_with(LR"(\\?\)") || result.starts_with(LR"(\\.\)"))
+			return result;
+
+		const bool drive_rooted = result.size() >= 3 && result[1] == L':' &&
+			(result[2] == L'\\' || result[2] == L'/');
+		const bool unc_rooted = result.size() >= 2 && result[0] == L'\\' && result[1] == L'\\';
+		// CreateDirectoryW needs the extended form a little before MAX_PATH because it reserves
+		// room for an 8.3 child; using the same threshold for all file APIs keeps one path policy.
+		if (result.size() < MAX_PATH - 12 || (!drive_rooted && !unc_rooted))
+			return result;
+
+		if (unc_rooted)
+			return LR"(\\?\UNC\)" + result.substr(2);
+		return LR"(\\?\)" + result;
+	}
+
+	uint64_t file_time(const FILETIME& time)
+	{
+		return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+	}
+
+	std::string error_text(const DWORD error)
+	{
+		if (error == ERROR_SUCCESS) return {};
+
+		LPWSTR raw = nullptr;
+		const auto length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+		                                   FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error,
+		                                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		                                   reinterpret_cast<LPWSTR>(&raw), 0, nullptr);
+		if (length == 0 || raw == nullptr)
+			return std::format("Windows error {}", error);
+
+		auto result = narrow(std::wstring_view(raw, length));
+		LocalFree(raw);
+		while (!result.empty() && (result.back() == '\r' || result.back() == '\n' || result.back() == ' '))
+			result.pop_back();
+		return result;
+	}
+
+	os::file_operation operation_result(const BOOL success)
+	{
+		if (success) return {os::file_operation_code::ok, ERROR_SUCCESS, {}};
+
+		const auto error = GetLastError();
+		const auto code = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
+			                  ? os::file_operation_code::already_exists
+			                  : os::file_operation_code::failed;
+		auto diagnostic = error_text(error);
+		if (diagnostic.empty()) diagnostic = std::format("Windows error {}", error);
+		return {code, error, std::move(diagnostic)};
+	}
+
+	void fill_identity(const HANDLE handle, os::file_attributes& result)
+	{
+		BY_HANDLE_FILE_INFORMATION info = {};
+		if (!GetFileInformationByHandle(handle, &info)) return;
+
+		result.identity.volume = info.dwVolumeSerialNumber;
+		result.identity.index = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+		result.identity.valid = true;
+	}
+
+	void fill_attributes(os::file_attributes& result, const DWORD attributes,
+	                     const FILETIME& created, const FILETIME& modified,
+	                     const DWORD size_high, const DWORD size_low)
+	{
+		result.presence = os::file_presence::found;
+		result.directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		result.readonly = (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+		result.hidden = (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+		result.reparse = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+		result.offline = (attributes & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN |
+		                               FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_VIRTUAL)) != 0;
+		result.created = file_time(created);
+		result.modified = file_time(modified);
+		result.size = (static_cast<uint64_t>(size_high) << 32) | size_low;
+	}
+
+	std::wstring dialog_filter(const std::vector<os::file_dialog_filter>& filters)
+	{
+		std::string text;
+		for (const auto& filter : filters)
+		{
+			text += filter.text;
+			text += " (";
+			text += filter.extensions;
+			text += ")|";
+			text += filter.extensions;
+			text += "|";
+		}
+		text += "|";
+
+		auto result = widen(text);
+		for (auto& c : result)
+		{
+			if (c == L'|') c = L'\0';
+		}
+		return result;
+	}
+
+	std::wstring dialog_default_extension(const std::string_view path)
+	{
+		const auto slash = path.find_last_of("/\\");
+		const auto dot = path.find_last_of('.');
+		if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash))
+			return {};
+		const auto extension = path.substr(dot + 1);
+		return widen(extension);
+	}
+
+	class win_file final : public os::file
+	{
+		HANDLE _handle = INVALID_HANDLE_VALUE;
+		std::string _path;
+		mutable std::mutex _mutex;
+
+		uint64_t read_locked(uint8_t* data, const uint64_t size) const
+		{
+			uint64_t total = 0;
+			while (total < size)
+			{
+				const auto request = static_cast<DWORD>(std::min<uint64_t>(size - total, MAXDWORD));
+				DWORD count = 0;
+				if (!ReadFile(_handle, data + total, request, &count, nullptr) || count == 0)
+					break;
+				total += count;
+			}
+			return total;
+		}
+
+		uint64_t write_locked(const uint8_t* data, const uint64_t size) const
+		{
+			uint64_t total = 0;
+			while (total < size)
+			{
+				const auto request = static_cast<DWORD>(std::min<uint64_t>(size - total, MAXDWORD));
+				DWORD count = 0;
+				if (!WriteFile(_handle, data + total, request, &count, nullptr) || count == 0)
+					break;
+				total += count;
+			}
+			return total;
+		}
+
+		uint64_t position_locked() const
+		{
+			LARGE_INTEGER zero = {};
+			LARGE_INTEGER position = {};
+			return SetFilePointerEx(_handle, zero, &position, FILE_CURRENT)
+				       ? static_cast<uint64_t>(position.QuadPart)
+				       : UINT64_MAX;
+		}
+
+	public:
+		win_file(const HANDLE handle, std::string path) : _handle(handle), _path(std::move(path))
+		{
+		}
+
+		~win_file() override
+		{
+			if (_handle != INVALID_HANDLE_VALUE) CloseHandle(_handle);
+		}
+
+		win_file(const win_file&) = delete;
+		win_file& operator=(const win_file&) = delete;
+
+		uint64_t size() const override
+		{
+			LARGE_INTEGER value = {};
+			return GetFileSizeEx(_handle, &value) ? static_cast<uint64_t>(value.QuadPart) : 0;
+		}
+
+		uint64_t read(uint8_t* data, const uint64_t size) const override
+		{
+			std::scoped_lock lock(_mutex);
+			return read_locked(data, size);
+		}
+
+		uint64_t write(const uint8_t* data, const uint64_t size) override
+		{
+			std::scoped_lock lock(_mutex);
+			return write_locked(data, size);
+		}
+
+		uint64_t read_at(const uint64_t offset, uint8_t* data, const uint64_t size) const override
+		{
+			std::scoped_lock lock(_mutex);
+			const auto old = position_locked();
+			if (old == UINT64_MAX) return 0;
+
+			LARGE_INTEGER where = {};
+			where.QuadPart = static_cast<LONGLONG>(offset);
+			if (!SetFilePointerEx(_handle, where, nullptr, FILE_BEGIN)) return 0;
+			const auto result = read_locked(data, size);
+			where.QuadPart = static_cast<LONGLONG>(old);
+			SetFilePointerEx(_handle, where, nullptr, FILE_BEGIN);
+			return result;
+		}
+
+		uint64_t write_at(const uint64_t offset, const uint8_t* data, const uint64_t size) override
+		{
+			std::scoped_lock lock(_mutex);
+			const auto old = position_locked();
+			if (old == UINT64_MAX) return 0;
+
+			LARGE_INTEGER where = {};
+			where.QuadPart = static_cast<LONGLONG>(offset);
+			if (!SetFilePointerEx(_handle, where, nullptr, FILE_BEGIN)) return 0;
+			const auto result = write_locked(data, size);
+			where.QuadPart = static_cast<LONGLONG>(old);
+			SetFilePointerEx(_handle, where, nullptr, FILE_BEGIN);
+			return result;
+		}
+
+		bool flush() const override
+		{
+			std::scoped_lock lock(_mutex);
+			return FlushFileBuffers(_handle) != 0;
+		}
+
+		uint64_t seek(const uint64_t offset, const os::file_whence whence) const override
+		{
+			std::scoped_lock lock(_mutex);
+			LARGE_INTEGER where = {};
+			where.QuadPart = static_cast<LONGLONG>(offset);
+			DWORD method = FILE_BEGIN;
+			if (whence == os::file_whence::current) method = FILE_CURRENT;
+			if (whence == os::file_whence::end) method = FILE_END;
+
+			LARGE_INTEGER result = {};
+			return SetFilePointerEx(_handle, where, &result, method)
+				       ? static_cast<uint64_t>(result.QuadPart)
+				       : UINT64_MAX;
+		}
+
+		uint64_t position() const override
+		{
+			std::scoped_lock lock(_mutex);
+			return position_locked();
+		}
+
+		bool truncate(const uint64_t size) const override
+		{
+			std::scoped_lock lock(_mutex);
+			LARGE_INTEGER where = {};
+			where.QuadPart = static_cast<LONGLONG>(size);
+			if (!SetFilePointerEx(_handle, where, nullptr, FILE_BEGIN)) return false;
+			return SetEndOfFile(_handle) != 0;
+		}
+
+		std::string path() const override
+		{
+			return _path;
+		}
+
+		HANDLE native_handle() const { return _handle; }
+	};
+
+	class ini_store_impl final : public os::ini_store
+	{
+		std::wstring _path;
+		bool _root_created = false;
+		bool _failed = false;
+		mutable std::mutex _mutex;
+
+	public:
+		ini_store_impl(std::wstring path, const bool write_unicode_bom) : _path(std::move(path))
+		{
+			const auto handle = CreateFileW(_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			                                nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (handle != INVALID_HANDLE_VALUE)
+			{
+				_root_created = true;
+				if (write_unicode_bom)
+				{
+					constexpr uint8_t bom[] = {0xff, 0xfe};
+					DWORD written = 0;
+					if (!WriteFile(handle, bom, sizeof(bom), &written, nullptr) || written != sizeof(bom))
+						_failed = true;
+				}
+				CloseHandle(handle);
+			}
+			else if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
+			{
+				_failed = true;
+			}
+		}
+
+		bool root_created() const override { return _root_created; }
+
+		std::optional<std::string> read(const std::string_view section,
+		                               const std::string_view key) const override
+		{
+			std::scoped_lock lock(_mutex);
+			if (_failed) return {};
+
+			const auto section_w = widen(section);
+			const auto key_w = widen(key);
+			static constexpr wchar_t absent[] = {0x10, 0};
+			std::vector<wchar_t> buffer(1024);
+			for (;;)
+			{
+				const auto length = GetPrivateProfileStringW(section_w.c_str(), key_w.c_str(), absent,
+				                                             buffer.data(), static_cast<DWORD>(buffer.size()),
+				                                             _path.c_str());
+				if (length < buffer.size() - 1)
+				{
+					if (std::wstring_view(buffer.data(), length) == std::wstring_view(absent, 1))
+						return {};
+					return narrow(std::wstring_view(buffer.data(), length));
+				}
+				if (buffer.size() >= 1024 * 1024) return {};
+				buffer.resize(buffer.size() * 2);
+			}
+		}
+
+		bool write(const std::string_view section, const std::string_view key,
+		           const std::string_view value) override
+		{
+			std::scoped_lock lock(_mutex);
+			if (_failed) return false;
+			return WritePrivateProfileStringW(widen(section).c_str(), widen(key).c_str(), widen(value).c_str(),
+			                                  _path.c_str()) != 0;
+		}
+
+		bool flush() override
+		{
+			// WritePrivateProfileStringW is write-through for the profile API. An empty write flushes
+			// the system's profile cache without changing a key.
+			std::scoped_lock lock(_mutex);
+			return WritePrivateProfileStringW(nullptr, nullptr, nullptr, _path.c_str()) != 0;
+		}
+	};
+
+	class registry_store_impl final : public os::settings_store
+	{
+		std::wstring _root;
+		bool _root_created = false;
+		bool _failed = false;
+
+		std::wstring key_path(const std::string_view section) const
+		{
+			auto result = _root;
+			if (!section.empty())
+			{
+				if (!result.empty()) result += L'\\';
+				result += widen(section);
+			}
+			return result;
+		}
+
+	public:
+		explicit registry_store_impl(const std::string_view root) : _root(widen(root))
+		{
+			if (_root.empty())
+			{
+				_failed = true;
+				return;
+			}
+
+			HKEY key = nullptr;
+			DWORD disposition = 0;
+			const auto status = RegCreateKeyExW(HKEY_CURRENT_USER, _root.c_str(), 0, nullptr, 0,
+			                                    KEY_READ | KEY_WRITE, nullptr, &key, &disposition);
+			if (status != ERROR_SUCCESS)
+			{
+				_failed = true;
+				return;
+			}
+			_root_created = disposition == REG_CREATED_NEW_KEY;
+			RegCloseKey(key);
+		}
+
+		bool root_created() const override { return _root_created; }
+
+		std::optional<std::string> read(const std::string_view section,
+		                               const std::string_view name) const override
+		{
+			if (_failed) return {};
+			HKEY key = nullptr;
+			const auto key_name = key_path(section);
+			if (RegOpenKeyExW(HKEY_CURRENT_USER, key_name.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+				return {};
+
+			DWORD type = 0;
+			DWORD bytes = 0;
+			auto status = RegQueryValueExW(key, widen(name).c_str(), nullptr, &type, nullptr, &bytes);
+			if (status != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ))
+			{
+				RegCloseKey(key);
+				return {};
+			}
+
+			std::vector<wchar_t> value(bytes / sizeof(wchar_t) + 1, L'\0');
+			status = RegQueryValueExW(key, widen(name).c_str(), nullptr, &type,
+			                          reinterpret_cast<LPBYTE>(value.data()), &bytes);
+			RegCloseKey(key);
+			if (status != ERROR_SUCCESS) return {};
+			const auto length = wcsnlen(value.data(), value.size());
+			return narrow(std::wstring_view(value.data(), length));
+		}
+
+		bool write(const std::string_view section, const std::string_view name,
+		           const std::string_view value) override
+		{
+			if (_failed) return false;
+			HKEY key = nullptr;
+			DWORD disposition = 0;
+			const auto key_name = key_path(section);
+			if (RegCreateKeyExW(HKEY_CURRENT_USER, key_name.c_str(), 0, nullptr, 0,
+			                    KEY_SET_VALUE, nullptr, &key, &disposition) != ERROR_SUCCESS)
+				return false;
+			const auto wide = widen(value);
+			const auto status = RegSetValueExW(key, widen(name).c_str(), 0, REG_SZ,
+			                                   reinterpret_cast<const BYTE*>(wide.c_str()),
+			                                   static_cast<DWORD>((wide.size() + 1) * sizeof(wchar_t)));
+			RegCloseKey(key);
+			return status == ERROR_SUCCESS;
+		}
+
+		bool flush() override { return !_failed; }
 	};
 }
 
@@ -153,6 +593,7 @@ std::string os::known_folder_path(const known_folder folder, const bool create, 
 	switch (folder)
 	{
 	case known_folder::local_app_data: id = &FOLDERID_LocalAppData; break;
+	case known_folder::roaming_app_data: id = &FOLDERID_RoamingAppData; break;
 	case known_folder::profile: id = &FOLDERID_Profile; break;
 	case known_folder::desktop: id = &FOLDERID_Desktop; break;
 	case known_folder::documents: id = &FOLDERID_Documents; break;
@@ -178,6 +619,393 @@ std::string os::known_folder_path(const known_folder folder, const bool create, 
 	std::string result;
 	if (SUCCEEDED(status) && raw) result = narrow(raw);
 	CoTaskMemFree(raw);
+	return result;
+}
+
+// ── Files and file dialogs ─────────────────────────────────────────────────────────────────
+
+os::file_attributes os::query_file(const std::string_view path)
+{
+	file_attributes result;
+	const auto w = native_path(path);
+	WIN32_FILE_ATTRIBUTE_DATA data = {};
+	if (!GetFileAttributesExW(w.c_str(), GetFileExInfoStandard, &data))
+	{
+		const auto error = GetLastError();
+		result.error = error;
+		result.presence = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+			                  ? file_presence::not_found
+			                  : file_presence::unknown;
+		return result;
+	}
+
+	fill_attributes(result, data.dwFileAttributes, data.ftCreationTime, data.ftLastWriteTime,
+	                data.nFileSizeHigh, data.nFileSizeLow);
+
+	const auto handle = CreateFileW(w.c_str(), FILE_READ_ATTRIBUTES,
+	                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+	                                OPEN_EXISTING,
+	                                data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY
+		                                ? FILE_FLAG_BACKUP_SEMANTICS
+		                                : FILE_ATTRIBUTE_NORMAL,
+	                                nullptr);
+	if (handle != INVALID_HANDLE_VALUE)
+	{
+		fill_identity(handle, result);
+		CloseHandle(handle);
+	}
+	return result;
+}
+
+os::file_enumeration os::enumerate_files(const std::string_view folder, const bool show_hidden)
+{
+	file_enumeration result;
+	auto root = native_path(folder);
+	if (root.empty()) root = L".";
+	if (!root.ends_with(L'\\') && !root.ends_with(L'/')) root += L'\\';
+	const auto search = root + L'*';
+
+	WIN32_FIND_DATAW data = {};
+	const auto handle = FindFirstFileExW(search.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+	                                     nullptr, FIND_FIRST_EX_LARGE_FETCH);
+	if (handle == INVALID_HANDLE_VALUE)
+	{
+		result.error = GetLastError();
+		return result;
+	}
+
+	bool complete = true;
+	do
+	{
+		if (std::wstring_view(data.cFileName) == L"." || std::wstring_view(data.cFileName) == L"..")
+			continue;
+		if (!show_hidden && (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0)
+			continue;
+
+		file_entry entry;
+		entry.name = narrow(data.cFileName);
+		fill_attributes(entry.attributes, data.dwFileAttributes, data.ftCreationTime, data.ftLastWriteTime,
+		                data.nFileSizeHigh, data.nFileSizeLow);
+		entry.can_recurse = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+		                    (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+
+		const auto child = root + data.cFileName;
+		const auto identity = query_file(narrow(child));
+		if (identity.identity.valid) entry.attributes.identity = identity.identity;
+		result.entries.emplace_back(std::move(entry));
+	}
+	while (FindNextFileW(handle, &data) != 0);
+
+	const auto error = GetLastError();
+	if (error != ERROR_NO_MORE_FILES)
+	{
+		complete = false;
+		result.error = error;
+	}
+	FindClose(handle);
+	result.success = complete;
+	return result;
+}
+
+os::file_ptr os::open_file(const std::string_view path, const file_open_mode mode,
+                           const file_share_mode share)
+{
+	DWORD desired_access = GENERIC_READ;
+	DWORD share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+	DWORD disposition = OPEN_EXISTING;
+	DWORD flags = FILE_ATTRIBUTE_NORMAL;
+
+	switch (mode)
+	{
+	case file_open_mode::read:
+		break;
+	case file_open_mode::write:
+		desired_access = GENERIC_WRITE;
+		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		break;
+	case file_open_mode::create:
+		desired_access = GENERIC_READ | GENERIC_WRITE;
+		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		disposition = CREATE_ALWAYS;
+		break;
+	case file_open_mode::create_new:
+		desired_access = GENERIC_READ | GENERIC_WRITE;
+		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		disposition = CREATE_NEW;
+		break;
+	case file_open_mode::read_write:
+		desired_access = GENERIC_READ | GENERIC_WRITE;
+		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		break;
+	case file_open_mode::sequential_scan:
+		flags |= FILE_FLAG_SEQUENTIAL_SCAN;
+		break;
+	}
+	switch (share)
+	{
+	case file_share_mode::all: break;
+	case file_share_mode::read: share_mode = FILE_SHARE_READ; break;
+	case file_share_mode::write: share_mode = FILE_SHARE_WRITE; break;
+	case file_share_mode::none: share_mode = 0; break;
+	}
+
+	const auto w = native_path(path);
+	const auto handle = CreateFileW(w.c_str(), desired_access, share_mode, nullptr, disposition, flags, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) return {};
+	file_handle owner(handle);
+	auto result = std::make_shared<win_file>(owner.get(), std::string(path));
+	owner.release();
+	return result;
+}
+
+uintptr_t os::native_file_handle(const file_ptr& file)
+{
+	const auto* const native = dynamic_cast<const win_file*>(file.get());
+	return native ? reinterpret_cast<uintptr_t>(native->native_handle()) : 0;
+}
+
+os::file_operation os::copy_file(const std::string_view source, const std::string_view destination,
+                                 const bool fail_if_exists)
+{
+	return operation_result(::CopyFileW(native_path(source).c_str(), native_path(destination).c_str(),
+	                                    fail_if_exists ? TRUE : FALSE));
+}
+
+os::file_operation os::move_file(const std::string_view source, const std::string_view destination,
+                                 const bool fail_if_exists, const bool allow_copy)
+{
+	const auto flags = (allow_copy ? MOVEFILE_COPY_ALLOWED : 0u) | MOVEFILE_WRITE_THROUGH |
+	                   (fail_if_exists ? 0u : MOVEFILE_REPLACE_EXISTING);
+	return operation_result(::MoveFileExW(native_path(source).c_str(), native_path(destination).c_str(), flags));
+}
+
+os::file_operation os::create_folder(const std::string_view path)
+{
+	if (query_file(path).directory) return {file_operation_code::ok, ERROR_SUCCESS, {}};
+	return operation_result(::CreateDirectoryW(native_path(path).c_str(), nullptr));
+}
+
+os::file_operation os::delete_file(const std::string_view path)
+{
+	return operation_result(::DeleteFileW(native_path(path).c_str()));
+}
+
+os::file_operation os::recycle_file(const std::string_view path)
+{
+	// SHFileOperationW is a shell API and intentionally receives the unprefixed form. It cannot
+	// handle an extended path, but it can still recycle ordinary local and UNC paths. A caller
+	// whose path is too long must use permanent deletion instead of claiming an undo was made.
+	auto w = widen(path);
+	if (w.empty() || w.size() >= MAX_PATH)
+	{
+		SetLastError(ERROR_FILENAME_EXCED_RANGE);
+		return operation_result(FALSE);
+	}
+	w.push_back(L'\0');
+	SHFILEOPSTRUCTW operation = {};
+	operation.wFunc = FO_DELETE;
+	operation.pFrom = w.c_str();
+	operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+	const auto result = SHFileOperationW(&operation);
+	if (result == 0 && operation.fAnyOperationsAborted == FALSE)
+		return {file_operation_code::ok, ERROR_SUCCESS, {}};
+	if (result == 0)
+		return {file_operation_code::cancelled, ERROR_CANCELLED, "The file operation was cancelled."};
+	return {file_operation_code::failed, static_cast<uint32_t>(result), error_text(static_cast<DWORD>(result))};
+}
+
+bool os::can_recycle(const std::string_view path)
+{
+	const auto w = widen(path);
+	if (w.size() >= MAX_PATH) return false;
+	if (w.starts_with(LR"(\\)")) return false;
+
+	const auto root = w.size() >= 3 && w[1] == L':' ? w.substr(0, 3) : w;
+	const auto type = GetDriveTypeW(root.c_str());
+	return type != DRIVE_NO_ROOT_DIR && type != DRIVE_UNKNOWN && type != DRIVE_REMOTE &&
+	       type != DRIVE_CDROM;
+}
+
+os::file_dialog_result os::open_file_dialog(const uintptr_t owner, const std::string_view title,
+                                            const std::vector<file_dialog_filter>& filters,
+                                            const bool allow_multiple)
+{
+	file_dialog_result result;
+	const auto filter = dialog_filter(filters);
+	const auto title_w = widen(title);
+	std::vector<wchar_t> buffer(64 * 1024, L'\0');
+
+	OPENFILENAMEW dialog = {};
+	dialog.lStructSize = sizeof(dialog);
+	dialog.hwndOwner = reinterpret_cast<HWND>(owner);
+	dialog.lpstrTitle = title_w.empty() ? nullptr : title_w.c_str();
+	dialog.lpstrFilter = filter.c_str();
+	dialog.lpstrFile = buffer.data();
+	dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+	dialog.nFilterIndex = 1;
+	dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+	              (allow_multiple ? OFN_ALLOWMULTISELECT : 0);
+
+	if (GetOpenFileNameW(&dialog) == 0)
+	{
+		const auto error = CommDlgExtendedError();
+		result.error = error;
+		return result;
+	}
+
+	const std::wstring first(buffer.data());
+	auto* next = buffer.data() + first.size() + 1;
+	if (!allow_multiple || *next == L'\0')
+	{
+		result.paths.emplace_back(narrow(first));
+		return result;
+	}
+
+	const auto folder = first;
+	while (*next != L'\0')
+	{
+		const std::wstring name(next);
+		result.paths.emplace_back(narrow(folder + L'\\' + name));
+		next += name.size() + 1;
+	}
+	return result;
+}
+
+os::file_dialog_result os::save_file_dialog(const uintptr_t owner, const std::string_view title,
+                                            const std::string_view default_path,
+                                            const std::vector<file_dialog_filter>& filters)
+{
+	file_dialog_result result;
+	const auto filter = dialog_filter(filters);
+	std::vector<wchar_t> buffer(64 * 1024, L'\0');
+	const auto initial = widen(default_path);
+	if (initial.size() < buffer.size())
+		std::copy(initial.begin(), initial.end(), buffer.begin());
+
+	const auto title_w = widen(title);
+	const auto extension = dialog_default_extension(default_path);
+	OPENFILENAMEW dialog = {};
+	dialog.lStructSize = sizeof(dialog);
+	dialog.hwndOwner = reinterpret_cast<HWND>(owner);
+	dialog.lpstrTitle = title_w.empty() ? nullptr : title_w.c_str();
+	dialog.lpstrFilter = filter.c_str();
+	dialog.lpstrFile = buffer.data();
+	dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+	dialog.lpstrDefExt = extension.empty() ? nullptr : extension.c_str();
+	dialog.nFilterIndex = 1;
+	dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+
+	if (GetSaveFileNameW(&dialog) == 0)
+	{
+		result.error = CommDlgExtendedError();
+		return result;
+	}
+	result.paths.emplace_back(narrow(buffer.data()));
+	return result;
+}
+
+os::file_dialog_result os::folder_dialog(const uintptr_t owner, const std::string_view title,
+                                        const std::string_view default_path)
+{
+	file_dialog_result result;
+	IFileOpenDialog* dialog = nullptr;
+	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+	                            IID_PPV_ARGS(&dialog))) || dialog == nullptr)
+	{
+		result.error = static_cast<uint32_t>(GetLastError());
+		return result;
+	}
+
+	DWORD options = 0;
+	const auto title_w = widen(title);
+	if (SUCCEEDED(dialog->GetOptions(&options)) &&
+		SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)) &&
+		(title_w.empty() || SUCCEEDED(dialog->SetTitle(title_w.c_str()))))
+	{
+		if (!default_path.empty())
+		{
+			IShellItem* folder = nullptr;
+			const auto default_w = widen(default_path);
+			if (SUCCEEDED(SHCreateItemFromParsingName(default_w.c_str(), nullptr, IID_PPV_ARGS(&folder))) &&
+			    folder != nullptr)
+			{
+				dialog->SetFolder(folder);
+				folder->Release();
+			}
+		}
+
+		const auto shown = dialog->Show(reinterpret_cast<HWND>(owner));
+		if (SUCCEEDED(shown))
+		{
+			IShellItem* item = nullptr;
+			if (SUCCEEDED(dialog->GetResult(&item)) && item)
+			{
+				PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path)
+				{
+					result.paths.emplace_back(narrow(path));
+					CoTaskMemFree(path);
+				}
+				item->Release();
+			}
+		}
+		else if (shown != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+		{
+			result.error = static_cast<uint32_t>(shown);
+		}
+	}
+	dialog->Release();
+	return result;
+}
+
+os::ini_store_ptr os::open_ini_store(const std::string_view path, const bool write_unicode_bom)
+{
+	return std::make_shared<ini_store_impl>(widen(path), write_unicode_bom);
+}
+
+os::settings_store_ptr os::open_registry_store(const std::string_view root_key)
+{
+	return std::make_shared<registry_store_impl>(root_key);
+}
+
+std::string os::escape_ini_value(const std::string_view value)
+{
+	constexpr char escape = '\x10';
+	std::string result;
+	result.reserve(value.size());
+	for (const auto c : value)
+	{
+		if (c == '\r' || c == '\n' || c == escape)
+		{
+			result += escape;
+			result += c == '\r' ? 'r' : c == '\n' ? 'n' : escape;
+		}
+		else
+		{
+			result += c;
+		}
+	}
+	return result;
+}
+
+std::string os::unescape_ini_value(const std::string_view value)
+{
+	constexpr char escape = '\x10';
+	std::string result;
+	result.reserve(value.size());
+	for (size_t i = 0; i < value.size(); ++i)
+	{
+		const auto next = i + 1 < value.size() ? value[i + 1] : '\0';
+		if (value[i] == escape && (next == 'r' || next == 'n' || next == escape))
+		{
+			result += next == 'r' ? '\r' : next == 'n' ? '\n' : escape;
+			++i;
+		}
+		else
+		{
+			result += value[i];
+		}
+	}
 	return result;
 }
 

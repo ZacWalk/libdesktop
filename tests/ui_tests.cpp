@@ -103,31 +103,32 @@ namespace
 		box.text = "copy me";
 		box.select_all();
 
-		// The clipboard is a shared machine resource; if it cannot be opened the
-		// rest of the round trip proves nothing, so report and move on.
-		if (!box.copy_to_clipboard())
+		const auto unavailable = [](const bool success) { return !success; };
+		const auto copied = retry_clipboard([&] { return box.copy_to_clipboard(); }, unavailable);
+		CHECK(copied);
+		if (!copied)
 		{
-			std::printf("clipboard unavailable: skipping round-trip check\n");
+			std::printf("clipboard unavailable after bounded wait\n");
 			return;
 		}
 
 		pf::ui::edit_box dest;
-		CHECK(dest.paste_from_clipboard());
+		CHECK(retry_clipboard([&] { return dest.paste_from_clipboard(); }, unavailable));
 		CHECK_STR(dest.text, "copy me");
 
 		// A single-line field cannot represent newlines, so paste strips them.
-		CHECK(pf::platform_text_to_clipboard("one\r\ntwo"));
+		CHECK(retry_clipboard([] { return pf::platform_text_to_clipboard("one\r\ntwo"); }, unavailable));
 		pf::ui::edit_box lines;
-		CHECK(lines.paste_from_clipboard());
+		CHECK(retry_clipboard([&] { return lines.paste_from_clipboard(); }, unavailable));
 		CHECK_STR(lines.text, "onetwo");
 
 		// Cut leaves the field empty and the text on the clipboard.
 		box.text = "cut me";
 		box.select_all();
-		CHECK(box.cut_to_clipboard());
+		CHECK(retry_clipboard([&] { return box.cut_to_clipboard(); }, unavailable));
 		CHECK_STR(box.text, "");
 		pf::ui::edit_box after_cut;
-		CHECK(after_cut.paste_from_clipboard());
+		CHECK(retry_clipboard([&] { return after_cut.paste_from_clipboard(); }, unavailable));
 		CHECK_STR(after_cut.text, "cut me");
 	}
 

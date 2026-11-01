@@ -56,6 +56,7 @@ namespace os
 	enum class known_folder
 	{
 		local_app_data,
+		roaming_app_data,
 		profile,
 		desktop,
 		documents,
@@ -71,6 +72,182 @@ namespace os
 	// Empty when the system has no such folder; error, when given, receives the system's code.
 	// create makes the folder when it does not exist yet.
 	std::string known_folder_path(known_folder folder, bool create = false, uint32_t* error = nullptr);
+
+	// ── Files and file dialogs ──────────────────────────────────────────────────────────────
+	//
+	// Paths crossing this boundary are UTF-8. The Windows implementation adds an extended-length
+	// prefix only for rooted paths when a native call needs it; relative paths remain relative.
+	// Nothing in this interface exposes a native path or a Win32 handle.
+
+	enum class file_presence
+	{
+		unknown,
+		not_found,
+		found
+	};
+
+	struct file_identity
+	{
+		uint64_t volume = 0;
+		uint64_t index = 0;
+		bool valid = false;
+
+		bool operator==(const file_identity&) const = default;
+	};
+
+	struct file_attributes
+	{
+		file_presence presence = file_presence::unknown;
+		bool directory = false;
+		bool readonly = false;
+		bool offline = false;
+		bool hidden = false;
+		bool reparse = false;
+		uint64_t modified = 0;
+		uint64_t created = 0;
+		uint64_t size = 0;
+		file_identity identity;
+		uint32_t error = 0;
+
+		bool exists() const { return presence == file_presence::found; }
+		bool confirmed_missing() const { return presence == file_presence::not_found; }
+	};
+
+	struct file_entry
+	{
+		std::string name;
+		file_attributes attributes;
+		bool can_recurse = true;
+	};
+
+	struct file_enumeration
+	{
+		std::vector<file_entry> entries;
+		bool success = false;
+		uint32_t error = 0;
+	};
+
+	file_attributes query_file(std::string_view path);
+	file_enumeration enumerate_files(std::string_view folder, bool show_hidden);
+
+	enum class file_open_mode
+	{
+		read,
+		write,
+		create,
+		create_new,
+		read_write,
+		sequential_scan
+	};
+
+	enum class file_share_mode
+	{
+		all,
+		read,
+		write,
+		none
+	};
+
+	enum class file_whence
+	{
+		begin,
+		current,
+		end
+	};
+
+	class file
+	{
+	public:
+		virtual ~file() = default;
+
+		virtual uint64_t size() const = 0;
+		virtual uint64_t read(uint8_t* data, uint64_t size) const = 0;
+		virtual uint64_t write(const uint8_t* data, uint64_t size) = 0;
+		virtual uint64_t read_at(uint64_t offset, uint8_t* data, uint64_t size) const = 0;
+		virtual uint64_t write_at(uint64_t offset, const uint8_t* data, uint64_t size) = 0;
+		virtual bool flush() const = 0;
+		virtual uint64_t seek(uint64_t offset, file_whence whence) const = 0;
+		virtual uint64_t position() const = 0;
+		virtual bool truncate(uint64_t size) const = 0;
+		virtual std::string path() const = 0;
+	};
+
+	using file_ptr = std::shared_ptr<file>;
+
+	file_ptr open_file(std::string_view path, file_open_mode mode,
+	                   file_share_mode share = file_share_mode::all);
+	// Backend-only interop for libdesktop-system's specialized handle operations. No application
+	// includes os.h or receives this token.
+	uintptr_t native_file_handle(const file_ptr& file);
+
+	enum class file_operation_code
+	{
+		ok,
+		cancelled,
+		failed,
+		already_exists
+	};
+
+	struct file_operation
+	{
+		file_operation_code code = file_operation_code::failed;
+		uint32_t error = 0;
+		std::string diagnostic;
+
+		bool success() const { return code == file_operation_code::ok; }
+		bool failed() const { return code != file_operation_code::ok; }
+	};
+
+	file_operation copy_file(std::string_view source, std::string_view destination, bool fail_if_exists);
+	file_operation move_file(std::string_view source, std::string_view destination, bool fail_if_exists,
+	                         bool allow_copy = true);
+	file_operation create_folder(std::string_view path);
+	file_operation delete_file(std::string_view path);
+	file_operation recycle_file(std::string_view path);
+	bool can_recycle(std::string_view path);
+
+	struct file_dialog_filter
+	{
+		std::string text;
+		std::string extensions;
+	};
+
+	struct file_dialog_result
+	{
+		std::vector<std::string> paths;
+		uint32_t error = 0;
+
+		bool accepted() const { return !paths.empty(); }
+		bool cancelled() const { return paths.empty() && error == 0; }
+	};
+
+	file_dialog_result open_file_dialog(uintptr_t owner, std::string_view title,
+	                                    const std::vector<file_dialog_filter>& filters, bool allow_multiple);
+	file_dialog_result save_file_dialog(uintptr_t owner, std::string_view title, std::string_view default_path,
+	                                    const std::vector<file_dialog_filter>& filters);
+	file_dialog_result folder_dialog(uintptr_t owner, std::string_view title, std::string_view default_path = {});
+
+	// A profile-style INI store shared by both platform stacks. Locations and the policy that
+	// selects one stay in the wrappers. Values are raw UTF-8; callers that need the historical
+	// escaped-line format use escape_ini_value/unescape_ini_value below.
+	class settings_store
+	{
+	public:
+		virtual ~settings_store() = default;
+		virtual bool root_created() const = 0;
+		virtual std::optional<std::string> read(std::string_view section, std::string_view key) const = 0;
+		virtual bool write(std::string_view section, std::string_view key, std::string_view value) = 0;
+		virtual bool flush() = 0;
+	};
+
+	using settings_store_ptr = std::shared_ptr<settings_store>;
+	using ini_store = settings_store;
+	using ini_store_ptr = settings_store_ptr;
+
+	ini_store_ptr open_ini_store(std::string_view path, bool write_unicode_bom = false);
+	settings_store_ptr open_registry_store(std::string_view root_key);
+	std::string escape_ini_value(std::string_view value);
+	std::string unescape_ini_value(std::string_view value);
 
 	// ── Web requests ─────────────────────────────────────────────────────────────────────────
 

@@ -9,6 +9,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -19,6 +20,7 @@
 #include <stdexcept>
 #include <utility>
 #include <cwctype>
+#include <variant>
 #include <vector>
 
 namespace pf
@@ -492,10 +494,12 @@ namespace pf
 		uint8_t r = 0;
 		uint8_t g = 0;
 		uint8_t b = 0;
+		uint8_t a = 255;
 
 		constexpr color_t() = default;
 
-		constexpr color_t(const uint8_t r, const uint8_t g, const uint8_t b) : r(r), g(g), b(b)
+		constexpr color_t(const uint8_t r, const uint8_t g, const uint8_t b, const uint8_t a = 255)
+			: r(r), g(g), b(b), a(a)
 		{
 		}
 
@@ -505,6 +509,11 @@ namespace pf
 		[[nodiscard]] constexpr uint32_t rgb() const
 		{
 			return (r & 0xff) | (g & 0xff) << 8 | (b & 0xff) << 16;
+		}
+
+		[[nodiscard]] constexpr uint32_t rgba() const
+		{
+			return rgb() | static_cast<uint32_t>(a) << 24;
 		}
 
 		static constexpr uint8_t clamp_byte(const int n)
@@ -528,6 +537,27 @@ namespace pf
 			return lighten(is_light ? -n : n);
 		}
 	};
+
+	// BGRA pixel operations use the scalar implementation when a requested SIMD
+	// backend is unavailable.  Explicit backend selection is useful for tests
+	// and for callers that already made their own dispatch decision.
+	enum class pixel_backend
+	{
+		automatic,
+		scalar,
+		sse2,
+		avx2
+	};
+
+	bool has_sse2() noexcept;
+	bool has_avx2() noexcept;
+
+	void blend_constant_bgra(std::span<uint32_t> pixels, color_t foreground,
+	                         pixel_backend backend = pixel_backend::automatic);
+	// Fraction is in [0, 256]. An out-of-range value throws std::invalid_argument.
+	void interpolate_bgra(std::span<const uint32_t> first, std::span<const uint32_t> second,
+	                      std::span<uint32_t> destination, uint16_t fraction,
+	                      pixel_backend backend = pixel_backend::automatic);
 
 	uint32_t fnv1a_i(std::string_view sv);
 	uint64_t fnv1a_i_64(std::string_view sv);
@@ -884,6 +914,23 @@ namespace pf
 		dpi_changed,
 		init_dialog,
 		drop_files,
+		capture_changed,
+		end_session,
+	};
+
+	enum class gesture_kind
+	{
+		zoom,
+		pan
+	};
+
+	struct gesture_params
+	{
+		gesture_kind kind = gesture_kind::pan;
+		ipoint point;
+		uint64_t argument = 0;
+		bool begin = false;
+		bool end = false;
 	};
 
 	// Mouse message types — dispatched via handle_mouse
@@ -946,6 +993,7 @@ namespace pf
 		double dpi_scale = 1.0; // dpi_changed
 		irect suggested_bounds; // dpi_changed — zero-sized when the OS suggested none
 		std::span<const file_path> dropped_paths; // drop_files
+		bool session_ending = false; // end_session — the system is logging off or shutting down
 	};
 
 	// Extract signed mouse coordinates from packed lParam (handles negative values on multi-monitor)
@@ -983,10 +1031,19 @@ namespace pf
 		constexpr uint32_t favorite_star_fill = 0xE735;  // filled star
 	}
 
+	enum class font_size_mode
+	{
+		// The requested height is the character height (the existing libdesktop default).
+		character,
+		// The requested height is the complete cell height, including internal leading.
+		cell,
+	};
+
 	struct font
 	{
 		int size = 12; // in points
 		font_name name;
+		font_size_mode size_mode = font_size_mode::character;
 	};
 
 	// Opaque platform font handle. On Win32 this stores an HFONT cast to
@@ -1011,7 +1068,38 @@ namespace pf
 		bool italic = false;
 		bool underline = false;
 		bool strikeout = false;
+		font_size_mode size_mode = font_size_mode::character;
 	};
+
+	struct window_frame;
+	using window_frame_ptr = std::shared_ptr<window_frame>;
+
+	struct text_input_options
+	{
+		std::string cue;
+		std::function<void(std::string_view)> changed;
+		std::function<void(std::string_view)> accepted;
+		std::function<void()> escaped;
+		std::function<void(bool shift)> tabbed;
+	};
+
+	class text_input
+	{
+	public:
+		virtual ~text_input() = default;
+		virtual window_frame_ptr frame() = 0;
+		virtual void set_bounds(irect bounds) = 0;
+		virtual void show(bool visible) = 0;
+		virtual void set_focus() = 0;
+		virtual bool has_focus() const = 0;
+		virtual std::string text() const = 0;
+		virtual void set_text(std::string_view text) = 0;
+		virtual void set_font(const font_def& font) = 0;
+	};
+
+	using text_input_ptr = std::shared_ptr<text_input>;
+	text_input_ptr create_text_input(const window_frame_ptr& owner,
+	                                 text_input_options options = {});
 
 	// Create / destroy a platform font. Created handles are NOT cached by
 	// the platform; the caller is responsible for caching and lifetime.
@@ -1092,7 +1180,38 @@ namespace pf
 
 		// Bitmap blit with scaling into dest rectangle.
 		virtual void draw_bitmap(const irect& dest, const struct bitmap& bmp) = 0;
+		// Alpha-aware additions. Existing opaque overloads remain unchanged for callers that know
+		// their pixels are opaque.
+		virtual void fill_blend_rect(const irect& rc, color_t color)
+		{
+			fill_solid_rect(rc, color);
+		}
+		virtual void draw_bitmap(const irect& dest, const struct bitmap& bmp, bool alpha)
+		{
+			(void)alpha;
+			draw_bitmap(dest, bmp);
+		}
+		// Pixel-surface contexts expose explicit synchronization for an application that interleaves
+		// direct vector writes with text/primitives recorded through the context.
+		virtual void sync_surface_to_pixels() {}
+		virtual void sync_pixels_to_surface() {}
 	};
+
+	// A top-down BGRA8 backing surface for an application-owned software scene. A pixel-surface
+	// draw context uses the same clipping, text, primitive and bitmap operations as a window paint
+	// context; exposing only pixels keeps the application independent of HDC/DIB types.
+	struct pixel_surface
+	{
+		int width = 0;
+		int height = 0;
+		std::vector<uint32_t> pixels;
+
+		pixel_surface() = default;
+		pixel_surface(int w, int h) : width(w), height(h), pixels(static_cast<size_t>(w) * h) {}
+	};
+
+	std::unique_ptr<draw_context> create_pixel_surface_context(pixel_surface& surface,
+	                                                            irect clip = {});
 
 	// Wrap a native device context (HDC on Win32) into a transient draw_context.
 	// The returned context does NOT own the native DC. Use this in window-paint
@@ -1107,9 +1226,19 @@ namespace pf
 	struct toolbar_frame;
 	struct address_bar_config;
 
-	using window_frame_ptr = std::shared_ptr<window_frame>;
 	using frame_reactor_ptr = std::shared_ptr<frame_reactor>;
 	using toolbar_frame_ptr = std::shared_ptr<toolbar_frame>;
+
+	// Options applied when the platform creates the application's top-level frame. Dimensions are
+	// client-area pixels, so an application does not need to know the current non-client metrics or
+	// DPI. A zero dimension leaves the platform's default unchanged.
+	struct window_options
+	{
+		isize initial_client_size;
+		isize minimum_client_size;
+		bool fullscreen = false;
+		bool resizable = true;
+	};
 
 	// window_frame — Platform-independent window abstraction
 	struct window_frame
@@ -1135,6 +1264,7 @@ namespace pf
 		virtual void kill_timer(uint32_t id) = 0;
 		// Coordinate mapping
 		virtual ipoint screen_to_client(ipoint pt) const = 0;
+		virtual ipoint client_to_screen(ipoint pt) const { return pt; }
 		// Cursor
 		virtual void set_cursor_shape(cursor_shape shape) = 0;
 		// Window management
@@ -1155,6 +1285,12 @@ namespace pf
 
 		virtual placement get_placement() const = 0;
 		virtual void set_placement(const placement& p) = 0;
+		// Window mode and sizing. The defaults keep headless/test frames source-compatible; the
+		// Windows top-level implementation applies both through the native non-client metrics.
+		virtual void set_minimum_client_size(isize) {}
+		virtual void set_fullscreen(bool) {}
+		virtual bool is_fullscreen() const { return false; }
+		virtual void toggle_fullscreen() { set_fullscreen(!is_fullscreen()); }
 		// Mouse tracking
 		virtual void track_mouse_leave() = 0;
 		// Key state
@@ -1180,12 +1316,58 @@ namespace pf
 		virtual double get_dpi_scale() const = 0;
 		// Drag and drop
 		virtual void accept_drop_files(bool accept) = 0;
+		virtual void configure_gestures(bool, bool) {}
 
 		// Create a platform-rendered toolbar / address bar child window.
 		// The returned toolbar_frame is itself a window_frame (see toolbar_frame::frame())
 		// so its bounds can be positioned via move_window().
 		virtual toolbar_frame_ptr create_address_bar(const address_bar_config& cfg) = 0;
 	};
+
+	enum class tray_balloon_kind
+	{
+		info,
+		warning,
+		error
+	};
+
+	struct tray_icon_image
+	{
+		std::span<const uint32_t> bgra_pixels;
+		isize extent;
+	};
+
+	struct tray_callbacks
+	{
+		std::function<void()> on_activate;
+		std::function<void(ipoint screen_position, bool keyboard_anchor)> on_context_menu;
+		std::function<void()> on_balloon_click;
+		std::function<void(bool session_ending)> on_end_session;
+	};
+
+	class tray_service
+	{
+	public:
+		virtual ~tray_service() = default;
+		virtual bool available() const = 0;
+		virtual std::string diagnostics() const = 0;
+		virtual bool set_icon(tray_icon_image image) = 0;
+		virtual bool set_tooltip(std::string_view text) = 0;
+		virtual bool show() = 0;
+		virtual bool hide() = 0;
+		virtual bool show_balloon(std::string_view title, std::string_view text,
+		                          tray_balloon_kind kind = tray_balloon_kind::info) = 0;
+	};
+
+	using tray_service_ptr = std::shared_ptr<tray_service>;
+
+	// A tray service is optional. It owns the notification icon and its hidden message window;
+	// application callbacks own the policy for urgency, restore and exit.
+	tray_service_ptr create_tray_service(tray_icon_image image, std::string_view tooltip,
+	                                     tray_callbacks callbacks = {});
+	// Test seam: the next tray publication is made to fail with a diagnostic. It never makes a
+	// successful publication look like a failure in production.
+	void test_set_tray_publication_failure(bool fail);
 
 	// frame_reactor — Event handler for window_frame
 	struct frame_reactor
@@ -1206,9 +1388,19 @@ namespace pf
 			return 0;
 		}
 
+		virtual uint32_t handle_gesture(window_frame_ptr, const gesture_params&)
+		{
+			return 0;
+		}
+
 		virtual void handle_paint(window_frame_ptr& window, draw_context& draw) = 0;
 		virtual void handle_size(window_frame_ptr& window, isize extent, measure_context& measure) = 0;
 	};
+
+	// Posts a key transition through the same Win32 message path as a real keyboard event. It is
+	// intentionally small and neutral so a custom frame loop can test input routing without a HWND.
+	bool post_key_event(const window_frame_ptr& window, unsigned int key, bool down);
+	bool post_key_events(const window_frame_ptr& window, unsigned int key, bool down);
 
 	// Cursor position (global, not window-specific)
 	ipoint platform_cursor_pos();
@@ -1248,6 +1440,7 @@ namespace pf
 	namespace msg_box_style
 	{
 		constexpr uint32_t ok = 0x0000;
+		constexpr uint32_t ok_cancel = 0x0001;
 		constexpr uint32_t yes_no = 0x0004;
 		constexpr uint32_t yes_no_cancel = 0x0003;
 		constexpr uint32_t icon_warning = 0x0030;
@@ -1256,6 +1449,7 @@ namespace pf
 
 	namespace msg_box_result
 	{
+		constexpr int ok = 1;
 		constexpr int yes = 6;
 		constexpr int no = 7;
 		constexpr int cancel = 2;
@@ -1272,6 +1466,10 @@ namespace pf
 	file_path current_directory();
 	// The current user's non-roaming application-data directory; empty on failure.
 	file_path local_app_data_path();
+	// The current user's roaming application-data directory; empty on failure.
+	file_path roaming_app_data_path();
+	// Age of the last-write timestamp in seconds, or no value when the file cannot be queried.
+	std::optional<double> file_age_seconds(const file_path& path);
 
 	// File dialog
 	file_path open_file_path(std::string_view title, std::string_view filters);
@@ -1280,16 +1478,145 @@ namespace pf
 	// Folder picker. Empty when the user cancels.
 	file_path pick_folder_path(std::string_view title);
 
+	enum class modal_field_kind
+	{
+		text,
+		check_box,
+		choice,
+		search_list,
+		action
+	};
+
+	using modal_value = std::variant<std::string, bool, int64_t>;
+
+	struct modal_preview
+	{
+		int width = 0;
+		int height = 0;
+		std::vector<uint32_t> bgra_pixels;
+	};
+
+	struct modal_field
+	{
+		uint32_t id = 0;
+		modal_field_kind kind = modal_field_kind::text;
+		std::string label;
+		modal_value value = std::string{};
+		std::vector<std::pair<std::string, int64_t>> choices;
+		std::function<void()> action;
+		bool enabled = true;
+	};
+
+	struct modal_definition
+	{
+		std::string title;
+		std::string message;
+		std::vector<modal_field> fields;
+		std::vector<modal_preview> previews;
+		std::string accept = "OK";
+		std::string cancel = "Cancel";
+		std::function<std::optional<std::string>(const std::map<uint32_t, modal_value>&)> validate;
+	};
+
+	std::optional<std::map<uint32_t, modal_value>> show_modal_dialog(
+		const window_frame_ptr& owner, modal_definition definition);
+
+	struct shell_tree_options
+	{
+		std::function<void(file_path)> selection_changed;
+		std::function<void()> files_changed;
+		std::function<void(file_path, std::vector<file_path>, bool move)> files_dropped;
+	};
+
+	class shell_tree
+	{
+	public:
+		virtual ~shell_tree() = default;
+		virtual window_frame_ptr frame() = 0;
+		virtual void set_bounds(irect bounds) = 0;
+		virtual void show(bool visible) = 0;
+		virtual void set_focus() = 0;
+		virtual bool has_focus() const = 0;
+		virtual void set_current_path(file_path path) = 0;
+		virtual void refresh() = 0;
+	};
+
+	using shell_tree_ptr = std::shared_ptr<shell_tree>;
+
+	shell_tree_ptr create_shell_tree(const window_frame_ptr& owner, shell_tree_options options = {});
+	bool begin_file_drag(const window_frame_ptr& owner, std::span<const file_path> files);
+
+	struct choice_definition
+	{
+		std::string title;
+		std::string heading;
+		std::string message;
+		std::vector<std::pair<int, std::string>> buttons;
+		int default_id = 0;
+		bool warning = false;
+	};
+
+	int show_choice(const window_frame_ptr& owner, const choice_definition& definition);
+
 	// File iteration
 	struct file_attributes_t
 	{
 		bool is_readonly = false;
 		bool is_offline = false;
 		bool is_hidden = false;
+		bool is_reparse = false;
 		uint64_t modified = 0;
 		uint64_t created = 0;
 		uint64_t size = 0;
+		struct identity_t
+		{
+			uint64_t volume = 0;
+			uint64_t index = 0;
+			bool valid = false;
+
+			bool operator==(const identity_t&) const = default;
+		} identity;
 	};
+
+	enum class file_error
+	{
+		none,
+		no_such_file,
+		already_exists,
+		access_denied,
+		sharing_violation,
+		invalid_path,
+		io_error
+	};
+
+	struct file_operation_result
+	{
+		file_error code = file_error::none;
+		std::string message;
+		uint32_t native_code = 0;
+
+		explicit operator bool() const { return code == file_error::none; }
+		bool success() const { return code == file_error::none; }
+	};
+
+	enum class file_query_status
+	{
+		found,
+		no_such_file,
+		failed
+	};
+
+	struct file_query_result
+	{
+		file_query_status status = file_query_status::failed;
+		file_attributes_t attributes;
+		file_operation_result error;
+
+		bool found() const { return status == file_query_status::found; }
+		bool no_such_file() const { return status == file_query_status::no_such_file; }
+	};
+
+	file_query_result query_file(const file_path& path);
 
 	struct file_info
 	{
@@ -1356,6 +1683,54 @@ namespace pf
 
 	file_handle_ptr open_for_read(const file_path& path);
 
+	struct file_open_result
+	{
+		file_handle_ptr file;
+		file_operation_result result;
+
+		bool success() const { return file != nullptr && static_cast<bool>(result); }
+	};
+
+	file_open_result open_for_read_result(const file_path& path, bool sequential_scan = false);
+
+	class atomic_file_writer
+	{
+	public:
+		virtual ~atomic_file_writer() = default;
+		virtual file_operation_result write(std::span<const uint8_t> bytes) = 0;
+		virtual file_operation_result flush() = 0;
+		virtual file_operation_result commit() = 0;
+		virtual file_path staged_path() const = 0;
+	};
+
+	using atomic_file_writer_ptr = std::shared_ptr<atomic_file_writer>;
+
+	struct atomic_file_writer_open_result
+	{
+		atomic_file_writer_ptr writer;
+		file_operation_result result;
+
+		bool success() const { return writer != nullptr && static_cast<bool>(result); }
+	};
+
+	// Creates an exclusive stage beside destination. The stage is owned by the writer, flushed
+	// before commit and removed on every failed write/flush/commit. Commit atomically replaces the
+	// destination; it never check-then-creates a stage or touches an unrelated .tmp/.bak file.
+	atomic_file_writer_open_result create_atomic_file_writer_result(const file_path& destination);
+	atomic_file_writer_ptr create_atomic_file_writer(const file_path& destination);
+
+	enum class atomic_file_test_failure
+	{
+		none,
+		stage_collision,
+		open,
+		write,
+		flush,
+		commit
+	};
+
+	void test_set_atomic_file_failure(atomic_file_test_failure failure);
+
 	// Writable file handle
 	struct writable_file_handle
 	{
@@ -1376,6 +1751,8 @@ namespace pf
 	bool platform_rename_file(const file_path& old_path, const file_path& new_path);
 	bool platform_create_directory(const file_path& path);
 	bool platform_copy_file(const file_path& source, const file_path& dest, bool fail_if_exists);
+	// Includes suspend time and does not wrap at 32 bits.
+	uint64_t platform_uptime_ms();
 
 	// Absolute, with links followed where the target exists, so two paths can be compared safely
 	file_path canonical_path(const file_path& path);
@@ -1415,6 +1792,12 @@ namespace pf
 
 	// Configuration (INI file)
 	void config_set_app_name(std::string_view app_name);
+	// Select an explicit UTF-8 INI path before the first config read/write. An empty path restores
+	// the default executable-adjacent/app-data policy; the store mechanism and escaping stay shared.
+	void config_set_path(const file_path& path);
+	// Select an explicit HKCU subkey (for example "Software\\ergo-active") before the first
+	// config read/write. An empty root returns to the INI policy.
+	void config_set_registry_root(std::string_view root_key);
 	std::string config_read(std::string_view section, std::string_view key,
 	                        std::string_view default_value = {});
 	void config_write(std::string_view section, std::string_view key, std::string_view value);
@@ -1463,6 +1846,16 @@ namespace pf
 	// One holder per user across login sessions; destruction releases it on any thread.
 	// Names contain 1–128 ASCII letters, digits, '.', '_' or '-'; failures populate error.
 	instance_lock_result try_lock_instance(std::string_view name);
+	// Explicit legacy/native mutex name for an adopter that must coordinate with an older binary.
+	// The name is UTF-8 and is passed to the OS named-object namespace unchanged; no native handle
+	// escapes this API.
+	instance_lock_result try_lock_named_instance(std::string_view name);
+	// Registers a callback for the named second-launch signal. The callback runs on the UI thread
+	// when the top-level frame receives it; registration is portable and owns the Win32 message id.
+	bool register_instance_signal(std::string_view name, std::function<void()> callback);
+	// Broadcasts the named signal to an already-running instance. False means the name was invalid
+	// or the OS could not post it.
+	bool signal_existing_instance(std::string_view name);
 
 	// ── Child processes ────────────────────────────────────────────────────────────────────
 	// Used to host a tool that speaks a line-based protocol over its standard streams.
@@ -1611,11 +2004,68 @@ namespace pf
 
 	using bitmap_ptr = std::shared_ptr<bitmap>;
 
+	struct bitmap_load_options
+	{
+		// Source pixels and returned BGRA bytes are separate budgets.
+		uint64_t max_pixels = 0;
+		uint64_t max_decoded_bytes = 0;
+		uint32_t target_width = 0;
+		uint32_t target_height = 0;
+		bool thumbnail = false;
+		bool apply_orientation = false;
+		std::function<bool()> cancelled;
+		std::function<void(uint64_t decoded_bytes, uint64_t source_bytes)> progress;
+	};
+
+	enum class bitmap_load_error
+	{
+		none,
+		unavailable,
+		invalid_data,
+		too_large,
+		cancelled,
+		io_error
+	};
+
+	struct bitmap_load_result
+	{
+		bitmap_ptr image;
+		bitmap_load_error error = bitmap_load_error::none;
+		std::string diagnostic;
+		// Original dimensions in the returned bitmap's orientation, before reduction.
+		uint32_t source_width = 0;
+		uint32_t source_height = 0;
+		uint16_t stored_orientation = 1;
+
+		bool success() const { return image != nullptr && error == bitmap_load_error::none; }
+	};
+
+	struct bitmap_probe
+	{
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t frame_count = 0;
+		uint16_t orientation = 1;
+		std::string container;
+		bool has_alpha = false;
+	};
+
 	// Load a bitmap from a file on disk.
 	bitmap_ptr load_bitmap_file(const file_path& path);
+	bitmap_load_result load_bitmap_file_result(const file_path& path,
+	                                           bitmap_load_options options = {});
+	std::optional<bitmap_probe> probe_bitmap_file(const file_path& path);
+	std::vector<std::string> installed_bitmap_extensions();
 
 	// Load a bitmap from in-memory encoded image bytes.
 	bitmap_ptr load_bitmap_memory(const uint8_t* data, size_t size);
+	bitmap_load_result load_bitmap_memory_result(std::span<const uint8_t> data,
+	                                             bitmap_load_options options = {});
+	std::optional<bitmap_probe> probe_bitmap_memory(std::span<const uint8_t> data);
+	// Extract and rasterise an OLE SummaryInformation PIDSI_THUMBNAIL
+	// metafile preview. Source dimensions retain the stored logical extent.
+	bitmap_load_result load_compound_preview_result(std::span<const uint8_t> data,
+	                                                bitmap_load_options options = {});
 
 	// Load an encoded image from an embedded resource (RT_RCDATA by default).
 	bitmap_ptr load_bitmap_named_resource(std::string_view name, std::string_view type = "RCDATA");
@@ -1832,6 +2282,14 @@ struct app_init_result
 	// message loop — for apps that need a free-running frame loop and pump
 	// messages themselves with pf::platform_events().
 	std::function<int()> main_loop;
+
+	// Top-level frame options. app_init runs before the frame exists, so these are the only
+	// portable way to request an initial client size or fullscreen mode.
+	pf::window_options window;
+
+	// A non-empty diagnostic is returned by the platform when initialization cannot create the
+	// requested frame. The application may also set it before returning start_gui=false.
+	std::string error_message;
 };
 
 

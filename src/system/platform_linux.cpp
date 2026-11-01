@@ -11,6 +11,7 @@
 // run headless. There is no window, no renderer and no desktop integration here yet.
 
 #include "libdesktop/system.h"
+#include "libdesktop/detail/cpu_features.h"
 
 
 #include <condition_variable>
@@ -53,9 +54,22 @@ uint32_t platform::tick_count()
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+uint64_t platform::tick_count64()
+{
+	timespec uptime = {};
+	if (::clock_gettime(CLOCK_BOOTTIME, &uptime) != 0) return 0;
+	return static_cast<uint64_t>(uptime.tv_sec) * 1000ull +
+	       static_cast<uint64_t>(uptime.tv_nsec) / 1'000'000ull;
+}
+
 uint32_t platform::current_thread_id()
 {
 	return static_cast<uint32_t>(::gettid());
+}
+
+uint32_t platform::process_id()
+{
+	return static_cast<uint32_t>(::getpid());
 }
 
 int64_t df::now_us()
@@ -569,8 +583,21 @@ namespace
 platform::file_op_result platform::move_file(const df::file_path existing, const df::file_path destination,
                                              const bool fail_if_exists)
 {
+	return move_file(existing, destination, fail_if_exists, true);
+}
+
+platform::file_op_result platform::move_file(const df::file_path existing, const df::file_path destination,
+                                             const bool fail_if_exists, const bool allow_copy)
+{
 	const auto from = existing.str();
 	const auto to = destination.str();
+	const auto failure = [](const int error)
+	{
+		file_op_result result{error == EEXIST ? file_op_result_code::ALREADY_EXISTS :
+			file_op_result_code::FAILED, std::string(::strerror(error))};
+		result.error = {error, std::generic_category()};
+		return result;
+	};
 	const auto copy_then_unlink = [&]
 	{
 		const auto copied = copy_file(existing, destination, true, false);
@@ -578,7 +605,7 @@ platform::file_op_result platform::move_file(const df::file_path existing, const
 
 		if (::unlink(from.c_str()) != 0)
 		{
-			return file_op_result{file_op_result_code::FAILED, std::string(::strerror(errno))};
+			return failure(errno);
 		}
 
 		return file_op_result{file_op_result_code::OK};
@@ -592,16 +619,16 @@ platform::file_op_result platform::move_file(const df::file_path existing, const
 		}
 
 		const auto rename_error = errno;
-		if (rename_error == EEXIST) return {file_op_result_code::ALREADY_EXISTS};
+		if (rename_error == EEXIST) return failure(rename_error);
 
-		if (rename_error == EXDEV)
+		if (rename_error == EXDEV && allow_copy)
 		{
 			return copy_then_unlink();
 		}
 
 		if (rename_error != ENOSYS && rename_error != EINVAL)
 		{
-			return {file_op_result_code::FAILED, std::string(::strerror(rename_error))};
+			return failure(rename_error);
 		}
 
 		// rename() has no refusal mode, and a stat-then-rename would silently replace a destination
@@ -616,20 +643,21 @@ platform::file_op_result platform::move_file(const df::file_path existing, const
 
 			const auto unlink_error = errno;
 			::unlink(to.c_str());
-			return {file_op_result_code::FAILED, std::string(::strerror(unlink_error))};
+			return failure(unlink_error);
 		}
 
 		if (errno == EEXIST)
 		{
-			return {file_op_result_code::ALREADY_EXISTS};
+			return failure(errno);
 		}
 
-		if (errno == EXDEV || errno == EPERM || errno == EOPNOTSUPP || errno == EMLINK || errno == ENOSYS)
+		if (allow_copy &&
+			(errno == EXDEV || errno == EPERM || errno == EOPNOTSUPP || errno == EMLINK || errno == ENOSYS))
 		{
 			return copy_then_unlink();
 		}
 
-		return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+		return failure(errno);
 	}
 
 	if (::rename(from.c_str(), to.c_str()) != 0)
@@ -638,20 +666,20 @@ platform::file_op_result platform::move_file(const df::file_path existing, const
 		// move between two mounts is that copy, then the source removed once the copy is whole. A
 		// source that will not go leaves both in place rather than deleting the copy: under Replace
 		// the copy is all that remains of what stood at the destination.
-		if (errno == EXDEV)
+		if (errno == EXDEV && allow_copy)
 		{
 			const auto copied = copy_file(existing, destination, fail_if_exists, false);
 			if (copied.failed()) return copied;
 
 			if (::unlink(from.c_str()) != 0)
 			{
-				return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+				return failure(errno);
 			}
 
 			return {file_op_result_code::OK};
 		}
 
-		return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+		return failure(errno);
 	}
 
 	return {file_op_result_code::OK};
@@ -767,14 +795,9 @@ bool platform::arm_crc32_supported = false;
 
 bool platform::has_avx2()
 {
-#if defined(__x86_64__) || defined(__i386__)
-	// The build targets an SSE2 baseline, so the AVX2 paths in render_surface.cpp are dispatched
-	// at runtime exactly as they are on Windows.
-	static const bool supported = __builtin_cpu_supports("avx2");
-	return supported;
-#else
-	return false;
-#endif
+	// The build targets an SSE2 baseline, so wider paths are dispatched at
+	// runtime exactly as they are on Windows.
+	return libdesktop::detail::has_avx2();
 }
 
 void platform::secure_zero(void* ptr, const size_t len)

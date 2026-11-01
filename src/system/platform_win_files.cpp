@@ -13,6 +13,7 @@
 
 #include "libdesktop/platform_win.h"
 #include "libdesktop/os.h"
+#include "libdesktop/detail/cpu_features.h"
 
 #include <psapi.h>
 #include <Shlwapi.h>
@@ -59,6 +60,14 @@ std::function<platform::file_presence(const df::file_path&)> platform::test_repl
 
 std::atomic<size_t> platform::static_memory_usage = 0;
 platform::thread_event platform::event_exit(true, false);
+
+static platform::file_op_result file_operation_result(const os::file_operation& operation)
+{
+	platform::file_op_result result{
+		static_cast<platform::file_op_result_code>(operation.code), operation.diagnostic};
+	result.error = {static_cast<int>(operation.error), std::system_category()};
+	return result;
+}
 
 
 df_assert_pod(platform::file_info);
@@ -2315,8 +2324,8 @@ static platform::file_op_result last_op_result(const BOOL res)
 
 platform::file_op_result platform::delete_file(const df::file_path path)
 {
-	const auto w = to_file_system_path(path);
-	return last_op_result(::DeleteFile(w.c_str()));
+	const auto result = os::delete_file(path.pack());
+	return file_operation_result(result);
 }
 
 platform::file_op_result platform::make_file_writable(const df::file_path path)
@@ -2337,6 +2346,59 @@ platform::file_op_result platform::make_file_writable(const df::file_path path)
 	return last_op_result(SetFileAttributesW(w.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY));
 }
 
+platform::file_op_result platform::set_file_attributes(const df::file_path path,
+                                                        const std::optional<uint64_t> modified,
+                                                        const std::optional<bool> readonly)
+{
+	const auto w = to_file_system_path(path);
+	const auto current = GetFileAttributesW(w.c_str());
+	if (current == INVALID_FILE_ATTRIBUTES) return last_op_result(FALSE);
+
+	if (modified)
+	{
+		auto* const handle = CreateFileW(w.c_str(), FILE_WRITE_ATTRIBUTES,
+		                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+		                                 OPEN_EXISTING,
+		                                 (current & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS
+		                                                                      : FILE_ATTRIBUTE_NORMAL,
+		                                 nullptr);
+		if (handle == INVALID_HANDLE_VALUE) return last_op_result(FALSE);
+		FILETIME time = {};
+		time.dwLowDateTime = static_cast<DWORD>(*modified);
+		time.dwHighDateTime = static_cast<DWORD>(*modified >> 32);
+		const auto success = SetFileTime(handle, nullptr, nullptr, &time);
+		const auto error = success ? ERROR_SUCCESS : GetLastError();
+		CloseHandle(handle);
+		if (!success)
+		{
+			SetLastError(error);
+			return last_op_result(FALSE);
+		}
+	}
+
+	if (readonly)
+	{
+		auto attributes = current;
+		if (*readonly) attributes |= FILE_ATTRIBUTE_READONLY;
+		else attributes &= ~FILE_ATTRIBUTE_READONLY;
+		if (!SetFileAttributesW(w.c_str(), attributes)) return last_op_result(FALSE);
+	}
+
+	return {file_op_result_code::OK};
+}
+
+std::optional<double> platform::file_age_seconds(const df::file_path path)
+{
+	const auto attributes = file_attributes(path);
+	if (!attributes.exists()) return {};
+
+	FILETIME now = {};
+	GetSystemTimeAsFileTime(&now);
+	const auto current = (static_cast<uint64_t>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+	if (current <= attributes.modified) return 0.0;
+	return static_cast<double>(current - attributes.modified) / 10'000'000.0;
+}
+
 
 platform::file_op_result platform::copy_file(const df::file_path existing, const df::file_path destination,
                                              const bool fail_if_exists, const bool can_create_folder)
@@ -2351,27 +2413,26 @@ platform::file_op_result platform::copy_file(const df::file_path existing, const
 		}
 	}
 
-	const auto existingW = to_file_system_path(existing);
-	const auto destinationW = to_file_system_path(destination);
-	return last_op_result(::CopyFile(existingW.c_str(), destinationW.c_str(), fail_if_exists));
+	const auto result = os::copy_file(existing.pack(), destination.pack(), fail_if_exists);
+	return file_operation_result(result);
 }
 
 platform::file_op_result platform::move_file(const df::file_path existing, const df::file_path destination,
                                              const bool fail_if_exists)
 {
-	const auto existingW = to_file_system_path(existing);
-	const auto destinationW = to_file_system_path(destination);
-	return last_op_result(::MoveFileEx(existingW.c_str(), destinationW.c_str(),
-	                                   MOVEFILE_COPY_ALLOWED | (fail_if_exists ? 0 : MOVEFILE_REPLACE_EXISTING)));
+	return move_file(existing, destination, fail_if_exists, true);
+}
+
+platform::file_op_result platform::move_file(const df::file_path existing, const df::file_path destination,
+                                             const bool fail_if_exists, const bool allow_copy)
+{
+	return file_operation_result(os::move_file(existing.pack(), destination.pack(), fail_if_exists, allow_copy));
 }
 
 platform::file_op_result platform::move_file(const df::folder_path existing, const df::folder_path destination)
 {
-	const auto existingW = to_file_system_path(existing);
-	const auto destinationW = to_file_system_path(destination);
-	return last_op_result(::MoveFileEx(existingW.c_str(),
-	                                   destinationW.c_str(),
-	                                   MOVEFILE_COPY_ALLOWED));
+	const auto result = os::move_file(existing.text(), destination.text(), true);
+	return file_operation_result(result);
 }
 
 // Commit any buffered writes for a file to the underlying volume. On network
@@ -2702,18 +2763,14 @@ platform::file_op_result platform::replace_file(const df::file_path destination,
 
 bool platform::exists(const df::folder_path path)
 {
-	const auto attrib = ::file_attributes(path);
-
-	return attrib != INVALID_FILE_ATTRIBUTES &&
-		attrib & FILE_ATTRIBUTE_DIRECTORY;
+	const auto attributes = os::query_file(path.text());
+	return attributes.exists() && attributes.directory;
 }
 
 bool platform::exists(const df::file_path path)
 {
-	const auto attrib = ::file_attributes(path);
-
-	return attrib != INVALID_FILE_ATTRIBUTES &&
-		(attrib & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	const auto attributes = os::query_file(path.pack());
+	return attributes.exists() && !attributes.directory;
 }
 
 // SHCreateDirectoryExW refused a relative path; CreateDirectoryW would make one in the current directory.
@@ -2758,17 +2815,14 @@ platform::file_op_result platform::create_folder(const df::folder_path path)
 		return result;
 	}
 
-	auto w = shell_path;
-	make_extended_path(w, MAX_PATH - 12);
-
-	if (CreateDirectoryW(w.c_str(), nullptr))
+	const auto operation = os::create_folder(path.text());
+	if (operation.success())
 	{
-		SHChangeNotify(SHCNE_MKDIR, SHCNF_PATH, shell_path.c_str(), nullptr);
 		result.code = file_op_result_code::OK;
 		return result;
 	}
 
-	const auto error = GetLastError();
+	const auto error = operation.error;
 
 	// Made meanwhile by another thread or process is made.
 	if (error == ERROR_ALREADY_EXISTS && path.exists())
@@ -2780,6 +2834,8 @@ platform::file_op_result platform::create_folder(const df::folder_path path)
 		result.error_message = format_os_error(error);
 	}
 
+	if (result.error_message.empty()) result.error_message = operation.diagnostic;
+	if (result.failed()) result.error = {static_cast<int>(operation.error), std::system_category()};
 	return result;
 }
 
@@ -2912,31 +2968,7 @@ int platform::display_frequency()
 
 bool platform::has_avx2()
 {
-	static const bool result = []
-	{
-#if defined(_M_X64) || defined(_M_IX86)
-		int regs[4] = {};
-		__cpuid(regs, 0);
-		if (regs[0] < 7) return false;
-
-		__cpuid(regs, 1);
-		constexpr auto osxsave_bit = 1 << 27;
-		constexpr auto avx_bit = 1 << 28;
-		if ((regs[2] & osxsave_bit) == 0 || (regs[2] & avx_bit) == 0) return false;
-
-		// XCR0 bits 1 and 2: without the OS saving XMM and YMM state the YMM registers are not
-		// usable however the CPU reports itself.
-		if ((_xgetbv(0) & 0x6) != 0x6) return false;
-
-		__cpuidex(regs, 7, 0);
-		constexpr auto avx2_bit = 1 << 5;
-		return (regs[1] & avx2_bit) != 0;
-#else
-		return false;
-#endif
-	}();
-
-	return result;
+	return libdesktop::detail::has_avx2();
 }
 
 bool platform::memory_usage(memory_usage_t& result)
@@ -3000,64 +3032,13 @@ df::folder_path platform::temp_folder()
 	return to_folder_path(path);
 }
 
-static int CALLBACK browse_callback_proc(const HWND hwnd, const uint32_t uMsg, LPARAM, const LPARAM pData)
-{
-	switch (uMsg)
-	{
-	case BFFM_INITIALIZED:
-		// WParam is TRUE since you are passing a path.
-		SendMessage(hwnd, BFFM_SETSELECTION, TRUE, pData);
-		return 1;
-
-	default:
-		break;
-	}
-	return 0;
-}
-
 bool platform::browse_for_folder(df::folder_path& path)
 {
-	const auto title = str::utf8_to_utf16(platform::text().select_folder);
-
-	wchar_t path_result[MAX_PATH];
-	wchar_t path_root[MAX_PATH]{};
-
-	// SHBrowseForFolder cannot address a path longer than MAX_PATH, so an over-long initial
-	// selection is dropped rather than overflowing the buffer (wcscpy_s would terminate the process).
-	const auto initial_root = to_shell_path(path);
-
-	if (initial_root.size() < std::size(path_root))
-	{
-		wcscpy_s(path_root, initial_root.c_str());
-	}
-
-	BROWSEINFO bi;
-	bi.hwndOwner = GetActiveWindow();
-	bi.pidlRoot = nullptr;
-	bi.pszDisplayName = path_result;
-	bi.lpszTitle = title.c_str();
-	bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-	// Needed to set default folder
-	// Use reinterpret_cast over bit_cast
-	bi.lpfn = browse_callback_proc;
-	bi.lParam = reinterpret_cast<LPARAM>(static_cast<wchar_t*>(path_root));
-	bi.iImage = 0;
-
-	auto* const pidl_result = SHBrowseForFolder(&bi);
-
-	if (pidl_result)
-	{
-		wchar_t sz[MAX_PATH]{};
-
-		if (SHGetPathFromIDListW(pidl_result, sz))
-		{
-			path = df::folder_path(str::utf16_to_utf8(sz));
-		}
-
-		CoTaskMemFree(pidl_result);
-	}
-
-	return pidl_result != nullptr;
+	const auto result = os::folder_dialog(reinterpret_cast<uintptr_t>(app_wnd()),
+	                                      platform::text().select_folder, path.text());
+	if (!result.accepted()) return false;
+	path = df::folder_path(result.paths.front());
+	return true;
 }
 
 
@@ -3068,148 +3049,45 @@ std::wstring platform::dialog_default_extension(const std::string_view extension
 
 bool platform::prompt_for_save_path(df::file_path& path)
 {
-	OPENFILENAME ofn = {};
-
-	wchar_t w[MAX_PATH];
-	w[0] = 0;
-
-	// GetSaveFileName is limited to MAX_PATH, so an over-long suggestion is dropped rather than
-	// overflowing the buffer (wcscpy_s would terminate the process).
-	const auto initial_name = to_shell_path(path);
-
-	if (initial_name.size() < std::size(w))
-	{
-		wcscpy_s(w, initial_name.c_str());
-	}
-	const auto extension = dialog_default_extension(path.extension());
-
-	std::string filter_a;
-	filter_a += std::format("{} (*.jpg)|*.jpg;*.jpe;*.jpeg|", platform::text().jpeg_best);
-	filter_a += std::format("{} (*.png)|*.png|", platform::text().png_best);
-	filter_a += std::format("{} (*.webp)|*.webp|", platform::text().webp_best);
-	filter_a += std::format("{} (*.jxl)|*.jxl|", platform::text().jxl_best);
-	filter_a += "|";
-
-	auto filter = str::utf8_to_utf16(filter_a);
-
-	for (auto&& c : filter)
-	{
-		if (c == '|') c = 0;
-	}
-
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = app_wnd();
-	ofn.lpstrFilter = filter.c_str();
-	ofn.lpstrFile = w;
-	ofn.nMaxFile = MAX_PATH;
-	ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT;
-	ofn.lpstrDefExt = extension.c_str();
-	ofn.nFilterIndex = 1;
-	if (str::icmp(extension, L"png") == 0) ofn.nFilterIndex = 2;
-	if (str::icmp(extension, L"webp") == 0) ofn.nFilterIndex = 3;
-	if (str::icmp(extension, L"jxl") == 0) ofn.nFilterIndex = 4;
-
-	const auto success = GetSaveFileName(&ofn) != 0;
-	path = df::file_path(str::utf16_to_utf8(w));
-	return success;
-}
-
-namespace
-{
-	// The common dialogs take a double-null-terminated list of null-separated pairs, which no
-	// ordinary string handling produces. Built through '|' and substituted so the shape stays
-	// readable here.
-	std::wstring build_dialog_filter(const std::vector<platform::file_dialog_filter>& filters)
-	{
-		std::string text;
-
-		for (const auto& filter : filters)
-		{
-			text += std::format("{} ({})|{}|", filter.text, filter.extensions, filter.extensions);
-		}
-
-		text += "|";
-		auto result = str::utf8_to_utf16(text);
-
-		for (auto&& c : result)
-		{
-			if (c == '|') c = 0;
-		}
-
-		return result;
-	}
-
-	// The buffer a multi-select open dialog writes: the folder, then each name, each null
-	// terminated. MAX_PATH per file is the documented shape and the reason for the size.
-	constexpr size_t open_dialog_buffer = 64 * 1024;
+	const std::vector<os::file_dialog_filter> filters = {
+		{std::string(platform::text().jpeg_best), "*.jpg;*.jpe;*.jpeg"},
+		{std::string(platform::text().png_best), "*.png"},
+		{std::string(platform::text().webp_best), "*.webp"},
+		{std::string(platform::text().jxl_best), "*.jxl"}
+	};
+	const auto result = os::save_file_dialog(reinterpret_cast<uintptr_t>(app_wnd()), {}, path.pack(), filters);
+	if (!result.accepted()) return false;
+	path = df::file_path(result.paths.front());
+	return true;
 }
 
 bool platform::prompt_for_open_paths(std::vector<df::file_path>& paths,
                                      const std::vector<file_dialog_filter>& filters, const bool allow_multiple)
 {
-	std::vector<wchar_t> buffer(open_dialog_buffer, 0);
-	const auto filter = build_dialog_filter(filters);
+	std::vector<os::file_dialog_filter> os_filters;
+	os_filters.reserve(filters.size());
+	for (const auto& filter : filters)
+		os_filters.push_back({filter.text, filter.extensions});
 
-	OPENFILENAME ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = app_wnd();
-	ofn.lpstrFilter = filter.c_str();
-	ofn.lpstrFile = buffer.data();
-	ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-	ofn.nFilterIndex = 1;
-	ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
-		(allow_multiple ? OFN_ALLOWMULTISELECT : 0);
-
-	if (!GetOpenFileName(&ofn)) return false;
-
+	const auto result = os::open_file_dialog(reinterpret_cast<uintptr_t>(app_wnd()), {}, os_filters,
+	                                         allow_multiple);
+	if (!result.accepted()) return false;
 	paths.clear();
-
-	const std::wstring first(buffer.data());
-	auto* next = buffer.data() + first.size() + 1;
-
-	if (!allow_multiple || *next == 0)
-	{
-		// A single selection is the whole path, whether or not multi-select was permitted.
-		paths.emplace_back(str::utf16_to_utf8(first));
-		return true;
-	}
-
-	const auto folder = df::folder_path(str::utf16_to_utf8(first));
-
-	while (*next)
-	{
-		const std::wstring name(next);
-		paths.emplace_back(folder.combine_file(str::utf16_to_utf8(name)));
-		next += name.size() + 1;
-	}
-
+	for (const auto& selected : result.paths) paths.emplace_back(selected);
 	return !paths.empty();
 }
 
 bool platform::prompt_for_save_path(df::file_path& path, const std::vector<file_dialog_filter>& filters)
 {
-	wchar_t w[MAX_PATH];
-	w[0] = 0;
+	std::vector<os::file_dialog_filter> os_filters;
+	os_filters.reserve(filters.size());
+	for (const auto& filter : filters)
+		os_filters.push_back({filter.text, filter.extensions});
 
-	const auto initial_name = to_shell_path(path);
-	if (initial_name.size() < std::size(w)) wcscpy_s(w, initial_name.c_str());
-
-	const auto extension = dialog_default_extension(path.extension());
-	const auto filter = build_dialog_filter(filters);
-
-	OPENFILENAME ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = app_wnd();
-	ofn.lpstrFilter = filter.c_str();
-	ofn.lpstrFile = w;
-	ofn.nMaxFile = MAX_PATH;
-	ofn.nFilterIndex = 1;
-	ofn.lpstrDefExt = extension.c_str();
-	ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-
-	const auto success = GetSaveFileName(&ofn) != 0;
-	if (success) path = df::file_path(str::utf16_to_utf8(w));
-	return success;
+	const auto result = os::save_file_dialog(reinterpret_cast<uintptr_t>(app_wnd()), {}, path.pack(), os_filters);
+	if (!result.accepted()) return false;
+	path = df::file_path(result.paths.front());
+	return true;
 }
 
 // autocrop
@@ -4168,44 +4046,39 @@ static __forceinline void populate_file_attributes(platform::file_attributes_t& 
 	fi.is_offline = 0 != is_offline_attribute(fad.dwFileAttributes);
 }
 
-// Only these two codes prove the path is gone. Everything else - denied, offline, share unreachable,
-// name too long - means the query failed, which is not the same claim.
-static platform::file_presence presence_from_query_error(const DWORD error)
-{
-	return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
-		       ? platform::file_presence::not_found
-		       : platform::file_presence::unknown;
-}
-
 platform::file_attributes_t platform::file_attributes(const df::file_path path)
 {
+	const auto source = os::query_file(path.pack());
 	file_attributes_t result;
-	WIN32_FILE_ATTRIBUTE_DATA fad;
-	const auto w = to_file_system_path(path);
-	if (GetFileAttributesEx(w.c_str(), GetFileExInfoStandard, &fad) != 0)
-	{
-		populate_file_attributes(result, fad);
-	}
-	else
-	{
-		result.presence = presence_from_query_error(GetLastError());
-	}
+	result.presence = static_cast<file_presence>(source.presence);
+	result.is_readonly = source.readonly;
+	result.is_hidden = source.hidden;
+	result.is_offline = source.offline;
+	result.is_reparse = source.reparse;
+	result.modified = source.modified;
+	result.created = source.created;
+	result.size = source.size;
+	result.identity.volume = source.identity.volume;
+	result.identity.index = source.identity.index;
+	result.identity.valid = source.identity.valid;
 	return result;
 }
 
 platform::file_attributes_t platform::file_attributes(const df::folder_path path)
 {
+	const auto source = os::query_file(path.text());
 	file_attributes_t result;
-	WIN32_FILE_ATTRIBUTE_DATA fad;
-	const auto w = to_file_system_path(path);
-	if (GetFileAttributesEx(w.c_str(), GetFileExInfoStandard, &fad) != 0)
-	{
-		populate_file_attributes(result, fad);
-	}
-	else
-	{
-		result.presence = presence_from_query_error(GetLastError());
-	}
+	result.presence = static_cast<file_presence>(source.presence);
+	result.is_readonly = source.readonly;
+	result.is_hidden = source.hidden;
+	result.is_offline = source.offline;
+	result.is_reparse = source.reparse;
+	result.modified = source.modified;
+	result.created = source.created;
+	result.size = source.size;
+	result.identity.volume = source.identity.volume;
+	result.identity.index = source.identity.index;
+	result.identity.valid = source.identity.valid;
 	return result;
 }
 
@@ -4326,6 +4199,72 @@ static bool parent_folder_is_available(const df::folder_path folder)
 
 platform::folder_contents platform::iterate_file_items(const df::folder_path folder, bool show_hidden)
 {
+	if (!is_server(folder.text()))
+	{
+		const auto source = os::enumerate_files(folder.text(), show_hidden);
+		folder_contents results;
+		results.files.reserve(source.entries.size());
+		results.folders.reserve(source.entries.size());
+		for (const auto& entry : source.entries)
+		{
+			if (entry.attributes.directory)
+			{
+				folder_info item;
+				item.name = str::cache(entry.name);
+				item.attributes.presence = static_cast<file_presence>(entry.attributes.presence);
+				item.attributes.is_readonly = entry.attributes.readonly;
+				item.attributes.is_hidden = entry.attributes.hidden;
+				item.attributes.is_offline = entry.attributes.offline;
+				item.attributes.is_reparse = entry.attributes.reparse;
+				item.attributes.modified = entry.attributes.modified;
+				item.attributes.created = entry.attributes.created;
+				item.attributes.size = entry.attributes.size;
+				item.attributes.identity.volume = entry.attributes.identity.volume;
+				item.attributes.identity.index = entry.attributes.identity.index;
+				item.attributes.identity.valid = entry.attributes.identity.valid;
+				item.can_recurse = entry.can_recurse;
+				results.folders.emplace_back(std::move(item));
+			}
+			else
+			{
+				file_info item;
+				item.folder = folder;
+				item.name = str::cache(entry.name);
+				item.attributes.presence = static_cast<file_presence>(entry.attributes.presence);
+				item.attributes.is_readonly = entry.attributes.readonly;
+				item.attributes.is_hidden = entry.attributes.hidden;
+				item.attributes.is_offline = entry.attributes.offline;
+				item.attributes.is_reparse = entry.attributes.reparse;
+				item.attributes.modified = entry.attributes.modified;
+				item.attributes.created = entry.attributes.created;
+				item.attributes.size = entry.attributes.size;
+				item.attributes.identity.volume = entry.attributes.identity.volume;
+				item.attributes.identity.index = entry.attributes.identity.index;
+				item.attributes.identity.valid = entry.attributes.identity.valid;
+				if (test_offline_predicate && test_offline_predicate(folder.combine_file(item.name)))
+					item.attributes.is_offline = true;
+				results.files.emplace_back(std::move(item));
+			}
+		}
+
+		if (source.success)
+		{
+			results.success = true;
+		}
+		else if ((source.error == ERROR_FILE_NOT_FOUND || source.error == ERROR_PATH_NOT_FOUND) &&
+		         parent_folder_is_available(folder))
+		{
+			results.success = true;
+		}
+		else
+		{
+			df::log(__FUNCTION__, std::format("enumeration of {} failed: {}", folder.text(), source.error));
+			results.files.clear();
+			results.folders.clear();
+		}
+		return results;
+	}
+
 	folder_contents results;
 	WIN32_FIND_DATA fd;
 

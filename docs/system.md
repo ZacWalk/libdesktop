@@ -62,8 +62,9 @@ The module names what it makes from it, and those names are fixed by it:
 
 Before it uses the module, the application also sets a UTF-8 C locale - Diffractor sets
 `en_US.UTF-8` on Windows, and `LC_CTYPE` to `C.UTF-8` on Linux - which the narrow conversions follow
-(`platform::utf8_to_a` among them), and on Windows initializes COM on each thread that uses the shell
-or WIC, with `platform::thread_init`.
+(`platform::utf8_to_a` among them). Windows shell callers still initialize COM on their worker
+threads with `platform::thread_init`; libdesktop-core's WIC and compound-preview entry points own
+their own balanced COM initialization and are safe from a fresh thread or an existing STA/MTA.
 
 The platform's messages (`platform::messages`) are English and name no
 application. An application translates them with the rest of its text, and may
@@ -88,14 +89,39 @@ On Windows the sources name most of their import libraries with
 The CRT is the consumer's choice: nothing here sets
 `CMAKE_MSVC_RUNTIME_LIBRARY`.
 
-On Windows it also links libdesktop-os, privately: the web client
-(`connect_to_host`, `send_request`, `is_online`), clipboard text
-(`set_clipboard(text)`, `clipboard_text`) and the known folders are
-libdesktop-os's, which libdesktop-core shares. This module wraps them in what
+On Windows it also links libdesktop-os, privately: UTF-8/extended-path file
+queries, enumeration, open/create and positional streams, atomic
+no-overwrite moves, permanent/recycle deletion, folder creation and dialogs,
+the escaped INI store, the web client (`connect_to_host`, `send_request`,
+`is_online`), clipboard text (`set_clipboard(text)`, `clipboard_text`) and the
+known folders are libdesktop-os's, which libdesktop-core shares. This module wraps them in what
 belongs to the application: its name as the user agent, its log messages, the
 clean-up of copied text, and a web response that is either whole or not one at
 all - a transfer that fails or is cut short answers status 0 with no body, and
 removes what it downloaded.
+
+The public system wrapper keeps its `file_op_result`, shell collision
+policy and settings-location policy. File results preserve a backend
+`std::error_code` as well as a readable diagnostic. A caller can disable the
+path move's automatic copy fallback, handle only `cross_device_link` itself,
+and keep that staged copy behind its own review/commit checks. Permission or
+sharing failures must not become an attempted copy.
+Ordinary `read` retains the system stack's restrictive sharing contract.
+`read_shared` explicitly permits concurrent readers, writers and renames for
+adapters that previously allowed them; the token remains readable and reports
+its current filename after a rename.
+`platform::open_file_lock` does not follow reparse points. On Windows its
+default `rename_delete` mode excludes writers and other rename/delete handles;
+its `read` mode needs no delete access and permits renames while excluding
+writers. Acquire a mutation token before checking pathname snapshots.
+`file_sha256(token)` hashes the held object without reopening its pathname or
+advancing its cursor. Token move/delete overloads refuse to emulate the
+identity guarantee on a backend without a native handle operation; Linux read
+tokens pin the object but do not emulate Windows sharing exclusions.
+The core wrapper likewise exposes `pf::config_set_path` and
+`pf::config_set_registry_root` for adopters whose historical settings live
+somewhere other than its default; neither call silently migrates or changes
+the caller's selected location.
 
 ## The window layer's hooks
 
