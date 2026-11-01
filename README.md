@@ -2,12 +2,13 @@
 
 [![Build](https://github.com/ZacWalk/libdesktop/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/libdesktop/actions/workflows/build.yml)
 
-A small C++20 platform layer for desktop applications, in four static libraries:
+A small C++20 platform layer for desktop applications, in five static libraries:
 
 | Library | Alias | Contents |
 |---|---|---|
 | **libdesktop-core** | `libdesktop::core` | One OS-free header, `src/core/platform.h`, and a backend that implements it. Windows, drawing, fonts, menus, input, clipboard, files, HTTP, audio, timers, threading, child processes — all behind `pf::`, so application code never sees a `HWND`. |
 | **libdesktop-ui** | `libdesktop::ui` | The reusable presentation layer in `src/ui`: widgets, text and document views, markdown rendering, lists and the prompt composer, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
+| **libdesktop-text** | `libdesktop::text` | The part of `src/ui` that is standard C++ alone: the text layer's vocabulary (`text_types.h`) and the syntax highlighters (`syntax.h`), in `pf::ui`. libdesktop-ui is written in it; an application on another window model links it alone to colour text it draws itself. |
 | **libdesktop-system** | `libdesktop::system` | The foundation and OS services that began as Diffractor's, in `include/libdesktop`: `df::` and `str::` (strings, paths, dates, geometry, containers, hashing, logging, JSON) and `platform::` (files, settings, processes, threads, known folders, the shell, sharing, the web, crash recovery), for Windows and Linux. Opt in with `LIBDESKTOP_SYSTEM`; [docs/system.md](docs/system.md) describes it. |
 | **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, controls and commands, the Direct3D 11 and software renderers, DirectWrite text, WIC, native controls, Media Foundation movie writing and WASAPI sound, for Windows, with Linux stand-ins. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
 
@@ -15,7 +16,8 @@ libdesktop-ui operates on a UTF-8 text buffer the application hands it. It never
 opens a file, never knows a path, and never names an application — loading and
 saving stay in the app.
 
-libdesktop-core and libdesktop-ui have one backend, Win32/MSVC.
+libdesktop-core and libdesktop-ui have one backend, Win32/MSVC; libdesktop-text needs none and builds
+everywhere libdesktop does.
 libdesktop-system has two: Windows with MSVC and Linux with GCC, and libdesktop-render builds on both,
 with stand-ins on Linux.
 
@@ -23,8 +25,8 @@ with stand-ins on Linux.
 [Potato](https://github.com/ZacWalk/potato),
 [Stunt Car Racer](https://github.com/ZacWalk/stuntcarracer) and
 [libdos](https://github.com/ZacWalk/libdos)'s dui on libdesktop-core; and
-[Diffractor](https://github.com/ZacWalk/diffractor) on libdesktop-system and
-libdesktop-render.
+[Diffractor](https://github.com/ZacWalk/diffractor) on libdesktop-system,
+libdesktop-render and libdesktop-text.
 
 ## Architecture
 
@@ -68,7 +70,9 @@ application, open a file, know a path or speak a protocol. A file is reached as
 `#include "ui/<file>.h"`. `ui/ui.h` gathers the core building blocks —
 `platform.h` and the theme, text model, host, syntax, spell, markdown, widget
 and table-layout headers — but no view, so a view's header, such as
-`view_markdown.h`, is included explicitly.
+`view_markdown.h`, is included explicitly. `text_types.h` and `syntax.h` are
+libdesktop-text: they include the standard library alone, compare extensions
+and keywords without regard to ASCII case, and are reached by the same spelling.
 
 | Category | Key types / files |
 |----------|-------------------|
@@ -95,11 +99,11 @@ Layout and hit testing are testable without a window, because
 | `src/core/platform_win_audio.cpp` | XAudio2 backend, isolated from the rest |
 | `src/ui/ui.h` | libdesktop-ui umbrella header for the core UI building blocks |
 | `src/ui/theme.h` / `.cpp` | The `pf::ui::colors` table, the `theme` metrics, the style palette and the heading fonts |
-| `src/ui/text_types.h` | `text_location`, `text_selection`, `text_style`, `text_block`, `highlight_fn` |
+| `src/ui/text_types.h` | `text_location`, `text_selection`, `text_style`, `text_block`, `highlight_fn` (libdesktop-text) |
 | `src/ui/view_host.h` | What a view asks of the application: invalidation, `ensure_visible`, status |
 | `src/ui/widgets.h` | `edit_box`, `caret_blinker`, `splitter`, `custom_scrollbar`, `edit_box_widget` |
 | `src/ui/table_layout.h` / `.cpp` | Table cell parsing and rendering, shared by the markdown and CSV views |
-| `src/ui/syntax.h` / `.cpp` | The syntax highlighters; language choice is the caller's |
+| `src/ui/syntax.h` / `.cpp` | The syntax highlighters; language choice is the caller's (libdesktop-text) |
 | `src/ui/spell.h` / `.cpp` | The process-wide spell checker and its cache |
 | `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
 | `src/ui/text_input.h` | `pf::ui::input` — filtering and bounding untrusted text before it enters a prompt |
@@ -115,6 +119,8 @@ Layout and hit testing are testable without a window, because
 | `cmake/app.manifest.in` | The manifest every app gets |
 | `tests/platform_tests.cpp` | The libdesktop-core suite (CTest label `libdesktop`) |
 | `tests/ui_tests.cpp` | The libdesktop-ui suite (CTest label `libdesktop-ui`) |
+| `tests/text_tests.cpp` | The libdesktop-text suite (CTest label `libdesktop-text`), on Windows and Linux |
+| `tests/check.h` | The counting checks the libdesktop-ui and libdesktop-text suites share |
 | `include/libdesktop/system.h` | libdesktop-system's umbrella header: the dialect, the standard library and the module's headers, in order |
 | `include/libdesktop/util*.h`, `platform.h`, `platform_compat.h`, `platform_environment.h` | The foundation and the services' API, reached as `#include "libdesktop/<file>.h"` |
 | `include/libdesktop/platform_win.h`, `platform_win_process.h` | The Windows backend's semi-public headers, for an application's own window layer |
@@ -226,8 +232,8 @@ of objects its tasks reference.
 
 ## Consuming it from an app
 
-Four CMake targets are exported: `libdesktop::core`, `libdesktop::ui` and,
-when a consumer sets `LIBDESKTOP_SYSTEM` before bringing the package in,
+Five CMake targets are exported: `libdesktop::core`, `libdesktop::ui`,
+`libdesktop::text` and, when a consumer sets `LIBDESKTOP_SYSTEM` before bringing the package in,
 `libdesktop::system` ([docs/system.md](docs/system.md#using-it)), and with
 `LIBDESKTOP_RENDER` as well, `libdesktop::render`
 ([docs/render.md](docs/render.md#using-it)). The
@@ -293,14 +299,14 @@ uses the CMake and Ninja that ship with it.
 
 ```powershell
 .\dd.ps1 build        # both configurations
-.\dd.ps1 test         # build and run the libdesktop, libdesktop-ui, libdesktop-system and libdesktop-render suites
+.\dd.ps1 test         # build and run the libdesktop, libdesktop-ui, libdesktop-text, libdesktop-system and libdesktop-render suites
 ```
 
 `dd.ps1` locates Visual Studio, enters the MSVC environment, and falls back to
 the CMake and Ninja that ship with it, so nothing extra needs installing. To
 drive CMake directly: `cmake --preset release && cmake --build --preset release`.
 
-On Linux only libdesktop-system and libdesktop-render build, with GCC 13 or later:
+On Linux only libdesktop-system, libdesktop-render and libdesktop-text build, with GCC 13 or later:
 
 ```bash
 cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release

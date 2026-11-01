@@ -152,8 +152,9 @@ namespace
 
 		bool read(const std::string_view section, const std::string_view name, uint32_t& v) const override
 		{
+			// An empty number keeps the default, as the Windows store's does.
 			std::string text;
-			if (!read(section, name, text)) return false;
+			if (!read(section, name, text) || text.empty()) return false;
 			v = static_cast<uint32_t>(str::to_int64(text));
 			return true;
 		}
@@ -161,7 +162,7 @@ namespace
 		bool read(const std::string_view section, const std::string_view name, uint64_t& v) const override
 		{
 			std::string text;
-			if (!read(section, name, text)) return false;
+			if (!read(section, name, text) || text.empty()) return false;
 			v = static_cast<uint64_t>(str::to_int64(text));
 			return true;
 		}

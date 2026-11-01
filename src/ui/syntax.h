@@ -6,13 +6,17 @@
 //
 // Nothing here looks at a file path. Deciding which highlighter a document gets is
 // the application's policy; language_from_extension is offered for the common case.
+//
+// Part of libdesktop-text: standard C++ alone, so it builds wherever libdesktop does.
 
 #pragma once
 
-#include "platform.h"
 #include "ui/text_types.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace pf::ui::syntax
 {

@@ -49,10 +49,75 @@ static void should_unpremultiply_surface_alpha()
 	assert_equal(0xff336699u, surface.get_pixel(2, 0), "opaque pixels are unchanged");
 }
 
+// A video's decode thread prepares a picture of the same size for every frame. Allocated again at the size it
+// has, a surface keeps its block, where a fresh block of a frame's size is fresh pages to fault in and clear.
+static void should_keep_a_surface_block_allocated_again_at_its_size()
+{
+	ui::surface surface;
+	auto* const first = surface.alloc(64, 48, ui::texture_format::NV12, ui::orientation::top_left, 1.0);
+	assert_equal(true, first != nullptr, "the surface is allocated");
+
+	assert_equal(true, surface.alloc(64, 48, ui::texture_format::NV12, ui::orientation::right_top, 2.0) == first,
+	             "allocated again at its size, it keeps its block");
+	assert_equal(2.0, surface.time(), "and takes the new picture's time");
+	assert_equal(true, surface.orientation() == ui::orientation::right_top, "and its orientation");
+
+	assert_equal(true, surface.alloc(32, 16, ui::texture_format::RGB) != nullptr, "another size is allocated");
+	assert_equal(true, surface.dimensions() == sizei{32, 16} && surface.size() == surface.stride() * 16,
+	             "at the size it was asked for");
+}
+
 static uint8_t blend_opaque_normalized_channel(const uint8_t dest, const float src, const float alpha)
 {
 	const auto value = src * alpha + (dest / 255.0f) * (1.0f - alpha);
 	return static_cast<uint8_t>(std::clamp(static_cast<int>(value * 255.0f + 0.5f), 0, 255));
+}
+
+// Each displayed pixel against the stored one it comes from, for every transform an orientation names.
+// The mirrored four answered nothing, so a caller turning a photo upright left it mirrored or sideways.
+static void should_transform_surfaces_for_every_orientation()
+{
+	ui::surface stored;
+	assert_equal(true, stored.alloc(3, 2, ui::texture_format::RGB) != nullptr, "stored fixture allocated");
+	const auto at = [](const int x, const int y) { return 0xff000000u | static_cast<uint32_t>(y * 16 + x); };
+	for (auto y = 0; y < 2; ++y)
+		for (auto x = 0; x < 3; ++x) stored.set_pixel(x, y, at(x, y));
+
+	struct expectation
+	{
+		simple_transform transform;
+		sizei extent;
+		// The stored pixel shown at the displayed top-left, top-right and bottom-left corners.
+		pointi top_left, top_right, bottom_left;
+	};
+
+	const expectation expected[] = {
+		{simple_transform::flip_h, {3, 2}, {2, 0}, {0, 0}, {2, 1}},
+		{simple_transform::rot_180, {3, 2}, {2, 1}, {0, 1}, {2, 0}},
+		{simple_transform::flip_v, {3, 2}, {0, 1}, {2, 1}, {0, 0}},
+		{simple_transform::transpose, {2, 3}, {0, 0}, {0, 1}, {2, 0}},
+		{simple_transform::rot_270, {2, 3}, {0, 1}, {0, 0}, {2, 1}},
+		{simple_transform::transverse, {2, 3}, {2, 1}, {2, 0}, {0, 1}},
+		{simple_transform::rot_90, {2, 3}, {2, 0}, {2, 1}, {0, 0}},
+	};
+
+	for (const auto& e : expected)
+	{
+		const auto name = std::format("transform {}", static_cast<int>(e.transform));
+		const auto turned = stored.transform(e.transform);
+		assert_equal(true, turned != nullptr, name + " gives a surface");
+		if (!turned) continue;
+
+		assert_equal(e.extent.cx, turned->dimensions().cx, name + " width");
+		assert_equal(e.extent.cy, turned->dimensions().cy, name + " height");
+		const auto right = e.extent.cx - 1;
+		const auto bottom = e.extent.cy - 1;
+		assert_equal(at(e.top_left.x, e.top_left.y), turned->get_pixel(0, 0), name + " top-left");
+		assert_equal(at(e.top_right.x, e.top_right.y), turned->get_pixel(right, 0), name + " top-right");
+		assert_equal(at(e.bottom_left.x, e.bottom_left.y), turned->get_pixel(0, bottom), name + " bottom-left");
+	}
+
+	assert_equal(true, stored.transform(simple_transform::none) == nullptr, "none asks for no copy");
 }
 
 static void should_match_simd_software_blends()
@@ -665,6 +730,9 @@ static void register_tests(test_registry& tests)
 	register_render_win_tests(tests);
 #endif
 	tests.add("Should unpremultiply surface alpha"s, should_unpremultiply_surface_alpha);
+	tests.add("Should keep a surface block allocated again at its size"s,
+	          should_keep_a_surface_block_allocated_again_at_its_size);
+	tests.add("Should transform surfaces for every orientation"s, should_transform_surfaces_for_every_orientation);
 	tests.add("Should match SIMD software blends"s, should_match_simd_software_blends);
 	tests.add("Should area downscale packed and planar surfaces"s, should_area_downscale_packed_and_planar_surfaces);
 	tests.add("Should bilinear resize packed surfaces"s, should_bilinear_resize_packed_surfaces);

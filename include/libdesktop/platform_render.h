@@ -7,10 +7,10 @@
 // This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
 
 // Purpose: The platform services the desktop UI layer implements rather than the system layer: icon
-// glyphs as surfaces, movie writing, audio output, window capture, and the rendering probes the tests
-// read, with the counters of what painting and Direct3D cost. The Windows UI, WIC, font, software,
-// sound and encode backends implement them, and platform_linux_ui.cpp answers for Linux. platform.h
-// holds what the system layer implements.
+// glyphs and styled text as surfaces, movie writing, audio output, window capture, and the rendering
+// probes the tests read, with the counters of what painting and Direct3D cost. The Windows UI, WIC,
+// font, software, sound and encode backends implement them, and platform_linux_ui.cpp answers for
+// Linux. platform.h holds what the system layer implements.
 
 #pragma once
 
@@ -130,6 +130,39 @@ namespace platform
 	// Rasterises one glyph of the bundled icon font to a surface, for the places that need an image
 	// rather than drawn text. Takes a code point, so it does not depend on the size of wchar_t.
 	ui::const_surface_ptr create_icon_surface(char32_t ch);
+
+	// A stretch of text with its own weight, slant and colour, inside a styled_text block.
+	struct text_run
+	{
+		// UTF-8. A '\n' breaks the line.
+		std::string text;
+		bool bold = false;
+		bool italic = false;
+		// As ui::color32 holds one: 0xAABBGGRR.
+		uint32_t color = 0xFFFFFFFF;
+	};
+
+	// Text set as one block, as a player draws a subtitle: its runs laid out together at a size in
+	// pixels, wrapped to a width, aligned, and outlined so it reads on any picture.
+	struct styled_text
+	{
+		std::vector<text_run> runs;
+		// A family the system has, or the text engine's own fallback for one it has not.
+		std::string font_family = "Arial";
+		float font_px = 32.0f;
+		// Lines longer than this wrap at a word; zero never wraps.
+		int wrap_width = 0;
+		// 0 aligns the lines left, 1 centres them and 2 aligns them right.
+		int alignment = 1;
+		float outline_px = 2.0f;
+		// 0xAABBGGRR, as text_run::color.
+		uint32_t outline_color = 0xFF000000;
+	};
+
+	// The block rasterised into a straight-alpha BGRA surface just large enough to hold it and its
+	// outline, for drawing as a texture at any scale in either renderer. Null when there is nothing to
+	// draw, or no text stack to draw it with. Safe on any thread.
+	ui::surface_ptr render_styled_text(const styled_text& text);
 
 	///////////////////////////////////////////////////////////////////////////////////////////////
 	// Writing a movie.

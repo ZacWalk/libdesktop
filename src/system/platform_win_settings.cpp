@@ -158,7 +158,7 @@ public:
 	bool read(const std::string_view section, const std::string_view name, uint32_t& v) const override
 	{
 		std::string str_val;
-		if (read(section, name, str_val))
+		if (read(section, name, str_val) && !str_val.empty())
 		{
 			v = str::to_uint(str_val);
 			return true;
@@ -169,7 +169,7 @@ public:
 	bool read(const std::string_view section, const std::string_view name, uint64_t& v) const override
 	{
 		std::string str_val;
-		if (read(section, name, str_val))
+		if (read(section, name, str_val) && !str_val.empty())
 		{
 			// Parse uint64 from string
 			v = std::strtoull(std::bit_cast<const char*>(str_val.data()), nullptr, 10);
@@ -183,6 +183,11 @@ public:
 		const auto section_w = str::utf8_to_utf16(section);
 		const auto name_w = str::utf8_to_utf16(name);
 
+		// What GetPrivateProfileString returns for a key that is not there. A stored value escapes
+		// every DLE it holds, so it can never be a lone one: a key stored empty reads back as empty
+		// rather than as missing, which handed back the default in place of a value the user cleared.
+		static constexpr wchar_t absent[] = {static_cast<wchar_t>(ini_escape), L'\0'};
+
 		// Start with a reasonable buffer size
 		std::vector<wchar_t> buffer(1024);
 
@@ -191,7 +196,7 @@ public:
 			const DWORD result = GetPrivateProfileStringW(
 				section_w.c_str(),
 				name_w.c_str(),
-				L"",
+				absent,
 				buffer.data(),
 				static_cast<DWORD>(buffer.size()),
 				_ini_path.c_str());
@@ -199,19 +204,10 @@ public:
 			// If the result is less than buffer size - 1, we got all the data
 			if (result < buffer.size() - 1)
 			{
-				if (result == 0)
-				{
-					// Check if the key exists or if it's just empty
-					const DWORD error = GetLastError();
-					if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND)
-					{
-						return false;
-					}
-					// Key doesn't exist
-					return false;
-				}
+				const std::wstring_view text(buffer.data(), result);
+				if (text == std::wstring_view(absent, 1)) return false;
 
-				v = unescape_ini_value(str::utf16_to_utf8(std::wstring_view(buffer.data(), result)));
+				v = unescape_ini_value(str::utf16_to_utf8(text));
 				return true;
 			}
 

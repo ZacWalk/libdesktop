@@ -165,6 +165,7 @@ namespace ui
 		JPEG,
 		PNG,
 		WEBP,
+		JXL,
 	};
 
 	enum class texture_format
@@ -775,8 +776,12 @@ namespace ui
 			const auto bytes_per_luma = fmt == texture_format::P010 ? 2 : (fmt == texture_format::NV12 ? 1 : 4);
 
 			_stride = calc_stride(cx, bytes_per_luma);
-			_size = is_yuv ? (_stride * cy * 3_z / 2_z) : (_stride * cy);
-			_pixels = df::unique_alloc<uint8_t>(_size + 64_z);
+			const auto size = is_yuv ? (_stride * cy * 3_z / 2_z) : (_stride * cy);
+
+			// Allocated again at the size it already has, a surface keeps its block and is written over: at a
+			// video frame's size a fresh block is fresh pages to fault in and clear, every frame.
+			if (!_pixels || size != _size) _pixels = df::unique_alloc<uint8_t>(size + 64_z);
+			_size = size;
 			_dimensions.cx = cx;
 			_dimensions.cy = cy;
 			_format = fmt;
@@ -842,6 +847,8 @@ namespace ui
 		}
 
 		void clear(color32 clr) const;
+		// The packed pixels turned or mirrored as the transform names; null for planar surfaces and for
+		// none. The result keeps this surface's orientation tag for the caller to restate.
 		surface_ptr transform(simple_transform t) const;
 
 
@@ -942,6 +949,7 @@ namespace ui
 			case image_format::JPEG: return "jpg";
 			case image_format::PNG: return "png";
 			case image_format::WEBP: return "webp";
+			case image_format::JXL: return "jxl";
 			case image_format::Unknown: break;
 			default: break;
 			}
@@ -1475,11 +1483,24 @@ namespace ui
 		return result;
 	}
 
+	// A rectangle vertices::update_rects fills with one colour.
+	struct vertex_rect
+	{
+		recti bounds;
+		color fill;
+	};
+
+	// Geometry a scene draws by reference, so an owner can change it and re-present the scene with
+	// redraw() rather than recording the scene again. Each update replaces what the last one drew.
 	class vertices
 	{
 	public:
 		virtual ~vertices() = default;
+		// The audio visualizer's 64 bars, each over a drop shadow and emphasized at its centre. The
+		// hardware backend draws no other count.
 		virtual void update(recti rects[], color colors[], int num_bars) = 0;
+		// Flat rectangles, drawn in order. The hardware backend draws up to 16,384 of them.
+		virtual void update_rects(std::span<const vertex_rect> rects) = 0;
 	};
 
 	using texture_ptr = std::shared_ptr<texture>;

@@ -2,12 +2,18 @@
 //
 // These are the types a view, a text buffer and a syntax highlighter all have to
 // agree on, so they sit below all three. Positions are UTF-8 **byte offsets**
-// within a line, never code points and never display columns: step them with
-// pf::utf8_next / pf::utf8_prev, never with ++ or --.
+// within a line, never code points and never display columns: step them by whole
+// sequences (libdesktop-core's pf::utf8_next / pf::utf8_prev), never with ++ or --.
+//
+// Part of libdesktop-text, which is standard C++ alone, so an application on
+// another window model can share it.
 
 #pragma once
 
-#include "platform.h"
+#include <cstdint>
+#include <functional>
+#include <span>
+#include <string_view>
 
 namespace pf::ui
 {

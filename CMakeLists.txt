@@ -65,6 +65,36 @@ if(LIBDESKTOP_RENDER)
     endif()
 endif()
 
+# --- libdesktop-text: the text layer's vocabulary and its syntax highlighters ----
+# Standard C++ alone, so it builds wherever libdesktop does. libdesktop-ui is written in it, and an
+# application on another window model links it alone to colour text it draws itself.
+add_library(libdesktop-text STATIC
+    src/ui/text_types.h
+    src/ui/syntax.h
+    src/ui/syntax.cpp
+)
+add_library(libdesktop::text ALIAS libdesktop-text)
+
+target_compile_features(libdesktop-text PUBLIC cxx_std_20)
+
+# Reached as #include "ui/syntax.h", the spelling libdesktop-ui and its consumers already use.
+target_include_directories(libdesktop-text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+if(PROJECT_IS_TOP_LEVEL)
+    enable_testing()
+
+    add_executable(libdesktop_text_tests tests/text_tests.cpp tests/check.h)
+    target_link_libraries(libdesktop_text_tests PRIVATE libdesktop::text)
+    if(MSVC)
+        target_compile_options(libdesktop_text_tests PRIVATE /W3)
+    else()
+        target_compile_options(libdesktop_text_tests PRIVATE -Wall -Wno-unknown-pragmas)
+    endif()
+
+    add_test(NAME libdesktop-text COMMAND libdesktop_text_tests)
+    set_tests_properties(libdesktop-text PROPERTIES LABELS libdesktop-text)
+endif()
+
 # libdesktop-core and libdesktop-ui have a Win32 backend only.
 if(NOT WIN32)
     if(NOT LIBDESKTOP_SYSTEM)
@@ -114,15 +144,12 @@ endif()
 # link it, so the games and viewers keep their current size.
 add_library(libdesktop-ui STATIC
     src/ui/ui.h
-    src/ui/text_types.h
     src/ui/theme.h
     src/ui/theme.cpp
     src/ui/view_host.h
     src/ui/widgets.h
     src/ui/table_layout.h
     src/ui/table_layout.cpp
-    src/ui/syntax.h
-    src/ui/syntax.cpp
     src/ui/spell.h
     src/ui/spell.cpp
     src/ui/text_line.h
@@ -143,7 +170,7 @@ add_library(libdesktop-ui STATIC
 )
 add_library(libdesktop::ui ALIAS libdesktop-ui)
 
-target_link_libraries(libdesktop-ui PUBLIC libdesktop::core)
+target_link_libraries(libdesktop-ui PUBLIC libdesktop::core libdesktop::text)
 
 # Reached as #include "ui/widgets.h", so generic names like widgets.h or theme.h
 # cannot collide with an application's own headers.

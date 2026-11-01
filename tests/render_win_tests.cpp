@@ -12,6 +12,7 @@
 // which keeps its own copies, and use its assertions (system_test.h), so a test can move unchanged.
 
 #include "libdesktop/render.h"
+#include "libdesktop/render_software.h"
 #include "libdesktop/platform_win.h"
 #include "libdesktop/platform_win_render.h"
 #include "libdesktop/platform_win_visual.h"
@@ -471,6 +472,75 @@ static void should_present_a_video_frame_through_its_interface()
 	             "and with no scaler a picture in system memory cannot be presented");
 }
 
+// A picture decoded on the render device itself is copied once, straight out of the decoder's surface into
+// the texture the scene draws, under the decoder's lock: no texture shared between devices, and nothing asked
+// of the decoder. WARP decodes nothing and shares no decoder surfaces, so the bridge a decoder on a device of
+// its own needs could only have handed this picture to the scaler.
+static void should_copy_a_picture_decoded_on_the_render_device_into_its_texture()
+{
+	ComPtr<ID3D11DeviceContext> context;
+	const auto device = create_warp_device(context);
+	assert_equal(true, device != nullptr, "a WARP device");
+	if (!device) return;
+
+	UINT support = 0;
+	const auto samples_nv12 = SUCCEEDED(device->CheckFormatSupport(DXGI_FORMAT_NV12, &support)) &&
+		can_sample_texture_format(support);
+	assert_equal(true, samples_nv12, "which samples NV12 planes");
+	if (!samples_nv12) return;
+
+	const auto restore_yuv = ui::yuv_textures_enabled;
+	const df::scope_exit restore_gate([restore_yuv] { ui::yuv_textures_enabled = restore_yuv; });
+	ui::yuv_textures_enabled = true;
+
+	const auto frames_converted = std::make_shared<int>(0);
+	const auto restore_scaler = ui::make_surface_scaler;
+	const df::scope_exit restore([restore_scaler] { ui::make_surface_scaler = restore_scaler; });
+	ui::make_surface_scaler = make_fake_frame_scaler(frames_converted);
+
+	// The decoder's pool: NV12 surfaces in one array, the picture in the second.
+	constexpr sizei extent{64, 48};
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = extent.cx;
+	desc.Height = extent.cy;
+	desc.MipLevels = 1;
+	desc.ArraySize = 2;
+	desc.Format = DXGI_FORMAT_NV12;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+	ComPtr<ID3D11Texture2D> pool;
+	assert_equal(true, SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &pool)), "a pool of NV12 surfaces");
+	if (!pool) return;
+
+	auto held = 0;
+	const auto frame = std::make_shared<fake_video_frame>();
+	frame->described.texture = pool.Get();
+	frame->described.index = 1;
+	frame->described.width = extent.cx;
+	frame->described.height = extent.cy;
+	frame->described.lock = [](void* c) { ++*static_cast<int*>(c); };
+	frame->described.unlock = [](void* c) { --*static_cast<int*>(c); };
+	frame->described.lock_context = &held;
+
+	const auto f = std::make_shared<factories>();
+	f->d3d_device = device;
+	f->d3d_context = context;
+	f->texture_pool = std::make_unique<d3d11_texture_pool>(1024 * 1024);
+
+	const auto texture = d3d11_create_texture(f);
+
+	assert_equal(true, texture->update(frame) == ui::texture_update_result::tex_created,
+	             "the picture is given a texture of its own");
+	assert_equal(true, texture->dimensions() == extent, "at the decoder's size, not converted");
+	assert_equal(0, *frames_converted, "with nothing converted");
+	assert_equal(0, frame->cpu_requests, "or asked of the decoder");
+	assert_equal(0, held, "and the decoder's lock released");
+	assert_equal(true, texture->update(frame) == ui::texture_update_result::tex_updated,
+	             "the next picture is copied into the same texture");
+}
+
 // The software renderer never samples the decoder's surfaces, so a hardware picture is converted by
 // the scaler like any other, and the decode thread is asked to deliver the rest of the clip in system
 // memory instead.
@@ -507,6 +577,48 @@ static void should_present_a_video_frame_in_software_through_its_interface()
 	assert_equal(true,
 	             renderer->create_texture()->update(unprepared) == ui::texture_update_result::failed,
 	             "with no scaler a picture in system memory cannot be presented");
+}
+
+// A scene draws its vertices by reference, so rectangles updated after it was recorded are what the
+// next present shows - each update in place of the last - with nothing recorded again.
+static void should_present_vertex_rectangles_updated_after_the_scene()
+{
+	constexpr sizei extent{48, 32};
+	const auto target = ui::create_memory_present_target();
+	const auto renderer = create_software_draw_context(nullptr, target, normal_font_size);
+
+	const auto shade = [&](const int x, const int y)
+	{
+		const auto buffer = target->acquire_buffer(extent);
+		const auto* const p = buffer.bits + y * buffer.stride + x * 4;
+		return ui::rgb(p[2], p[1], p[0]);
+	};
+
+	const auto verts = renderer->create_vertices();
+	const ui::vertex_rect red[] = {{recti(4, 4, 20, 12), ui::color(1.0f, 0.0f, 0.0f, 1.0f)}};
+	const ui::vertex_rect blue[] = {{recti(28, 16, 40, 28), ui::color(0.0f, 0.0f, 1.0f, 1.0f)}};
+
+	renderer->begin_draw(extent, normal_font_size, {});
+	renderer->clear(ui::color(0.0f, 0.0f, 0.0f, 1.0f));
+	verts->update_rects(red);
+	renderer->draw_vertices(verts);
+	renderer->render();
+
+	assert_equal(ui::rgb(255, 0, 0), shade(10, 8), "the rectangle is drawn");
+	assert_equal(ui::rgb(0, 0, 0), shade(30, 20), "and nothing beside it");
+
+	verts->update_rects(blue);
+	renderer->reset_damage();
+	renderer->render();
+
+	assert_equal(ui::rgb(0, 0, 255), shade(30, 20), "a re-present shows the rectangle updated since");
+	assert_equal(ui::rgb(0, 0, 0), shade(10, 8), "in place of the one before");
+
+	verts->update_rects({});
+	renderer->reset_damage();
+	renderer->render();
+
+	assert_equal(ui::rgb(0, 0, 0), shade(30, 20), "and an empty update draws nothing");
 }
 
 static void should_suppress_gpu_for_recovery_session()
@@ -946,6 +1058,93 @@ static void should_snap_gpu_text_in_pixel_coordinates()
 	             "text callbacks report enabled snapping, identity transform and one pixel per DIP");
 }
 
+// A subtitle's text: its runs in their own colours over one outline, in straight alpha, so it draws over any
+// picture at any scale.
+static void should_render_styled_text_with_its_outline()
+{
+	platform::styled_text text;
+	text.runs = {{"Red ", false, false, 0xFF0000FFu}, {"white", true, true, 0xFFFFFFFFu}};
+	text.font_px = 40.0f;
+	text.outline_px = 3.0f;
+	text.outline_color = 0xFF000000u;
+
+	const auto surface = platform::render_styled_text(text);
+	assert_equal(true, surface != nullptr, "the text is drawn");
+	if (!surface) return;
+
+	assert_equal(true, surface->width() > 80u && surface->height() >= 40u, "into a block that holds it");
+
+	auto red = 0;
+	auto white = 0;
+	auto outline = 0;
+	auto clear = 0;
+
+	for (auto y = 0; y < static_cast<int>(surface->height()); ++y)
+	{
+		const auto* const line = surface->pixels_line(y);
+
+		for (auto x = 0; x < static_cast<int>(surface->width()); ++x)
+		{
+			const auto* const p = line + x * 4;
+			const auto b = p[0];
+			const auto g = p[1];
+			const auto r = p[2];
+			const auto a = p[3];
+
+			if (a == 0) ++clear;
+			else if (a == 255 && r > 200 && g < 60 && b < 60) ++red;
+			else if (a == 255 && r > 200 && g > 200 && b > 200) ++white;
+			else if (a == 255 && r < 40 && g < 40 && b < 40) ++outline;
+		}
+	}
+
+	assert_equal(true, red > 20, "the first run in its colour");
+	assert_equal(true, white > 20, "the second in its own");
+	assert_equal(true, outline > 20, "around them, the outline");
+	assert_equal(true, clear > 0, "and clear around that");
+
+	// Straight alpha: a faint edge keeps its colour rather than darkening towards black.
+	auto faint_bright = 0;
+
+	for (auto y = 0; y < static_cast<int>(surface->height()); ++y)
+	{
+		const auto* const line = surface->pixels_line(y);
+
+		for (auto x = 0; x < static_cast<int>(surface->width()); ++x)
+		{
+			const auto* const p = line + x * 4;
+			if (p[3] > 0 && p[3] < 128 && (p[0] > 128 || p[1] > 128 || p[2] > 128)) ++faint_bright;
+		}
+	}
+
+	text.outline_px = 0.0f;
+	const auto unoutlined = platform::render_styled_text(text);
+	assert_equal(true, unoutlined != nullptr, "text with no outline");
+
+	if (unoutlined)
+	{
+		for (auto y = 0; y < static_cast<int>(unoutlined->height()); ++y)
+		{
+			const auto* const line = unoutlined->pixels_line(y);
+
+			for (auto x = 0; x < static_cast<int>(unoutlined->width()); ++x)
+			{
+				const auto* const p = line + x * 4;
+				if (p[3] > 0 && p[3] < 128 && (p[0] > 128 || p[1] > 128 || p[2] > 128)) ++faint_bright;
+			}
+		}
+	}
+
+	assert_equal(true, faint_bright > 0, "a glyph's soft edge keeps its colour: the alpha is straight");
+
+	text.runs = {{"  \n ", false, false, 0xFFFFFFFFu}};
+	assert_equal(true, platform::render_styled_text(text) == nullptr, "blank text draws nothing");
+
+	text.runs = {{"Text", false, false, 0xFFFFFFFFu}};
+	text.font_px = 0.5f;
+	assert_equal(true, platform::render_styled_text(text) == nullptr, "nor does text too small to see");
+}
+
 static void should_refuse_an_impossible_movie()
 {
 	// The probe is the whole of whether Render is offered, so an unstable answer would make the
@@ -975,6 +1174,7 @@ void register_render_win_tests(test_registry& tests)
 	tests.add("Should use screen coordinates for saved window placement"s, should_use_screen_coordinates_for_saved_window_placement);
 	tests.add("Should not treat pointer wheel IDs as modifiers"s, should_not_treat_pointer_wheel_ids_as_modifiers);
 	tests.add("Should snap GPU text in pixel coordinates"s, should_snap_gpu_text_in_pixel_coordinates);
+	tests.add("Should render styled text with its outline"s, should_render_styled_text_with_its_outline);
 	tests.add("Should preserve clipboard format contracts"s, should_preserve_clipboard_format_contracts);
 	tests.add("Should restore a window onto a display that still exists"s, should_restore_a_window_onto_a_display);
 	tests.add("Should classify DXGI device loss"s, should_classify_dxgi_device_loss);
@@ -987,8 +1187,12 @@ void register_render_win_tests(test_registry& tests)
 	tests.add("Should overwrite a recycled texture with the new picture"s,
 	          should_overwrite_a_recycled_texture_with_the_new_picture);
 	tests.add("Should present a video frame through its interface"s, should_present_a_video_frame_through_its_interface);
+	tests.add("Should copy a picture decoded on the render device into its texture"s,
+	          should_copy_a_picture_decoded_on_the_render_device_into_its_texture);
 	tests.add("Should present a video frame in software through its interface"s,
 	          should_present_a_video_frame_in_software_through_its_interface);
+	tests.add("Should present vertex rectangles updated after the scene"s,
+	          should_present_vertex_rectangles_updated_after_the_scene);
 	tests.add("Should suppress GPU for one recovery session"s, should_suppress_gpu_for_recovery_session);
 	tests.add("Issue #219: Should fall back for missing glyphs"s, should_fall_back_for_missing_glyphs);
 	tests.add("Issue #232/#189: Should cache font faces per face and size"s,

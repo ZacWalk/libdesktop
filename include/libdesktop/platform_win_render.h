@@ -16,6 +16,12 @@
 
 struct factories;
 using factories_ptr = std::shared_ptr<factories>;
+struct ID3D11Device;
+
+namespace ui
+{
+	class software_present_target;
+}
 
 constexpr int max_vert_count = 4 * 512;
 constexpr int max_index_count = 6 * 512;
@@ -49,6 +55,13 @@ int64_t calc_texture_budget(uint64_t gpu_bytes, int64_t total_phys);
 // backend.
 void publish_render_adapter(LUID luid);
 LUID render_adapter();
+
+// The render device itself, for a hardware decoder to decode on when the device carries the video
+// interfaces: a decoded picture then reaches the texture the renderer draws in one copy on one device,
+// rather than two through a texture shared between devices. Null while there is none, and on the CPU
+// backend. Safe from any thread.
+void publish_render_device(const ComPtr<ID3D11Device>& device);
+ComPtr<ID3D11Device> render_device();
 
 // The adapter with this LUID as Windows lists them now, or null once it is gone - or for a zero LUID.
 ComPtr<IDXGIAdapter1> find_adapter_by_luid(LUID luid);
@@ -176,4 +189,8 @@ draw_context_device_ptr d3d11_create_context(const factories_ptr& f, const ComPt
 // A texture on the factories' Direct3D device, as every hardware draw context makes them.
 ui::texture_ptr d3d11_create_texture(const factories_ptr& f);
 draw_context_device_ptr create_software_draw_context(const factories_ptr& f, HWND hwnd, bool layered,
+                                                     int base_font_size);
+// One that presents to target rather than to a window: where a test reads back what it drew.
+draw_context_device_ptr create_software_draw_context(const factories_ptr& f,
+                                                     std::shared_ptr<ui::software_present_target> target,
                                                      int base_font_size);

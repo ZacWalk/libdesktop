@@ -2,12 +2,13 @@
 
 libdesktop is the platform layer shared by five applications. Four build on
 libdesktop-core (`dde`, `libdos`, `potato` and `stuntcarracer`), and Diffractor
-builds on libdesktop-system and libdesktop-render. It is a library with no
+builds on libdesktop-system, libdesktop-render and libdesktop-text. It is a library with no
 application of its own.
 
-It ships four static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
-(`pf::ui`) and, opt-in, `libdesktop-system` (`df::`, `str::` and `platform::`)
-and `libdesktop-render` (`ui::`);
+It ships five static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
+(`pf::ui`), `libdesktop-text` (the part of `pf::ui` that is standard C++ alone:
+`ui/text_types.h` and `ui/syntax.h`) and, opt-in, `libdesktop-system` (`df::`,
+`str::` and `platform::`) and `libdesktop-render` (`ui::`);
 [README.md](README.md#libdesktop) is the canonical overview of their contents
 and aliases.
 
@@ -36,9 +37,13 @@ libdesktop-ui's ownership boundary is described in
    Build all of them before you consider a change done — see below.
    `libdesktop::core` and `libdesktop::ui` are the names every one of them
    links; renaming either moves all seven in the same step.
-5. **Add a test with a capability.** `tests/platform_tests.cpp` and
-   `tests/ui_tests.cpp` are console programs; anything checkable without a
-   window belongs in one of them.
+5. **Add a test with a capability.** `tests/platform_tests.cpp`,
+   `tests/ui_tests.cpp` and `tests/text_tests.cpp` are console programs;
+   anything checkable without a window belongs in one of them.
+6. **libdesktop-text stays standard C++.** It is built on every platform and
+   linked by an application on another window model, so `ui/text_types.h`,
+   `ui/syntax.h` and `ui/syntax.cpp` include neither `platform.h` nor anything
+   else of libdesktop's.
 
 ## Layout
 
@@ -52,10 +57,11 @@ Run the repository gate after changes here:
 .\dd.ps1 test
 ```
 
-The gate builds and tests the `libdesktop`, `libdesktop-ui`,
+The gate builds and tests the `libdesktop`, `libdesktop-ui`, `libdesktop-text`,
 `libdesktop-system` and `libdesktop-render` CTest labels, in Debug and Release.
-libdesktop-system and libdesktop-render also build on Linux: run the commands in
-the [README](README.md#build-and-test) there too after changing either. The
+libdesktop-system, libdesktop-render and libdesktop-text also build on Linux: run
+the commands in the [README](README.md#build-and-test) there too after changing
+any of them. The
 [README](README.md#build-and-test) has the quick build commands.
 
 This repository vendors the [dd](https://github.com/ZacWalk/dd) build driver

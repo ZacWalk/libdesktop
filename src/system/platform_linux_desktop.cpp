@@ -673,6 +673,8 @@ std::atomic<size_t> platform::static_memory_usage = 0;
 // The seam tests use to simulate a cloud placeholder. Empty means "ask the filesystem", which is
 // all this build can do.
 std::function<bool(const df::file_path&)> platform::test_offline_predicate;
+// The seam tests use to give replace_file an unknown destination. Empty means asking the filesystem.
+std::function<platform::file_presence(const df::file_path&)> platform::test_replace_destination_presence;
 
 // The crash-recovery backstop needs a real single-instance claim; without one a Linux build cannot
 // distinguish concurrent launches from repeated failed ones, so it always claims the scope.

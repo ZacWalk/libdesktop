@@ -4903,13 +4903,15 @@ bool win32_app::pre_translate_message(MSG& m)
 
 			if (!ks.alt && is_edit(focus_wnd))
 			{
+				// A multi-line edit that takes Enter as a new line keeps it: offered to the application
+				// first, Enter would run the task the text is being typed for.
 				if (c == VK_ESCAPE ||
 					c == VK_UP ||
 					c == VK_DOWN ||
 					c == VK_TAB ||
 					/*c == VK_LEFT ||
 						c == VK_RIGHT ||*/
-					c == VK_RETURN)
+					(c == VK_RETURN && !wants_return(focus_wnd)))
 				{
 					if (_app->key_down(c, ks))
 					{
@@ -5041,10 +5043,19 @@ void win32_app::idle() const
 	_app->idle();
 }
 
+// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, which the SDK names only for a Windows 10 1803 target. The value is
+// fixed; older systems refuse it, and the standard timer is made instead.
+constexpr DWORD create_waitable_timer_high_resolution = 0x00000002;
+
 int win32_app::ui_message_loop()
 {
-	// A null handle only costs the frame-pacing timer; the loop still runs on window and idle events.
-	_timer_handle = CreateWaitableTimer(nullptr, FALSE, nullptr);
+	// High resolution, so the timer keeps the period the display asks for. A standard timer fires on the
+	// 15.6 ms system tick whatever period it is given: 120 and 144 Hz displays were paced at 64 Hz, and the
+	// 16 ms period of a 60 Hz display dropped a tick every half second. A null handle only costs the
+	// frame-pacing timer; the loop still runs on window and idle events.
+	_timer_handle = CreateWaitableTimerExW(nullptr, nullptr, create_waitable_timer_high_resolution,
+	                                       TIMER_MODIFY_STATE | SYNCHRONIZE);
+	if (_timer_handle == nullptr) _timer_handle = CreateWaitableTimer(nullptr, FALSE, nullptr);
 
 	if (_timer_handle == nullptr)
 	{

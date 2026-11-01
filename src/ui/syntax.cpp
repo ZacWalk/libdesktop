@@ -9,18 +9,68 @@
 // layer's: language_from_extension is offered as a convenience, but nothing here
 // looks at a path.
 
-#include "platform.h"
 #include "ui/syntax.h"
 
 #include <cctype>
-#include <span>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <set>
+#include <span>
+#include <string_view>
 #include <unordered_set>
 
 namespace pf::ui::syntax
 {
 	// The scanners were written against this spelling; text_style is the type.
 	using style = pf::ui::text_style;
+
+	// Every keyword and extension below is ASCII, and the words the scanners collect are made of the
+	// bytes isalnum accepts, so folding ASCII letters is the whole of the case-insensitivity they need.
+	// These stand in for libdesktop-core's Unicode-folding comparators, which this library cannot reach;
+	// the two differ only for a non-ASCII letter that folds onto an ASCII one, such as the Kelvin sign.
+	static constexpr unsigned char ascii_lower(const char c)
+	{
+		const auto u = static_cast<unsigned char>(c);
+		return u >= 'A' && u <= 'Z' ? static_cast<unsigned char>(u - 'A' + 'a') : u;
+	}
+
+	struct ascii_ihash
+	{
+		size_t operator()(const std::string_view s) const
+		{
+			// 32-bit FNV-1a, which a 32-bit size_t also holds.
+			uint32_t h = 2166136261u;
+			for (const auto c : s) h = (h ^ ascii_lower(c)) * 16777619u;
+			return h;
+		}
+	};
+
+	struct ascii_ieq
+	{
+		bool operator()(const std::string_view l, const std::string_view r) const
+		{
+			if (l.size() != r.size()) return false;
+			for (size_t i = 0; i < l.size(); ++i)
+				if (ascii_lower(l[i]) != ascii_lower(r[i])) return false;
+			return true;
+		}
+	};
+
+	struct ascii_iless
+	{
+		bool operator()(const std::string_view l, const std::string_view r) const
+		{
+			const auto n = l.size() < r.size() ? l.size() : r.size();
+			for (size_t i = 0; i < n; ++i)
+			{
+				const auto a = ascii_lower(l[i]);
+				const auto b = ascii_lower(r[i]);
+				if (a != b) return a < b;
+			}
+			return l.size() < r.size();
+		}
+	};
 
 static bool is_alnum32(const char c) { return isalnum(static_cast<unsigned char>(c)) != 0; }
 static bool is_space32(const char c) { return isspace(static_cast<unsigned char>(c)) != 0; }
@@ -55,7 +105,7 @@ static bool is_keyword(const syntax_lang lang, const std::string_view text)
 	}
 	if (lang == syntax_lang::ps1)
 	{
-		static const std::unordered_set<std::string_view, pf::ihash, pf::ieq> keywords = {
+		static const std::unordered_set<std::string_view, ascii_ihash, ascii_ieq> keywords = {
 			"begin", "break", "catch", "class", "continue", "data", "define", "do", "dynamicparam",
 			"else", "elseif", "end", "enum", "exit", "filter", "finally", "for", "foreach", "from",
 			"function", "hidden", "if", "in", "inlinescript", "parallel", "param", "process",
@@ -651,7 +701,7 @@ uint32_t highlight_markdown(uint32_t dwCookie, const std::string_view line_view,
 
 static bool is_ps1_extension(const std::string_view ext)
 {
-	static const std::set<std::string_view, pf::iless> extensions = {
+	static const std::set<std::string_view, ascii_iless> extensions = {
 		"ps1", "psm1", "psd1"
 	};
 	return extensions.contains(ext);
@@ -659,7 +709,7 @@ static bool is_ps1_extension(const std::string_view ext)
 
 static bool is_python_extension(const std::string_view ext)
 {
-	static const std::set<std::string_view, pf::iless> extensions = {
+	static const std::set<std::string_view, ascii_iless> extensions = {
 		"py", "pyw"
 	};
 	return extensions.contains(ext);
@@ -667,7 +717,7 @@ static bool is_python_extension(const std::string_view ext)
 
 static bool is_rust_extension(const std::string_view ext)
 {
-	static const std::set<std::string_view, pf::iless> extensions = {
+	static const std::set<std::string_view, ascii_iless> extensions = {
 		"rs"
 	};
 	return extensions.contains(ext);
@@ -675,7 +725,7 @@ static bool is_rust_extension(const std::string_view ext)
 
 static bool is_cpp_extension(const std::string_view ext)
 {
-	static const std::set<std::string_view, pf::iless> extensions = {
+	static const std::set<std::string_view, ascii_iless> extensions = {
 		"c", "cpp", "cxx", "cc", "h", "hh", "hpp", "hxx", "inl", "ixx", "in"
 	};
 

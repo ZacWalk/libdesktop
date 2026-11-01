@@ -374,6 +374,55 @@ static void should_keep_line_breaks_in_ini_settings()
 	assert_equal(false, reopened->read("lines", "second", stray), "no line of a value is read as a setting");
 }
 
+// A value cleared to nothing read back as missing, so the default it replaced came back after a
+// restart: a removed favourite search, or a blanked artist name a batch edit then wrote into files.
+static void should_read_back_an_empty_setting()
+{
+	const auto folder = _temps.next_folder("ini-empty");
+	const auto settings = platform::create_ini_file_settings(folder);
+	assert_equal(true, settings->write("values", "cleared", std::string_view{}), "an empty value is written");
+	assert_equal(true, settings->write("values", "count", std::string_view{}), "and an empty number");
+
+	const auto reopened = platform::create_ini_file_settings(folder);
+	std::string text = "default";
+	assert_equal(true, reopened->read("values", "cleared", text), "an empty value is read after a restart");
+	assert_equal(std::string{}, text, "as empty, not as the default");
+
+	std::string missing = "default";
+	assert_equal(false, reopened->read("values", "never", missing), "a value never written is still missing");
+	assert_equal("default"s, missing, "and leaves the default");
+
+	uint32_t number = 7;
+	assert_equal(false, reopened->read("values", "count", number), "an empty number keeps its default");
+	assert_equal(7u, number, "untouched");
+}
+
+// A destination that could not be checked was taken for one not there, so the backup asked for was
+// skipped while the replacement still went through - an original lost with no recovery point.
+static void should_not_replace_unchecked_destination_without_its_backup()
+{
+	const auto folder = _temps.next_folder("replace-unknown");
+	const auto destination = folder.combine_file("photo.jpg");
+	const auto replacement = folder.combine_file("photo.new");
+	const auto backup = folder.combine_file("photo.original.jpg");
+	write_test_file(destination, "original");
+	write_test_file(replacement, "replacement");
+
+	platform::test_replace_destination_presence = [](const df::file_path&) { return platform::file_presence::unknown; };
+	const df::scope_exit restore([] { platform::test_replace_destination_presence = {}; });
+
+	assert_equal(true, platform::replace_file(destination, replacement, true).failed(), "the replace is refused");
+	assert_equal("original"s, read_test_file(destination), "the destination is untouched");
+	assert_equal(true, platform::exists(replacement), "the replacement is kept");
+	assert_equal(false, platform::exists(backup), "and no backup was begun");
+
+	platform::test_replace_destination_presence = {};
+	assert_equal(true, platform::replace_file(destination, replacement, true).success(),
+	             "a destination that is checked is replaced");
+	assert_equal("replacement"s, read_test_file(destination), "with the new bytes");
+	assert_equal("original"s, read_test_file(backup), "after its backup is made");
+}
+
 static std::string replace_file_bytes(const df::file_path path, const std::string_view initial, const int64_t start,
                                       const int64_t replace, const std::string_view replacement)
 {
@@ -661,6 +710,16 @@ static void should_refuse_a_date_out_of_range_on_every_platform()
 	assert_equal(1700, d.date().year, "which keeps its year");
 }
 
+// A capture date is local wall-clock time. East of UTC a photo taken this morning is dated a day past
+// UTC's today, and is no less valid for it; two days on is the future everywhere.
+static void should_accept_a_local_date_a_day_past_utc_today()
+{
+	const auto now = platform::now();
+	assert_equal(true, now.is_valid(), "now");
+	assert_equal(true, now.add_day(1).is_valid(), "a local date already tomorrow in UTC");
+	assert_equal(false, now.add_day(2).is_valid(), "two days on");
+}
+
 static void should_convert_local_dates_with_date_specific_rules()
 {
 	assert_equal(uint64_t{0}, platform::utc_to_local(0), "an absent UTC timestamp remains absent");
@@ -806,6 +865,17 @@ static std::string find_and_format_result(const std::string_view text, const std
 	}
 
 	return result;
+}
+
+// A text whose last character folds onto a plain letter can run out before a prefix as long in bytes,
+// which then counted as matched: "café" started "cafes", and a word typed at the start of a search was
+// taken for the scope it was not.
+static void should_not_start_with_more_than_the_text_holds()
+{
+	assert_equal(false, str::starts("caf\xc3\xa9", "cafes"), "the prefix is longer than the text it folds to");
+	assert_equal(true, str::starts("caf\xc3\xa9s", "cafe"), "an accented letter still matches its plain one");
+	assert_equal(true, str::starts("Cafes", "caf"), "and case still folds");
+	assert_equal(false, str::starts("ab", "abc"), "a shorter text never starts with a longer prefix");
 }
 
 static void should_find_text()
@@ -1120,6 +1190,9 @@ static void register_tests(test_registry& tests)
 	tests.add("Should map files"s, should_map_files);
 	tests.add("Should save a blob without truncating the destination"s, should_save_a_blob_without_truncating_the_destination);
 	tests.add("Should keep line breaks in INI settings"s, should_keep_line_breaks_in_ini_settings);
+	tests.add("Should read back an empty setting"s, should_read_back_an_empty_setting);
+	tests.add("Should not replace an unchecked destination without its backup"s,
+	          should_not_replace_unchecked_destination_without_its_backup);
 	tests.add("Should replace bytes in files"s, should_replace_bytes_in_files);
 	tests.add("Should intern strings"s, should_intern_strings);
 	tests.add("Should round-trip base64"s, should_round_trip_base64);
@@ -1129,6 +1202,7 @@ static void register_tests(test_registry& tests)
 	tests.add("Should parse dates"s, should_parse_dates);
 	tests.add("Should read a date alike on every platform"s, should_read_a_date_alike_on_every_platform);
 	tests.add("Should refuse a date out of range on every platform"s, should_refuse_a_date_out_of_range_on_every_platform);
+	tests.add("Should accept a local date a day past UTC today"s, should_accept_a_local_date_a_day_past_utc_today);
 	tests.add("Should convert local dates with date specific rules"s, should_convert_local_dates_with_date_specific_rules);
 	tests.add("Should detect wildcard"s, should_detect_wildcard);
 	tests.add("Should match wildcard"s, should_match_wildcard);
@@ -1137,6 +1211,7 @@ static void register_tests(test_registry& tests)
 	tests.add("Should reject invalid assertion inputs"s, should_reject_invalid_assertion_inputs);
 	tests.add("Should format a double of any magnitude"s, should_format_a_double_of_any_magnitude);
 	tests.add("Should find text"s, should_find_text);
+	tests.add("Should not start with more than the text holds"s, should_not_start_with_more_than_the_text_holds);
 	tests.add("Should handle Cyrillic case folding"s, should_handle_cyrillic_case_folding);
 	tests.add("Should case-fold Korean"s, should_case_fold_korean);
 	tests.add("Should query kd-tree bounds"s, should_query_kdtree_bounds);

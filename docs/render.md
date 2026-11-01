@@ -75,6 +75,28 @@ endpoint's own format. The module never sees a decoder's types. It counts what
 painting and Direct3D cost in `df::ui_perf` and `df::gpu_perf`, which the
 application may summarise.
 
+On Windows the Direct3D device is made with video support where the driver
+allows, and published with its adapter (`publish_render_device`,
+`render_device`, `render_adapter` in `platform_win_render.h`) so the
+application can decode on it. A hardware picture whose texture belongs to the
+render device is copied once, straight from the decoder's surface into the
+texture the scene draws; one from another device crosses through a keyed-mutex
+texture shared between the two. A YUV picture drawn at full opacity is drawn
+with blending off, since it covers what is beneath it. A window's frame tick is a
+high-resolution timer, falling back to a standard one where Windows has none.
+
+Text to be drawn as a picture - a subtitle - is set off the UI thread with
+`platform::render_styled_text`: runs in their own weight, slant and colour, laid
+out together at a size in pixels, wrapped, aligned and outlined, and returned as
+a straight-alpha surface the application uploads like any other.
+
+Geometry that moves every frame while the rest of the scene stands still - a
+visualizer's bars, a trace, a meter - goes in a `ui::vertices`. A scene draws
+one by reference, so the application updates it and calls its frame's
+`redraw()`, which presents the scene again without recording it. `update` takes
+the audio visualizer's 64 bars, each over a drop shadow; `update_rects` takes
+flat rectangles, up to 16,384 of them on the Direct3D backend.
+
 ### Options
 
 | Option | Effect |
@@ -105,9 +127,9 @@ changed cursor or shader would otherwise leave the binary with the old copy.
 `src/render/platform_linux_ui.cpp` supplies what a portable core needs to run
 headless: the palette's system colours, the key table, UI-thread identity, a
 conventional desktop, focus and input state. It has no window, renderer or
-desktop integration. Rasterising an icon glyph, writing a movie and opening an
-audio endpoint answer that nothing is available, so an application leaves the
-commands that need them out rather than dimming them.
+desktop integration. Rasterising an icon glyph or styled text, writing a movie
+and opening an audio endpoint answer that nothing is available, so an
+application leaves the commands that need them out rather than dimming them.
 
 ## Tests
 
@@ -116,9 +138,11 @@ CTest label `libdesktop-render`. Its portable tests - alpha, the SIMD blends,
 resampling, animation and colour adjustment - came from Diffractor's
 `test_render.cpp`, and `tests/render_win_tests.cpp` adds the Windows backend's -
 windows and their placement, device loss and adapters, textures and their pool,
-video frames through their interface, fonts and text, the native controls, the
+video frames through their interface and copied from a decoder on the render
+device, vertices presented again after the scene
+was recorded, fonts and text, the native controls, the
 caption buttons, the clipboard's formats and the WASAPI mix format - from
-`test_platform_win.cpp`. They use Diffractor's assertions (`tests/system_test.h`),
+`test_platform_win.cpp`, and styled text rasterised for subtitles, its own. They use Diffractor's assertions (`tests/system_test.h`),
 so a test moves between the suites unchanged. The program supplies what an
 application does (above): its chrome glyphs are empty, since it loads no icon
 font, and `create_app` makes nothing. "Should decode embedded chrome images"

@@ -237,6 +237,15 @@ static void should_pass_bare_save_dialog_extensions()
 	assert_equal(L"", platform::dialog_default_extension(""), "an absent extension remains absent");
 }
 
+// A single relative segment is its own parent, as a server's name is. Creating one is refused, where it
+// used to ask for its parent again until the stack ran out.
+static void should_refuse_a_folder_that_is_its_own_parent()
+{
+	const df::folder_path relative("libdesktop-folder-without-parent");
+	assert_equal(true, relative.parent() == relative, "the segment is its own parent");
+	assert_equal(true, platform::create_folder(relative).failed(), "there is nowhere to create it");
+}
+
 static void should_convert_extended_file_system_paths()
 {
 	const auto long_unc = std::string("\\\\server\\share\\") + std::string(MAX_PATH, 'x');
@@ -556,6 +565,18 @@ static void should_recognise_network_locations()
 	assert_equal(false, platform::is_network_location(_temps.folder()), "the local temporary folder is not");
 }
 
+// Copied text keeps the tabs that line up its columns and the breaks between its lines - Diffractor's
+// keyboard reference pastes into a spreadsheet by them - and any other control character is shown as
+// '.', so the application it is pasted into cannot act on it.
+static void should_keep_tabs_and_line_breaks_on_the_clipboard()
+{
+	assert_equal(L"\tCtrl+C\tCopy\r\nnext\n", clipboard_unicode_text("\tCtrl+C\tCopy\r\nnext\n"),
+	             "tabs and line breaks pass through");
+	assert_equal(L"a.b.c", clipboard_unicode_text(std::string_view("a\0b\x1b" "c", 5)),
+	             "other control characters are escaped");
+	assert_equal(L"\u00e9\u20ac", clipboard_unicode_text("\xC3\xA9\xE2\x82\xAC"), "text is converted from UTF-8");
+}
+
 void register_win_tests(test_registry& tests)
 {
 	tests.add("Should convert dates with their own DST offset"s, should_convert_dates_with_their_own_dst_offset);
@@ -563,6 +584,7 @@ void register_win_tests(test_registry& tests)
 	tests.add("Should convert the current zone like the system"s, should_convert_the_current_zone_like_the_system);
 	tests.add("Should tabulate local time once per year"s, should_tabulate_local_time_once_per_year);
 	tests.add("Should pass bare save dialog extensions"s, should_pass_bare_save_dialog_extensions);
+	tests.add("Should refuse a folder that is its own parent"s, should_refuse_a_folder_that_is_its_own_parent);
 	tests.add("Should convert extended file system paths"s, should_convert_extended_file_system_paths);
 	tests.add("Should convert utf8 to ansi"s, should_convert_utf8_to_ansi);
 	tests.add("Should persist strings in registry"s, should_persist_to_registry);
@@ -577,4 +599,5 @@ void register_win_tests(test_registry& tests)
 	tests.add("Should reject unusable file names"s, should_reject_unusable_file_names);
 	tests.add("Should publish pasted bitmap after closing stage"s, should_publish_pasted_bitmap_after_closing_stage);
 	tests.add("Should recognise network locations"s, should_recognise_network_locations);
+	tests.add("Should keep tabs and line breaks on the clipboard"s, should_keep_tabs_and_line_breaks_on_the_clipboard);
 }

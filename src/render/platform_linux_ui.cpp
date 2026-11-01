@@ -120,6 +120,12 @@ ui::const_surface_ptr platform::create_icon_surface(char32_t)
 	return {};
 }
 
+// Owed with the rest of the text stack; a caller draws no subtitle rather than a wrong one.
+ui::surface_ptr platform::render_styled_text(const styled_text&)
+{
+	return {};
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Writing a movie.
 //

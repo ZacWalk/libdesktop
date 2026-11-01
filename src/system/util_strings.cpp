@@ -500,7 +500,9 @@ bool str::starts(const std::string_view text, const std::string_view sub_string)
 			return false;
 	}
 
-	return true;
+	// Folded alike, a character of the text can be longer than the prefix's, so the text can run out
+	// first: then the prefix was not all matched.
+	return sub_p == sub_end;
 }
 
 std::string_view::size_type str::ifind(const std::string_view text, const std::string_view sub_string)

@@ -131,6 +131,22 @@ LUID render_adapter()
 	return {static_cast<DWORD>(packed & 0xffffffffu), static_cast<LONG>(static_cast<uint32_t>(packed >> 32))};
 }
 
+// Read by the decode worker that opens a video, and written by the UI thread as the device comes and goes.
+static platform::mutex g_render_device_mutex;
+static ComPtr<ID3D11Device> g_render_device;
+
+void publish_render_device(const ComPtr<ID3D11Device>& device)
+{
+	platform::exclusive_lock lock(g_render_device_mutex);
+	g_render_device = device;
+}
+
+ComPtr<ID3D11Device> render_device()
+{
+	platform::exclusive_lock lock(g_render_device_mutex);
+	return g_render_device;
+}
+
 static constexpr int64_t image_budget_floor_bytes = 64ll * 1024ll * 1024ll;
 
 // A displayed image is one of several textures live at once (the compared image, its fade-out,
@@ -248,7 +264,10 @@ bool factories::init(const bool use_gpu)
 	D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
 
 	{
-		uint32_t create_device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+		// Video support lets the hardware decoder decode on this device, so its pictures reach the screen in
+		// one copy (publish_render_device). A driver without it still renders: the device is made again
+		// without, and the decoder gets a device of its own.
+		uint32_t create_device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
 
 #ifdef _DEBUG
 		create_device_flags |= D3D11_CREATE_DEVICE_DEBUG;
@@ -313,6 +332,23 @@ bool factories::init(const bool use_gpu)
 				// build must not silently drop to software rendering just because it is absent.
 				df::log(__FUNCTION__, "D3D11 debug layer unavailable - retrying without it");
 				create_device_flags &= ~static_cast<uint32_t>(D3D11_CREATE_DEVICE_DEBUG);
+
+				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11_1,
+				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device,
+				                       &feature_level, &context);
+
+				if (hr == E_INVALIDARG)
+				{
+					hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags,
+					                       feature_levels_11, std::size(feature_levels_11),
+					                       D3D11_SDK_VERSION, &device, &feature_level, &context);
+				}
+			}
+
+			if (FAILED(hr) && (create_device_flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT) != 0)
+			{
+				df::log(__FUNCTION__, "D3D11 device without video support - retrying without it");
+				create_device_flags &= ~static_cast<uint32_t>(D3D11_CREATE_DEVICE_VIDEO_SUPPORT);
 
 				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11_1,
 				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device,
@@ -447,6 +483,7 @@ bool factories::init(const bool use_gpu)
 		d3d_device = device;
 		d3d_context = context;
 		d3d_feature_level = feature_level;
+		publish_render_device(device);
 
 		df::d3d_info = to_string(feature_level);
 
@@ -529,6 +566,7 @@ void factories::downgrade_to_software()
 
 	d3d_context.Reset();
 	d3d_device.Reset();
+	publish_render_device(nullptr);
 	dxgi_device.Reset();
 	d3d_feature_level = D3D_FEATURE_LEVEL_1_0_CORE;
 	df::d3d_info = "software";
@@ -554,6 +592,7 @@ void factories::destroy()
 	wic.Reset();
 	texture_pool.reset();
 	d3d_device.Reset();
+	publish_render_device(nullptr);
 	d3d_context.Reset();
 	dxgi_device.Reset();
 }
@@ -1041,8 +1080,8 @@ public:
 	ComPtr<ID3D11Texture2D> _texture;
 
 	std::unique_ptr<ui::surface_scaler> _scaler;
-	// Cross-device video sharing: the decoder runs on FFmpeg's own D3D11 device and the
-	// renderer on this device, so a decoded frame is bridged through a keyed-mutex shared
+	// Cross-device video sharing, for a decoder on a D3D11 device of its own - one decoding on the render
+	// device is copied straight out of its surface. A decoded frame is bridged through a keyed-mutex shared
 	// texture. The shared texture, its render-device view, and both keyed mutexes are
 	// created once (per dimension/format) and reused every frame - opening a shared handle
 	// per frame is a heavyweight kernel operation and must not sit in the render loop.
@@ -1097,6 +1136,18 @@ public:
 		_binding_source = nullptr;
 		_binding_format = ui::texture_format::None;
 		_poolable = false;
+	}
+
+	// Drops the texture shared with a decode device of its own, which a picture decoded on the render device
+	// does not need.
+	void release_shared_chain()
+	{
+		_shared_texture.Reset();
+		_shared_texture_render.Reset();
+		_shared_producer_mutex.Reset();
+		_shared_consumer_mutex.Reset();
+		_shared_texture_device.Reset();
+		_shared_texture_format = ui::texture_format::None;
 	}
 
 
@@ -1172,6 +1223,9 @@ struct scene_atom
 	std::shared_ptr<const ui::panorama_params> pano;
 	recti clip_bounds;
 	bool has_clip = false;
+	// Covers what is beneath it entirely: a YUV picture, which has no alpha, drawn at full opacity. Drawn
+	// with blending off, so the GPU does not read the target beneath a whole video frame, every frame.
+	bool opaque = false;
 };
 
 
@@ -1187,12 +1241,24 @@ public:
 
 	ComPtr<ID3D11Buffer> _vertex_buffer;
 	ComPtr<ID3D11Buffer> _index_buffer;
+	// Bytes the buffers above hold. Either kind of update can follow the other, so each upload checks
+	// its geometry fits and grows the buffer when it does not.
+	uint32_t _vertex_capacity = 0;
+	uint32_t _index_capacity = 0;
+
+	// Kept between updates so a rectangle update allocates nothing once it has reached its size.
+	std::vector<vertex_2d> _rect_vertices;
+	std::vector<WORD> _rect_indexes;
 
 	explicit d3d11_vertices(std::shared_ptr<d3d11_draw_context_impl> c) : _canvas(std::move(c))
 	{
 	}
 
 	void update(recti rects[], ui::color colors[], int num_bars) override;
+	void update_rects(std::span<const ui::vertex_rect> rects) override;
+
+private:
+	bool upload(const vertex_2d* vertices, uint32_t vertex_count, const WORD* indexes, uint32_t index_count);
 };
 
 
@@ -1230,6 +1296,9 @@ public:
 	uint32_t _vertex_buffer_capacity = 0;
 	uint32_t _index_buffer_capacity = 0;
 	ComPtr<ID3D11BlendState> _blend_state;
+	// Blending off, for opaque atoms. At full alpha the straight-alpha blend above writes exactly the
+	// source, so the two agree on every pixel; this one just does not read the target first.
+	ComPtr<ID3D11BlendState> _blend_state_opaque;
 	ComPtr<ID3D11RasterizerState> _rasterizer_state;
 	ComPtr<ID3D11SamplerState> _sampler_point;
 	ComPtr<ID3D11SamplerState> _sampler_bilinear;
@@ -1296,7 +1365,7 @@ public:
 	                    size_t vertex_count, const WORD* indexes, size_t index_count,
 	                    ui::color_space cs = ui::color_space::rec601_limited,
 	                    std::shared_ptr<const ui::texture_transform> transform = nullptr,
-	                    std::shared_ptr<const ui::panorama_params> pano = nullptr);
+	                    std::shared_ptr<const ui::panorama_params> pano = nullptr, bool opaque = false);
 	void draw_texture(const texture_d3d11_ptr& t, const quadd& dst, recti src, ui::color c,
 	                  ui::texture_sampler sampler);
 	void draw_texture(const texture_d3d11_ptr& t, recti dst, recti src, ui::color c, ui::texture_sampler sampler,
@@ -1398,6 +1467,7 @@ void d3d11_draw_context_impl::destroy()
 	_vertex_buffer_capacity = 0;
 	_index_buffer_capacity = 0;
 	_blend_state.Reset();
+	_blend_state_opaque.Reset();
 	_rasterizer_state.Reset();
 	_sampler_point.Reset();
 	_sampler_bilinear.Reset();
@@ -1588,6 +1658,16 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				df::log(__FUNCTION__, std::format("CreateBlendState failed {:x}", static_cast<uint32_t>(hr)));
+			}
+			else
+			{
+				// Optional: without it opaque atoms draw through the blend state, as everything did before.
+				desc.RenderTarget[0].BlendEnable = FALSE;
+
+				if (FAILED(_f->d3d_device->CreateBlendState(&desc, &_blend_state_opaque)))
+				{
+					_blend_state_opaque.Reset();
+				}
 			}
 		}
 
@@ -1896,6 +1976,12 @@ struct context_state final
 	const ui::panorama_params* uploaded_pano = nullptr;
 	bool identity_transform_uploaded = false;
 
+	// The blend state bound, and the two an atom chooses between. Opaque atoms use the second when the
+	// device made one.
+	ID3D11BlendState* bound_blend = nullptr;
+	ID3D11BlendState* blend = nullptr;
+	ID3D11BlendState* blend_opaque = nullptr;
+
 	ID3D11DeviceContext* context;
 	D3D11_RECT client_clip = {};
 	uint32_t draws = 0;
@@ -1912,6 +1998,12 @@ struct context_state final
 	{
 		df::scope_rendering_func rf(__FUNCTION__);
 		const auto& clip_from = clip_source ? *clip_source : a;
+
+		if (auto* const wanted = a.opaque && blend_opaque ? blend_opaque : blend; wanted && wanted != bound_blend)
+		{
+			bound_blend = wanted;
+			context->OMSetBlendState(wanted, nullptr, 0xFFFFFFFF);
+		}
 
 		if (clip_from.has_clip)
 		{
@@ -2195,6 +2287,9 @@ HRESULT d3d11_draw_context_impl::draw_scene(const ComPtr<ID3D11DeviceContext>& c
 		state.texture_transform_cbuffer = _texture_transform_cbuffer.Get();
 		state.pano_cbuffer = _pano_cbuffer.Get();
 		state.lut_sampler = _sampler_bilinear.Get();
+		state.blend = _blend_state.Get();
+		state.blend_opaque = _blend_state_opaque.Get();
+		state.bound_blend = _blend_state.Get();
 
 		for (const auto& a : _scene_atoms)
 		{
@@ -2279,7 +2374,7 @@ void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
                                              const size_t vertex_count, const WORD* indexes, const size_t index_count,
                                              const ui::color_space cs,
                                              std::shared_ptr<const ui::texture_transform> transform,
-                                             std::shared_ptr<const ui::panorama_params> pano)
+                                             std::shared_ptr<const ui::panorama_params> pano, const bool opaque)
 {
 	df::scope_rendering_func rf(__FUNCTION__);
 	auto combine_with_last_atom = false;
@@ -2287,13 +2382,13 @@ void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
 	if (!_scene_atoms.empty())
 	{
 		// Optimise by extending the existing atom. Everything that is bound per atom must
-		// match - shader, texture, sampler, pixel format, colour space, transform and clip -
-		// otherwise the merged atom would silently render with the first atom's state.
+		// match - shader, texture, sampler, pixel format, colour space, transform, clip and
+		// blending - otherwise the merged atom would silently render with the first atom's state.
 		// Indices are 16-bit and relative to the atom's base vertex, so a merged atom must
 		// also stay within the 16-bit range.
 		auto&& back = _scene_atoms.back();
 		combine_with_last_atom = back.tex.id() == tex.id() && back.shader == shader.Get() &&
-			back.tex_format == tex_fmt && back.sampler == sampler && back.cs == cs &&
+			back.tex_format == tex_fmt && back.sampler == sampler && back.cs == cs && back.opaque == opaque &&
 			!back.transform && !transform && !back.pano && !pano && back.has_clip == !_clip_stack.empty() &&
 			(!back.has_clip || back.clip_bounds == _clip_bounds) &&
 			(static_cast<size_t>(back.vertex_count) + vertex_count) <= std::numeric_limits<WORD>::max();
@@ -2333,6 +2428,7 @@ void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
 		sa.pano = std::move(pano);
 		sa.clip_bounds = _clip_bounds;
 		sa.has_clip = !_clip_stack.empty();
+		sa.opaque = opaque;
 		_scene_atoms.emplace_back(std::move(sa));
 	}
 }
@@ -2398,6 +2494,12 @@ bool d3d11_draw_context_impl::draw_panorama(const ui::texture_ptr& t, const rect
 	return true;
 }
 
+// A YUV picture carries no alpha, so drawn at full opacity it covers whatever is beneath it.
+static bool covers_beneath(const ui::texture_format fmt, const float alpha)
+{
+	return alpha >= 1.0f && (fmt == ui::texture_format::NV12 || fmt == ui::texture_format::P010);
+}
+
 void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const recti dst, const recti src,
                                            const ui::color c, const ui::texture_sampler sampler, float radius)
 {
@@ -2447,7 +2549,7 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const rec
 
 			const auto shader = calc_shader(sampler == ui::texture_sampler::bicubic, tex_fmt, binding.tone_map != nullptr);
 			add_scene_atom(binding, shader, tex_fmt, sampler, vertices, std::size(vertices), indexes,
-			               std::size(indexes), t->_cs);
+			               std::size(indexes), t->_cs, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
 		}
 	}
 }
@@ -2492,7 +2594,7 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const qua
 
 			const auto shader = calc_shader(sampler == ui::texture_sampler::bicubic, tex_fmt, binding.tone_map != nullptr);
 			add_scene_atom(binding, shader, tex_fmt, sampler, vertices, std::size(vertices), indexes,
-			               std::size(indexes), t->_cs);
+			               std::size(indexes), t->_cs, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
 		}
 	}
 }
@@ -2682,68 +2784,10 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 		vertex_count += rect_verex_count;
 	}
 
-	if (!_vertex_buffer)
+	if (!upload(vertices, static_cast<uint32_t>(vertex_count), indexes, static_cast<uint32_t>(index_count)))
 	{
-		ComPtr<ID3D11Buffer> buffer;
-		D3D11_BUFFER_DESC bd = {};
-		bd.ByteWidth = sizeof(vertex_2d) * vertex_count;
-		bd.Usage = D3D11_USAGE_DEFAULT;
-		bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-		bd.CPUAccessFlags = 0;
-
-		D3D11_SUBRESOURCE_DATA source_data = {};
-		source_data.pSysMem = vertices;
-
-		auto hr = _canvas->_f->d3d_device->CreateBuffer(&bd, &source_data, &buffer);
-
-		if (SUCCEEDED(hr))
-		{
-			_vertex_buffer = buffer;
-		}
-	}
-	else
-	{
-		D3D11_BOX box{};
-		box.left = 0;
-		box.right = vertex_count * vertex_stride;
-		box.top = 0;
-		box.bottom = 1;
-		box.front = 0;
-		box.back = 1;
-
-		_canvas->_f->d3d_context->UpdateSubresource(_vertex_buffer.Get(), 0, &box, vertices, 0, 0);
-	}
-
-	if (!_index_buffer)
-	{
-		ComPtr<ID3D11Buffer> buffer;
-		D3D11_BUFFER_DESC bd = {};
-		bd.ByteWidth = sizeof(WORD) * index_count;
-		bd.Usage = D3D11_USAGE_DEFAULT;
-		bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-		bd.CPUAccessFlags = 0;
-
-		D3D11_SUBRESOURCE_DATA source_data = {};
-		source_data.pSysMem = indexes;
-
-		auto hr = _canvas->_f->d3d_device->CreateBuffer(&bd, &source_data, &buffer);
-
-		if (SUCCEEDED(hr))
-		{
-			_index_buffer = buffer;
-		}
-	}
-	else
-	{
-		D3D11_BOX box{};
-		box.left = 0;
-		box.right = sizeof(WORD) * index_count;
-		box.top = 0;
-		box.bottom = 1;
-		box.front = 0;
-		box.back = 1;
-
-		_canvas->_f->d3d_context->UpdateSubresource(_index_buffer.Get(), 0, &box, indexes, 0, 0);
+		_scene_atoms.clear();
+		return;
 	}
 
 	scene_atom shadow_atom = {
@@ -2772,6 +2816,108 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 	_scene_atoms.clear();
 	_scene_atoms.emplace_back(std::move(shadow_atom));
 	_scene_atoms.emplace_back(std::move(bar_atom));
+}
+
+void d3d11_vertices::update_rects(const std::span<const ui::vertex_rect> rects)
+{
+	df::assert_true(ui::is_ui_thread());
+
+	// The scene goes on drawing these buffers, so whatever the last update left must not survive one
+	// that cannot be uploaded.
+	_scene_atoms.clear();
+
+	if (!_canvas || !_canvas->_f || !_canvas->_f->d3d_device || !_canvas->_f->d3d_context) return;
+
+	// The indexes are 16-bit, which reaches 16,384 rectangles of four vertices.
+	constexpr size_t max_rects = 0x10000 / 4;
+
+	_rect_vertices.clear();
+	_rect_indexes.clear();
+
+	for (const auto& rect : rects)
+	{
+		if (_rect_vertices.size() >= max_rects * 4) break;
+		if (rect.bounds.is_empty() || rect.fill.a < 0.01f) continue;
+
+		const auto r = rectd(rect.bounds).scale(_canvas->_client_extent);
+		const auto dl = static_cast<float>(r.X);
+		const auto dt = static_cast<float>(r.Y);
+		const auto dr = static_cast<float>(r.right());
+		const auto db = static_cast<float>(r.bottom());
+		const auto first = static_cast<WORD>(_rect_vertices.size());
+
+		_rect_vertices.emplace_back(dl, dt, rect.fill);
+		_rect_vertices.emplace_back(dr, dt, rect.fill);
+		_rect_vertices.emplace_back(dr, db, rect.fill);
+		_rect_vertices.emplace_back(dl, db, rect.fill);
+
+		constexpr WORD quad[] = {0, 1, 2, 2, 3, 0};
+
+		for (const auto i : quad)
+		{
+			_rect_indexes.emplace_back(static_cast<WORD>(first + i));
+		}
+	}
+
+	if (_rect_vertices.empty()) return;
+
+	const auto vertex_count = static_cast<uint32_t>(_rect_vertices.size());
+	const auto index_count = static_cast<uint32_t>(_rect_indexes.size());
+
+	if (!upload(_rect_vertices.data(), vertex_count, _rect_indexes.data(), index_count)) return;
+
+	scene_atom rect_atom = {
+		{},
+		_canvas->_pixel_shader_solid.Get(),
+		ui::texture_format::None,
+		ui::texture_sampler::point,
+		0,
+		vertex_count,
+		0,
+		index_count
+	};
+
+	_scene_atoms.emplace_back(std::move(rect_atom));
+}
+
+bool d3d11_vertices::upload(const vertex_2d* vertices, const uint32_t vertex_count, const WORD* indexes,
+                            const uint32_t index_count)
+{
+	auto* const device = _canvas->_f->d3d_device.Get();
+	auto* const context = _canvas->_f->d3d_context.Get();
+
+	const auto fill = [device, context](ComPtr<ID3D11Buffer>& buffer, uint32_t& capacity, const void* data,
+	                                    const uint32_t bytes, const UINT bind)
+	{
+		if (!buffer || capacity < bytes)
+		{
+			// Half as much again, so geometry that grows a little each frame does not make a buffer each frame.
+			D3D11_BUFFER_DESC bd = {};
+			bd.ByteWidth = bytes + bytes / 2;
+			bd.Usage = D3D11_USAGE_DEFAULT;
+			bd.BindFlags = bind;
+
+			ComPtr<ID3D11Buffer> grown;
+
+			if (FAILED(device->CreateBuffer(&bd, nullptr, &grown)))
+			{
+				buffer.Reset();
+				capacity = 0;
+				return false;
+			}
+
+			buffer = grown;
+			capacity = bd.ByteWidth;
+		}
+
+		const D3D11_BOX box = {0, 0, 0, bytes, 1, 1};
+		context->UpdateSubresource(buffer.Get(), 0, &box, data, 0, 0);
+		return true;
+	};
+
+	return fill(_vertex_buffer, _vertex_capacity, vertices, vertex_count * vertex_stride, D3D11_BIND_VERTEX_BUFFER) &&
+		fill(_index_buffer, _index_capacity, indexes, index_count * static_cast<uint32_t>(sizeof(WORD)),
+		     D3D11_BIND_INDEX_BUFFER);
 }
 
 
@@ -2833,6 +2979,17 @@ public:
 // The keyed-mutex handoff below runs on the UI thread, so the wait is capped well inside a frame.
 // Both keys are owned by this one function, so an uncontended acquire returns immediately.
 constexpr uint32_t shared_texture_acquire_ms = 8;
+
+// Whether two interface pointers are one COM object, which only their IUnknown can answer.
+static bool same_com_object(IUnknown* const a, IUnknown* const b)
+{
+	if (!a || !b) return false;
+
+	ComPtr<IUnknown> identity_a;
+	ComPtr<IUnknown> identity_b;
+	return SUCCEEDED(a->QueryInterface(IID_PPV_ARGS(&identity_a))) &&
+		SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&identity_b))) && identity_a == identity_b;
+}
 
 ui::texture_update_result d3d11_texture::update(const ui::video_frame_ptr& frame_in)
 {
@@ -2941,217 +3098,203 @@ ui::texture_update_result d3d11_texture::update(const ui::video_frame_ptr& frame
 			return ui::texture_update_result::failed;
 		}
 
-		// The decode device is part of the key: a second video decodes on its own FFmpeg device,
-		// and reusing a producer copy owned by the previous device makes CopySubresourceRegion a
-		// cross-device call that the runtime rejects, leaving stale frames on screen.
-		const auto build_already_refused = !format_bridged ||
-			(_shared_texture_refused_device == video_device &&
-				_shared_texture_refused_dimensions == texture_extent &&
-				_shared_texture_refused_format == video_tex_format);
-
-		if (!build_already_refused &&
-			(!_shared_texture || !_shared_texture_render || _shared_texture_device != video_device ||
-				_shared_texture_dimensions != texture_extent ||
-				_shared_texture_format != video_tex_format))
+		// Decoded on the render device itself: one copy, from the decoder's slice into the texture the scene
+		// draws, ordered after the decode by the device's own command stream and taken under the decoder's
+		// lock like any other use of its surfaces. A decoder on a device of its own needs the bridge below:
+		// two copies through a texture shared between the devices, with a keyed mutex and a flush each frame.
+		if (format_bridged && same_com_object(video_device.Get(), device.Get()))
 		{
-			_shared_texture.Reset();
-			_shared_texture_render.Reset();
-			_shared_producer_mutex.Reset();
-			_shared_consumer_mutex.Reset();
-			_shared_texture_device.Reset();
+			release_shared_chain();
 
-			D3D11_TEXTURE2D_DESC texDesc = tex_desc_src;
-			texDesc.BindFlags = D3D11_BIND_DECODER;
-			texDesc.Usage = D3D11_USAGE_DEFAULT;
-			texDesc.ArraySize = 1;
-			texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-
-			ComPtr<ID3D11Texture2D> shared_texture;
-			auto hr = video_device->CreateTexture2D(&texDesc, nullptr, &shared_texture);
-
-			// Open the shared texture on the render device once and cache the opened
-			// resource plus both keyed mutexes. CreateSharedHandle / OpenSharedResource1
-			// are expensive kernel operations - doing them here (only on resize/format
-			// change) instead of per frame is the key win over the original code.
-			ComPtr<IDXGIResource1> shared_resource;
-			HANDLE shared_handle = nullptr;
-
-			if (SUCCEEDED(hr)) hr = shared_texture.As(&shared_resource);
-			if (SUCCEEDED(hr))
-				hr = shared_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &shared_handle);
-
-			ComPtr<ID3D11Device1> device1;
-			if (SUCCEEDED(hr))
-				hr = device->QueryInterface(__uuidof(ID3D11Device1), std::bit_cast<LPVOID*>(device1.GetAddressOf()));
-
-			ComPtr<ID3D11Texture2D> render_texture;
-			if (SUCCEEDED(hr))
-				hr = device1->OpenSharedResource1(shared_handle, __uuidof(ID3D11Texture2D),
-				                                  std::bit_cast<void**>(render_texture.GetAddressOf()));
-
-			if (shared_handle) CloseHandle(shared_handle);
-
-			ComPtr<IDXGIKeyedMutex> producer_mutex;
-			ComPtr<IDXGIKeyedMutex> consumer_mutex;
-			if (SUCCEEDED(hr)) hr = shared_texture.As(&producer_mutex);
-			if (SUCCEEDED(hr)) hr = render_texture.As(&consumer_mutex);
-
-			if (SUCCEEDED(hr))
+			if (!_texture || _poolable || _dimensions != texture_extent || _format != video_tex_format)
 			{
-				_shared_texture = shared_texture;
-				_shared_texture_render = render_texture;
-				_shared_producer_mutex = producer_mutex;
-				_shared_consumer_mutex = consumer_mutex;
-				_shared_texture_dimensions = texture_extent;
-				_shared_texture_format = video_tex_format;
-				_shared_texture_device = video_device;
-				_shared_texture_refused_format = ui::texture_format::None;
-				_shared_texture_refused_device.Reset();
-				release_texture(); // force the render-side SRV texture to be recreated below
+				D3D11_TEXTURE2D_DESC desc = tex_desc_src;
+				desc.MipLevels = 1;
+				desc.ArraySize = 1;
+				desc.Usage = D3D11_USAGE_DEFAULT;
+				desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+				desc.CPUAccessFlags = 0;
+				desc.MiscFlags = 0;
 
-				// The decoder's surface pool is one texture array allocated in full when the stream
-				// opens, and it is the largest single allocation playback makes. Reported here
-				// because this is the only point that can see how many surfaces it really has.
-				const int64_t bytes_per_sample = video_tex_format == ui::texture_format::P010 ? 2 : 1;
-				const auto surface_bytes = static_cast<int64_t>(tex_desc_src.Width) * tex_desc_src.Height *
-					3 * bytes_per_sample / 2;
+				// Made in the decoder's own layout rather than as a plain texture, so never pooled.
+				release_texture();
+				ComPtr<ID3D11Texture2D> picture;
 
-				df::log(__FUNCTION__,
-				        std::format("Video decode pool {} x {} x {} surfaces = {}", tex_desc_src.Width,
-				                    tex_desc_src.Height, tex_desc_src.ArraySize,
-				                    df::file_size(surface_bytes * tex_desc_src.ArraySize).str()));
-			}
-			else
-			{
-				// The cross-device bridge this whole path exists for is unavailable. Say so once: without
-				// a line here the picture simply stops, with nothing to attribute it to. The refusal is
-				// remembered against this key so the attempt is not repeated per frame, and the CPU
-				// fallback below is what keeps video on screen - until the decode thread, asked here,
-				// starts downloading the frames itself and this thread only uploads them.
-				_shared_texture_refused_device = video_device;
-				_shared_texture_refused_dimensions = texture_extent;
-				_shared_texture_refused_format = video_tex_format;
-				frame_in->request_cpu_frames();
-
-				df::log(__FUNCTION__, std::format("Video shared texture unavailable (0x{:08x}) - scaling on the CPU",
-				                                  static_cast<uint32_t>(hr)));
-			}
-		}
-
-		if (format_bridged && _shared_texture && _shared_producer_mutex)
-		{
-			// IDXGIKeyedMutex::AcquireSync returns WAIT_TIMEOUT (0x102) and WAIT_ABANDONED
-			// (0x80) as *success* HRESULTs, so it must be tested against S_OK - anything else
-			// means the mutex is not held and the copy below must not run.
-			//
-			// This runs on the UI thread, so the wait must stay well inside a frame. The producer
-			// and consumer keys are handed back and forth by this one function, so an uncontended
-			// acquire completes immediately; anything longer means the chain is wedged and the
-			// recovery path below is the right answer, not a stall.
-			if (_shared_producer_mutex->AcquireSync(0, shared_texture_acquire_ms) == S_OK)
-			{
-				video_context->CopySubresourceRegion(_shared_texture.Get(), 0, 0, 0, 0, video_texture.Get(),
-				                                     static_cast<uint32_t>(video_texture_index), nullptr);
-				video_context->Flush();
-				shared_texture_valid = _shared_producer_mutex->ReleaseSync(1) == S_OK;
-
-				if (!shared_texture_valid)
+				if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &picture)))
 				{
-					// The mutex is still held at key 0, so every later frame would block for the
-					// full acquire timeout on the UI thread. Drop the chain and rebuild it.
-					df::log(__FUNCTION__, "Video shared texture release failed - recreating");
-					_shared_texture.Reset();
-					_shared_texture_render.Reset();
-					_shared_producer_mutex.Reset();
-					_shared_consumer_mutex.Reset();
-					_shared_texture_device.Reset();
-					_shared_texture_format = ui::texture_format::None;
+					_texture = picture;
+					_dimensions = texture_extent;
+					_format = video_tex_format;
+					result = ui::texture_update_result::tex_created;
 				}
 			}
 			else
 			{
-				// The mutex was left in an unexpected state (timeout or abandoned). Drop the
-				// shared chain so the next frame rebuilds it instead of stalling video forever.
-				df::log(__FUNCTION__, "Video shared texture mutex unavailable - recreating");
-				_shared_texture.Reset();
-				_shared_texture_render.Reset();
-				_shared_producer_mutex.Reset();
-				_shared_consumer_mutex.Reset();
-				_shared_texture_device.Reset();
-				_shared_texture_format = ui::texture_format::None;
+				result = ui::texture_update_result::tex_updated;
 			}
-		}
 
-		hwctx_lock.unlock();
-
-		if (shared_texture_valid && _shared_texture_render && _shared_consumer_mutex)
-		{
-			// The producer released to key 1, so a failure here leaves the mutex held at a key nobody
-			// waits on. Drop the chain rather than stalling the UI thread on every later frame.
-			if (_shared_consumer_mutex->AcquireSync(1, shared_texture_acquire_ms) != S_OK)
+			// Asked before the copy: a device that will not view this format refuses it on every frame, and
+			// a texture with no view draws nothing.
+			if (result != ui::texture_update_result::failed && binding())
 			{
-				df::log(__FUNCTION__, "Video shared texture consumer mutex unavailable - recreating");
-				_shared_texture.Reset();
-				_shared_texture_render.Reset();
-				_shared_producer_mutex.Reset();
-				_shared_consumer_mutex.Reset();
-				_shared_texture_device.Reset();
-				_shared_texture_format = ui::texture_format::None;
+				context->CopySubresourceRegion(_texture.Get(), 0, 0, 0, 0, video_texture.Get(),
+				                               static_cast<uint32_t>(video_texture_index), nullptr);
+				_src_extent = src_extent;
 			}
 			else
 			{
-				// The key the chain was built for, held here because a failed release below drops it.
-				const auto bridge_device = _shared_texture_device;
-				const auto bridge_dimensions = _shared_texture_dimensions;
-				const auto bridge_format = _shared_texture_format;
-				auto bridge_refused = false;
-
-				if (!_texture || _dimensions != _shared_texture_dimensions || _format != _shared_texture_format)
+				if (_shared_texture_refused_device != video_device ||
+					_shared_texture_refused_dimensions != texture_extent ||
+					_shared_texture_refused_format != video_tex_format)
 				{
-					D3D11_TEXTURE2D_DESC tex_desc_render = {};
-					_shared_texture_render->GetDesc(&tex_desc_render);
+					df::log(__FUNCTION__, std::format("{} video texture refused by the render device - scaling on the CPU",
+					                                  to_string(video_tex_format)));
+				}
 
-					D3D11_TEXTURE2D_DESC texDesc2 = tex_desc_render;
-					texDesc2.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-					texDesc2.ArraySize = 1;
-					texDesc2.MiscFlags = 0;
+				_shared_texture_refused_device = video_device;
+				_shared_texture_refused_dimensions = texture_extent;
+				_shared_texture_refused_format = video_tex_format;
+				release_texture();
+				result = ui::texture_update_result::failed;
+				frame_in->request_cpu_frames();
+			}
 
-					ComPtr<ID3D11Texture2D> texture2;
-					if (SUCCEEDED(device->CreateTexture2D(&texDesc2, nullptr, &texture2)))
+			hwctx_lock.unlock();
+		}
+		else
+		{
+			// The decode device is part of the key: a second video decodes on its own FFmpeg device,
+			// and reusing a producer copy owned by the previous device makes CopySubresourceRegion a
+			// cross-device call that the runtime rejects, leaving stale frames on screen.
+			const auto build_already_refused = !format_bridged ||
+				(_shared_texture_refused_device == video_device &&
+					_shared_texture_refused_dimensions == texture_extent &&
+					_shared_texture_refused_format == video_tex_format);
+
+			if (!build_already_refused &&
+				(!_shared_texture || !_shared_texture_render || _shared_texture_device != video_device ||
+					_shared_texture_dimensions != texture_extent ||
+					_shared_texture_format != video_tex_format))
+			{
+				_shared_texture.Reset();
+				_shared_texture_render.Reset();
+				_shared_producer_mutex.Reset();
+				_shared_consumer_mutex.Reset();
+				_shared_texture_device.Reset();
+
+				D3D11_TEXTURE2D_DESC texDesc = tex_desc_src;
+				texDesc.BindFlags = D3D11_BIND_DECODER;
+				texDesc.Usage = D3D11_USAGE_DEFAULT;
+				texDesc.ArraySize = 1;
+				texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+
+				ComPtr<ID3D11Texture2D> shared_texture;
+				auto hr = video_device->CreateTexture2D(&texDesc, nullptr, &shared_texture);
+
+				// Open the shared texture on the render device once and cache the opened
+				// resource plus both keyed mutexes. CreateSharedHandle / OpenSharedResource1
+				// are expensive kernel operations - doing them here (only on resize/format
+				// change) instead of per frame is the key win over the original code.
+				ComPtr<IDXGIResource1> shared_resource;
+				HANDLE shared_handle = nullptr;
+
+				if (SUCCEEDED(hr)) hr = shared_texture.As(&shared_resource);
+				if (SUCCEEDED(hr))
+					hr = shared_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &shared_handle);
+
+				ComPtr<ID3D11Device1> device1;
+				if (SUCCEEDED(hr))
+					hr = device->QueryInterface(__uuidof(ID3D11Device1), std::bit_cast<LPVOID*>(device1.GetAddressOf()));
+
+				ComPtr<ID3D11Texture2D> render_texture;
+				if (SUCCEEDED(hr))
+					hr = device1->OpenSharedResource1(shared_handle, __uuidof(ID3D11Texture2D),
+					                                  std::bit_cast<void**>(render_texture.GetAddressOf()));
+
+				if (shared_handle) CloseHandle(shared_handle);
+
+				ComPtr<IDXGIKeyedMutex> producer_mutex;
+				ComPtr<IDXGIKeyedMutex> consumer_mutex;
+				if (SUCCEEDED(hr)) hr = shared_texture.As(&producer_mutex);
+				if (SUCCEEDED(hr)) hr = render_texture.As(&consumer_mutex);
+
+				if (SUCCEEDED(hr))
+				{
+					_shared_texture = shared_texture;
+					_shared_texture_render = render_texture;
+					_shared_producer_mutex = producer_mutex;
+					_shared_consumer_mutex = consumer_mutex;
+					_shared_texture_dimensions = texture_extent;
+					_shared_texture_format = video_tex_format;
+					_shared_texture_device = video_device;
+					_shared_texture_refused_format = ui::texture_format::None;
+					_shared_texture_refused_device.Reset();
+					release_texture(); // force the render-side SRV texture to be recreated below
+
+					// The decoder's surface pool is one texture array allocated in full when the stream
+					// opens, and it is the largest single allocation playback makes. Reported here
+					// because this is the only point that can see how many surfaces it really has.
+					const int64_t bytes_per_sample = video_tex_format == ui::texture_format::P010 ? 2 : 1;
+					const auto surface_bytes = static_cast<int64_t>(tex_desc_src.Width) * tex_desc_src.Height *
+						3 * bytes_per_sample / 2;
+
+					df::log(__FUNCTION__,
+					        std::format("Video decode pool {} x {} x {} surfaces = {}", tex_desc_src.Width,
+					                    tex_desc_src.Height, tex_desc_src.ArraySize,
+					                    df::file_size(surface_bytes * tex_desc_src.ArraySize).str()));
+				}
+				else
+				{
+					// The cross-device bridge this whole path exists for is unavailable. Say so once: without
+					// a line here the picture simply stops, with nothing to attribute it to. The refusal is
+					// remembered against this key so the attempt is not repeated per frame, and the CPU
+					// fallback below is what keeps video on screen - until the decode thread, asked here,
+					// starts downloading the frames itself and this thread only uploads them.
+					_shared_texture_refused_device = video_device;
+					_shared_texture_refused_dimensions = texture_extent;
+					_shared_texture_refused_format = video_tex_format;
+					frame_in->request_cpu_frames();
+
+					df::log(__FUNCTION__, std::format("Video shared texture unavailable (0x{:08x}) - scaling on the CPU",
+					                                  static_cast<uint32_t>(hr)));
+				}
+			}
+
+			if (format_bridged && _shared_texture && _shared_producer_mutex)
+			{
+				// IDXGIKeyedMutex::AcquireSync returns WAIT_TIMEOUT (0x102) and WAIT_ABANDONED
+				// (0x80) as *success* HRESULTs, so it must be tested against S_OK - anything else
+				// means the mutex is not held and the copy below must not run.
+				//
+				// This runs on the UI thread, so the wait must stay well inside a frame. The producer
+				// and consumer keys are handed back and forth by this one function, so an uncontended
+				// acquire completes immediately; anything longer means the chain is wedged and the
+				// recovery path below is the right answer, not a stall.
+				if (_shared_producer_mutex->AcquireSync(0, shared_texture_acquire_ms) == S_OK)
+				{
+					video_context->CopySubresourceRegion(_shared_texture.Get(), 0, 0, 0, 0, video_texture.Get(),
+					                                     static_cast<uint32_t>(video_texture_index), nullptr);
+					video_context->Flush();
+					shared_texture_valid = _shared_producer_mutex->ReleaseSync(1) == S_OK;
+
+					if (!shared_texture_valid)
 					{
-						context->CopyResource(texture2.Get(), _shared_texture_render.Get());
-
-						// Made from the decoder's surface rather than as a plain texture, so never pooled.
-						release_texture();
-						_texture = texture2;
-						_dimensions = _shared_texture_dimensions;
-						_src_extent = src_extent;
-						_format = _shared_texture_format;
-						_orientation = info.orientation;
-						result = ui::texture_update_result::tex_created;
-					}
-
-					// Asked now rather than at the first draw. A render device that will not hold or view
-					// this format refuses it on every frame, and a texture with no view draws nothing.
-					if (result == ui::texture_update_result::failed || !binding())
-					{
-						release_texture();
-						result = ui::texture_update_result::failed;
-						bridge_refused = true;
+						// The mutex is still held at key 0, so every later frame would block for the
+						// full acquire timeout on the UI thread. Drop the chain and rebuild it.
+						df::log(__FUNCTION__, "Video shared texture release failed - recreating");
+						_shared_texture.Reset();
+						_shared_texture_render.Reset();
+						_shared_producer_mutex.Reset();
+						_shared_consumer_mutex.Reset();
+						_shared_texture_device.Reset();
+						_shared_texture_format = ui::texture_format::None;
 					}
 				}
 				else
 				{
-					context->CopyResource(_texture.Get(), _shared_texture_render.Get());
-					_src_extent = src_extent;
-					result = ui::texture_update_result::tex_updated;
-				}
-
-				// Symmetrical with the producer release above: a failed release leaves the mutex held
-				// at key 1, which the producer never waits on, so every later frame would time out.
-				if (_shared_consumer_mutex->ReleaseSync(0) != S_OK)
-				{
-					df::log(__FUNCTION__, "Video shared texture consumer release failed - recreating");
+					// The mutex was left in an unexpected state (timeout or abandoned). Drop the
+					// shared chain so the next frame rebuilds it instead of stalling video forever.
+					df::log(__FUNCTION__, "Video shared texture mutex unavailable - recreating");
 					_shared_texture.Reset();
 					_shared_texture_render.Reset();
 					_shared_producer_mutex.Reset();
@@ -3159,24 +3302,104 @@ ui::texture_update_result d3d11_texture::update(const ui::video_frame_ptr& frame
 					_shared_texture_device.Reset();
 					_shared_texture_format = ui::texture_format::None;
 				}
+			}
 
-				if (bridge_refused)
+			hwctx_lock.unlock();
+
+			if (shared_texture_valid && _shared_texture_render && _shared_consumer_mutex)
+			{
+				// The producer released to key 1, so a failure here leaves the mutex held at a key nobody
+				// waits on. Drop the chain rather than stalling the UI thread on every later frame.
+				if (_shared_consumer_mutex->AcquireSync(1, shared_texture_acquire_ms) != S_OK)
 				{
-					// Remembered like a refused build, and the chain dropped with it, so the decode device
-					// stops copying into a texture nothing presents. The decode thread prepares the
-					// pictures from here on.
-					df::log(__FUNCTION__, std::format("{} video texture refused by the render device - scaling on the CPU",
-					                                  to_string(bridge_format)));
-					_shared_texture_refused_device = bridge_device;
-					_shared_texture_refused_dimensions = bridge_dimensions;
-					_shared_texture_refused_format = bridge_format;
+					df::log(__FUNCTION__, "Video shared texture consumer mutex unavailable - recreating");
 					_shared_texture.Reset();
 					_shared_texture_render.Reset();
 					_shared_producer_mutex.Reset();
 					_shared_consumer_mutex.Reset();
 					_shared_texture_device.Reset();
 					_shared_texture_format = ui::texture_format::None;
-					frame_in->request_cpu_frames();
+				}
+				else
+				{
+					// The key the chain was built for, held here because a failed release below drops it.
+					const auto bridge_device = _shared_texture_device;
+					const auto bridge_dimensions = _shared_texture_dimensions;
+					const auto bridge_format = _shared_texture_format;
+					auto bridge_refused = false;
+
+					if (!_texture || _dimensions != _shared_texture_dimensions || _format != _shared_texture_format)
+					{
+						D3D11_TEXTURE2D_DESC tex_desc_render = {};
+						_shared_texture_render->GetDesc(&tex_desc_render);
+
+						D3D11_TEXTURE2D_DESC texDesc2 = tex_desc_render;
+						texDesc2.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+						texDesc2.ArraySize = 1;
+						texDesc2.MiscFlags = 0;
+
+						ComPtr<ID3D11Texture2D> texture2;
+						if (SUCCEEDED(device->CreateTexture2D(&texDesc2, nullptr, &texture2)))
+						{
+							context->CopyResource(texture2.Get(), _shared_texture_render.Get());
+
+							// Made from the decoder's surface rather than as a plain texture, so never pooled.
+							release_texture();
+							_texture = texture2;
+							_dimensions = _shared_texture_dimensions;
+							_src_extent = src_extent;
+							_format = _shared_texture_format;
+							_orientation = info.orientation;
+							result = ui::texture_update_result::tex_created;
+						}
+
+						// Asked now rather than at the first draw. A render device that will not hold or view
+						// this format refuses it on every frame, and a texture with no view draws nothing.
+						if (result == ui::texture_update_result::failed || !binding())
+						{
+							release_texture();
+							result = ui::texture_update_result::failed;
+							bridge_refused = true;
+						}
+					}
+					else
+					{
+						context->CopyResource(_texture.Get(), _shared_texture_render.Get());
+						_src_extent = src_extent;
+						result = ui::texture_update_result::tex_updated;
+					}
+
+					// Symmetrical with the producer release above: a failed release leaves the mutex held
+					// at key 1, which the producer never waits on, so every later frame would time out.
+					if (_shared_consumer_mutex->ReleaseSync(0) != S_OK)
+					{
+						df::log(__FUNCTION__, "Video shared texture consumer release failed - recreating");
+						_shared_texture.Reset();
+						_shared_texture_render.Reset();
+						_shared_producer_mutex.Reset();
+						_shared_consumer_mutex.Reset();
+						_shared_texture_device.Reset();
+						_shared_texture_format = ui::texture_format::None;
+					}
+
+					if (bridge_refused)
+					{
+						// Remembered like a refused build, and the chain dropped with it, so the decode device
+						// stops copying into a texture nothing presents. The decode thread prepares the
+						// pictures from here on.
+						df::log(__FUNCTION__, std::format("{} video texture refused by the render device - scaling on the CPU",
+						                                  to_string(bridge_format)));
+						_shared_texture_refused_device = bridge_device;
+						_shared_texture_refused_dimensions = bridge_dimensions;
+						_shared_texture_refused_format = bridge_format;
+						_shared_texture.Reset();
+						_shared_texture_render.Reset();
+						_shared_producer_mutex.Reset();
+						_shared_consumer_mutex.Reset();
+						_shared_texture_device.Reset();
+						_shared_texture_format = ui::texture_format::None;
+						frame_in->request_cpu_frames();
+					}
 				}
 			}
 		}

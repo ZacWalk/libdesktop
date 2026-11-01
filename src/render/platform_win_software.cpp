@@ -312,7 +312,7 @@ static bool quad_upright_rect(const quadd& q, recti& out)
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
-// software_vertices - coloured bars (audio visualizer).
+// software_vertices - the audio visualizer's bars, or flat rectangles.
 //////////////////////////////////////////////////////////////////////////////////////////////
 
 class software_vertices final : public ui::vertices
@@ -320,11 +320,27 @@ class software_vertices final : public ui::vertices
 public:
 	std::vector<recti> _rects;
 	std::vector<ui::color> _colors;
+	// Bars are drawn over a shadow with an emphasized centre; plain rectangles are filled as given.
+	bool _bars = false;
 
 	void update(recti rects[], ui::color colors[], const int num_bars) override
 	{
+		_bars = true;
 		_rects.assign(rects, rects + num_bars);
 		_colors.assign(colors, colors + num_bars);
+	}
+
+	void update_rects(const std::span<const ui::vertex_rect> rects) override
+	{
+		_bars = false;
+		_rects.clear();
+		_colors.clear();
+
+		for (const auto& r : rects)
+		{
+			_rects.emplace_back(r.bounds);
+			_colors.emplace_back(r.fill);
+		}
 	}
 };
 
@@ -972,6 +988,16 @@ public:
 		// same way a video texture updated in place is re-sampled on replay.
 		record_or_run([this, vv = std::move(vv)]
 		{
+			if (!vv->_bars)
+			{
+				for (size_t i = 0; i < vv->_rects.size(); ++i)
+				{
+					_canvas.fill_rect(vv->_rects[i], vv->_colors[i]);
+				}
+
+				return;
+			}
+
 			// Same treatment as the hardware backend: a drop shadow behind each bar (suppressed for
 			// flat bars) and then the bar as a centre gradient - note the bar carries the plain
 			// colour at its corners and the emphasized one in the middle, the opposite of draw_rect.
@@ -1506,6 +1532,13 @@ draw_context_device_ptr create_software_draw_context(const factories_ptr& f, con
 {
 	return std::make_shared<software_draw_context>(f, std::make_shared<gdi_present_target>(hwnd, layered),
 	                                              base_font_size);
+}
+
+draw_context_device_ptr create_software_draw_context(const factories_ptr& f,
+                                                     std::shared_ptr<ui::software_present_target> target,
+                                                     const int base_font_size)
+{
+	return std::make_shared<software_draw_context>(f, std::move(target), base_font_size);
 }
 
 // What is left here after the rasterizer moved to render_software: the scratch buffer stops

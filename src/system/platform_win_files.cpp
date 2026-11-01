@@ -35,6 +35,8 @@
 
 // Test seam definition (see platform.h). Default (empty) means real cloud detection.
 std::function<bool(const df::file_path&)> platform::test_offline_predicate;
+// Test seam definition (see platform.h). Default (empty) means asking the file system.
+std::function<platform::file_presence(const df::file_path&)> platform::test_replace_destination_presence;
 
 #pragma comment(lib, "Wininet")
 #pragma comment(lib, "mfuuid")
@@ -2486,7 +2488,23 @@ platform::file_op_result platform::replace_file(const df::file_path destination,
 		return flush_result;
 	}
 
-	const auto destination_exists = destination.exists();
+	// A failed query is not proof of absence: a share that dropped, or a denied query, leaves the
+	// destination there, and treating it as absent skipped the backup that was asked for while the
+	// rename below replaced the file anyway.
+	const auto destination_presence = test_replace_destination_presence
+		                                  ? test_replace_destination_presence(destination)
+		                                  : file_attributes(destination).presence;
+
+	if (create_originals && destination_presence == file_presence::unknown)
+	{
+		file_op_result result;
+		result.code = file_op_result_code::FAILED;
+		result.error_message = std::format("Could not check {} before replacing it", destination.str());
+		df::log(__FUNCTION__, result.error_message);
+		return result;
+	}
+
+	const auto destination_exists = destination_presence == file_presence::found;
 
 	df::file_path backup;
 
@@ -2707,7 +2725,9 @@ platform::file_op_result platform::create_folder(const df::folder_path path)
 
 	const auto parent = path.parent();
 
-	if (!parent.is_root() && !parent.exists())
+	// A server's name, or a single relative segment, is its own parent: there is nothing above it to
+	// create, and asking again would recurse until the stack ran out. SHCreateDirectoryExW refuses it.
+	if (parent != path && !parent.is_root() && !parent.exists())
 	{
 		auto parent_result = create_folder(parent);
 
@@ -3038,6 +3058,7 @@ bool platform::prompt_for_save_path(df::file_path& path)
 	filter_a += std::format("{} (*.jpg)|*.jpg;*.jpe;*.jpeg|", platform::text().jpeg_best);
 	filter_a += std::format("{} (*.png)|*.png|", platform::text().png_best);
 	filter_a += std::format("{} (*.webp)|*.webp|", platform::text().webp_best);
+	filter_a += std::format("{} (*.jxl)|*.jxl|", platform::text().jxl_best);
 	filter_a += "|";
 
 	auto filter = str::utf8_to_utf16(filter_a);
@@ -3057,6 +3078,7 @@ bool platform::prompt_for_save_path(df::file_path& path)
 	ofn.nFilterIndex = 1;
 	if (str::icmp(extension, L"png") == 0) ofn.nFilterIndex = 2;
 	if (str::icmp(extension, L"webp") == 0) ofn.nFilterIndex = 3;
+	if (str::icmp(extension, L"jxl") == 0) ofn.nFilterIndex = 4;
 
 	const auto success = GetSaveFileName(&ofn) != 0;
 	path = df::file_path(str::utf16_to_utf8(w));
@@ -3611,9 +3633,24 @@ bool platform::set_clipboard(const std::vector<df::file_path>& files, const std:
 	return true;
 }
 
+std::wstring clipboard_unicode_text(const std::string_view text)
+{
+	auto result = str::utf8_to_utf16(text);
+
+	for (auto& c : result)
+	{
+		if (c < 32 && c != L'\t' && c != L'\n' && c != L'\r')
+		{
+			c = L'.';
+		}
+	}
+
+	return result;
+}
+
 bool platform::set_clipboard(const std::string_view text)
 {
-	const auto w = str::utf8_to_utf16(text);
+	const auto w = clipboard_unicode_text(text);
 	const auto text_size = w.size();
 
 	if (text_size > SIZE_MAX / sizeof(wchar_t) - 1)
@@ -3640,18 +3677,6 @@ bool platform::set_clipboard(const std::string_view text)
 	}
 
 	memcpy(text_copy, w.data(), text_size * sizeof(wchar_t));
-
-	for (auto i = 0u; i < text_size; ++i)
-	{
-		const auto c = text_copy[i];
-
-		// poor man's escape
-		if (c < 32 && c != 10 && c != 13)
-		{
-			text_copy[i] = '.';
-		}
-	}
-
 	text_copy[text_size] = static_cast<wchar_t>(0); // null character 
 	GlobalUnlock(hglbCopy);
 

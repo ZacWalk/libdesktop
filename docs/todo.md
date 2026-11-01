@@ -49,7 +49,15 @@ design is tested; read the adopter's tests before replacing its code.
       fast-draw, low-ban and vector-experiments' `platform.hpp` each carry their
       own window, message loop and GDI helpers. Move each only once libdesktop
       has what it needs; their Windows SDK code may stay where it is.
+- [ ] **More of `src/ui` in libdesktop-text.** Diffractor's read-only document
+      view draws text and dumps itself, coloured by libdesktop-text. Rendered
+      Markdown or CSV tables there would want `ui/markdown.h` (standard C++ but
+      for one `_strnicmp`) and `table_layout`'s cell parsing moved into it, not
+      the views, which are written in `pf::`. Done when a second consumer needs
+      either.
 
 The two window models - libdesktop-core's reactor and libdesktop-render's
-`ui::` - stay side by side until one application needs both. ddc stays
-independent of libdesktop.
+`ui::` - stay side by side until one application needs both. What depends on
+neither is shared instead: libdesktop-text, the text vocabulary and syntax
+highlighters that libdesktop-ui and Diffractor's document view both use. ddc
+stays independent of libdesktop.

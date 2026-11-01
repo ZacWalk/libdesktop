@@ -177,8 +177,10 @@ namespace df
 			static const auto null_date_cpp = date_t(1970, 1, 1).to_days();
 			static const auto null_date_mac = date_t(1904, 1, 1).to_days();
 
-			// read each call: caching the upper bound would reject anything later than process start
-			const auto max = platform::now().to_days();
+			// Read each call: caching the upper bound would reject anything later than process start. A
+			// capture date is local wall-clock time, and east of UTC that is already tomorrow's date for up
+			// to fourteen hours of each day, so the bound is the day after UTC's today.
+			const auto max = platform::now().to_days() + 1;
 
 			const auto days = to_days();
 			return days >= min && days <= max && days != null_date_cpp && days != null_date_mac;

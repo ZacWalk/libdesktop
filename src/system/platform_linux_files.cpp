@@ -719,7 +719,17 @@ platform::file_op_result platform::replace_file(const df::file_path destination,
 		if (!flushed) return {file_op_result_code::FAILED, std::string(::strerror(flush_errno))};
 	}
 
-	if (create_originals && exists(destination))
+	// A failed query is not proof of absence, so a backup that was asked for is never skipped on one.
+	const auto destination_presence = test_replace_destination_presence
+		                                  ? test_replace_destination_presence(destination)
+		                                  : file_attributes(destination).presence;
+
+	if (create_originals && destination_presence == file_presence::unknown)
+	{
+		return {file_op_result_code::FAILED, std::format("Could not check {} before replacing it", destination.str())};
+	}
+
+	if (create_originals && destination_presence == file_presence::found)
 	{
 		const auto base_name = std::string(destination.file_name_without_extension()) + ".original"s;
 		const auto extension = destination.extension();

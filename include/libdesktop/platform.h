@@ -96,6 +96,7 @@ namespace platform
 		text_t jpeg_best = "JPEG - Best compression for photos";
 		text_t png_best = "PNG - Best for non photos";
 		text_t webp_best = "WEBP - Best for the web";
+		text_t jxl_best = "JPEG XL - Smallest files for photos";
 		text_t error_connect_scanner = "Could not connect to scanner";
 		text_t error_scanner = "Scanner reported an error";
 		text_t error_save_image = "Failed to save image.";
@@ -508,6 +509,10 @@ namespace platform
 	// unit tests can simulate OneDrive Files On-Demand online-only files without real cloud
 	// storage. Returning true marks the given path as offline during folder enumeration.
 	extern std::function<bool(const df::file_path&)> test_offline_predicate;
+
+	// Test seam: when set, replace_file asks this rather than the file system whether its destination
+	// is there, so a test can give the answer a dropped share or a denied query gives: unknown.
+	extern std::function<file_presence(const df::file_path&)> test_replace_destination_presence;
 
 #ifndef _WIN32
 	struct linux_copy_file_test_failures

@@ -644,6 +644,49 @@ ui::surface_ptr ui::surface::transform(const simple_transform t) const
 			}
 		}
 	}
+	else if (t == simple_transform::flip_h || t == simple_transform::flip_v)
+	{
+		result = std::make_shared<surface>();
+
+		if (result->alloc(cx, cy, _format, _orientation, _time))
+		{
+			const auto mirror_rows = t == simple_transform::flip_v;
+
+			for (int y = 0; y < cy; ++y)
+			{
+				const auto* const line_src = std::bit_cast<const color32*>(
+					_pixels.get() + (mirror_rows ? cy - 1 - y : y) * _stride);
+				auto* const line_dst = std::bit_cast<color32*>(result->_pixels.get() + y * result->_stride);
+
+				for (int x = 0; x < cx; ++x)
+				{
+					line_dst[x] = line_src[mirror_rows ? x : cx - 1 - x];
+				}
+			}
+		}
+	}
+	else if (t == simple_transform::transpose || t == simple_transform::transverse)
+	{
+		// Mirrored across a diagonal: the leading one for transpose, the other one for transverse.
+		result = std::make_shared<surface>();
+
+		if (result->alloc(cy, cx, _format, _orientation, _time))
+		{
+			const auto leading = t == simple_transform::transpose;
+
+			for (int y = 0; y < cx; ++y)
+			{
+				auto* const line_dst = std::bit_cast<color32*>(result->_pixels.get() + y * result->_stride);
+				const auto src_x = leading ? y : cx - 1 - y;
+
+				for (int x = 0; x < cy; ++x)
+				{
+					const auto src_y = leading ? x : cy - 1 - x;
+					line_dst[x] = std::bit_cast<const color32*>(_pixels.get() + src_y * _stride)[src_x];
+				}
+			}
+		}
+	}
 
 	return result;
 }
