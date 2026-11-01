@@ -7,6 +7,7 @@
 #include "libdesktop/system.h"
 #include "libdesktop/platform_win.h"
 #include "system_test.h"
+#include "loopback_http.h"
 
 namespace
 {
@@ -570,11 +571,225 @@ static void should_recognise_network_locations()
 // '.', so the application it is pasted into cannot act on it.
 static void should_keep_tabs_and_line_breaks_on_the_clipboard()
 {
-	assert_equal(L"\tCtrl+C\tCopy\r\nnext\n", clipboard_unicode_text("\tCtrl+C\tCopy\r\nnext\n"),
-	             "tabs and line breaks pass through");
-	assert_equal(L"a.b.c", clipboard_unicode_text(std::string_view("a\0b\x1b" "c", 5)),
-	             "other control characters are escaped");
-	assert_equal(L"\u00e9\u20ac", clipboard_unicode_text("\xC3\xA9\xE2\x82\xAC"), "text is converted from UTF-8");
+	assert_equal_strict("\tCtrl+C\tCopy\r\nnext\n", clipboard_safe_text("\tCtrl+C\tCopy\r\nnext\n"),
+	                    "tabs and line breaks pass through");
+	assert_equal_strict("a.b.c", clipboard_safe_text(std::string_view("a\0b\x1b" "c", 5)),
+	                    "other control characters are escaped");
+	assert_equal_strict("\xC3\xA9\xE2\x82\xAC", clipboard_safe_text("\xC3\xA9\xE2\x82\xAC"), "other text passes through");
+}
+
+// The synchronous web client against a scripted loopback server: what each request puts on the wire,
+// and what each response comes back as, including the ways a response or an attachment can fail.
+// create_folder makes each missing folder on the way down and reports one already there as made, past
+// MAX_PATH as well as short of it. It fails where nothing can be made - under a file, or with a name the
+// file system refuses - with the system's reason.
+static void should_create_folders_on_the_way_down()
+{
+	const auto root = _temps.next_folder("create");
+	const auto nested = root.combine("a").combine("b").combine("c");
+	assert_equal(true, platform::create_folder(nested).success(), "nested folders are made");
+	assert_equal(true, nested.exists(), "and exist");
+	assert_equal(true, platform::create_folder(nested).success(), "a folder already there counts as made");
+
+	write_test_file(root.combine_file("file.txt"), "x");
+	auto result = platform::create_folder(root.combine("file.txt").combine("sub"));
+	assert_equal(true, result.failed(), "nothing is made under a file");
+	assert_equal(false, result.error_message.empty(), "and the failure says why");
+
+	result = platform::create_folder(root.combine("bad|name"));
+	assert_equal(true, result.failed(), "a name the file system refuses is not made");
+	assert_equal(false, result.error_message.empty(), "nor is that silent");
+
+	// The temporary files' own clean-up stops at MAX_PATH, so the long folder is removed here. The shell
+	// call create_folder made before could not make it at all.
+	const auto long_root = root.combine("long");
+	const df::scope_exit remove_long_root([long_root]
+	{
+		std::error_code removed;
+		std::filesystem::remove_all(std::filesystem::path(L"\\\\?\\" + platform::to_shell_path(long_root)), removed);
+	});
+
+	// Without the \\?\ form a folder is refused from 248 characters, 12 short of MAX_PATH, so the chain ends
+	// a level at each edge of that band - whatever the temporary folder's length - and goes on past 300.
+	auto deep = long_root;
+	std::vector<df::folder_path> levels;
+	for (const size_t edge : {size_t{248}, size_t{259}})
+	{
+		const size_t length = deep.text().size();
+		if (length + 1 < edge) deep = deep.combine(std::string(edge - length - 1, 'b'));
+		levels.push_back(deep);
+	}
+	assert_equal(true, levels[0].text().size() == 248 && levels[1].text().size() == 259,
+	             "the chain has a level at each edge of the band");
+
+	while (deep.text().size() < 300) deep = deep.combine(std::string(40, 'd'));
+	result = platform::create_folder(deep);
+	assert_equal(true, result.success(), "a folder past MAX_PATH is made");
+	assert_equal(true, deep.exists(), "and exists");
+	assert_equal(true, levels[0].exists() && levels[1].exists(), "with the levels at the band's edges");
+
+	const auto inside = deep.combine_file("inside.txt");
+	write_test_file(inside, "deep");
+	assert_equal_strict("deep", read_test_file(inside), "and holds a file");
+}
+
+static void should_send_web_requests_and_read_their_responses()
+{
+	loopback::server server;
+	assert_equal(true, server.listening(), "the loopback server listens");
+
+	constexpr std::string_view boundary = "54B8723DE6044695A68C838E8BF0CB00";
+	server.respond("/hello", {loopback::http_response(200, "OK", "hello world", "Content-Type: text/plain\r\n")});
+	server.respond("/file", {loopback::http_response(200, "OK", "file body")});
+	server.respond("/short", {"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n0123456789"});
+	server.respond("/empty", {"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"});
+
+	const auto host = platform::connect_to_host("127.0.0.1", false, server.port());
+	assert_equal(true, host != nullptr, "connected");
+
+	platform::web_request get;
+	get.path = "/hello";
+	auto r = platform::send_request(host, get);
+	assert_equal(200, r.status_code, "status");
+	assert_equal_strict("hello world", r.body, "body");
+	assert_equal_strict("text/plain", r.content_type, "content type");
+	assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "request line");
+	assert_equal_strict(s_app_name, loopback::header_value(server.last(), "User-Agent"), "the application is the agent");
+
+	platform::web_request query;
+	query.path = "/query";
+	query.query = {{"a", "1"}, {"b", "x y"}};
+	query.headers = {{"X-Test", "1"}};
+	r = platform::send_request(host, query);
+	assert_equal(404, r.status_code, "an unscripted path is missing");
+	assert_equal_strict("missing", r.body, "the 404 body");
+	assert_equal_strict("GET /query?a=1&b=x%20y HTTP/1.1", server.last().request_line, "query encoding");
+	assert_equal_strict("1", loopback::header_value(server.last(), "X-Test"), "a request header");
+
+	platform::web_request form;
+	form.verb = platform::web_request_verb::POST;
+	form.path = "/form";
+	form.form_data = {{"name", "value"}};
+	r = platform::send_request(host, form);
+	assert_equal(404, r.status_code, "form status");
+	assert_equal_strict("POST /form HTTP/1.1", server.last().request_line, "form request line");
+	assert_equal_strict(std::format("multipart/form-data; boundary={}", boundary),
+	                    loopback::header_value(server.last(), "Content-Type"), "form content type");
+	assert_equal_strict(std::format(
+		                    "--{0}\r\nContent-Disposition: form-data; name=\"name\"\r\nContent-Type: text/plain; "
+		                    "charset=\"utf-8\"\r\n\r\nvalue\r\n--{0}--", boundary), server.last().body, "form body");
+
+	const auto zip = _temps.next_path(".zip");
+	write_test_file(zip, std::string_view("PK\x03\x04zip", 7));
+	platform::web_request upload;
+	upload.verb = platform::web_request_verb::POST;
+	upload.path = "/upload";
+	upload.form_data = {{"k", "v"}};
+	upload.file_form_data_name = "ff";
+	upload.file_name = "logs.zip";
+	upload.file_path = zip;
+	r = platform::send_request(host, upload);
+	assert_equal(404, r.status_code, "upload status");
+	assert_equal_strict(std::format(
+		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
+		                    "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
+		                    boundary, std::string_view("PK\x03\x04zip", 7)), server.last().body, "upload body");
+
+	// An attachment that cannot be read is left off and the rest of the request still goes. The client
+	// before libdesktop-os sent an empty file part instead.
+	auto unreadable = upload;
+	unreadable.file_path = _temps.next_path(".zip");
+	const auto requests_before = server.requests().size();
+	r = platform::send_request(host, unreadable);
+	assert_equal(404, r.status_code, "the request without its attachment was answered");
+	assert_equal(true, server.requests().size() == requests_before + 1, "the request was sent");
+	assert_equal_strict(std::format(
+		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}--", boundary), server.last().body,
+	                    "the body without the attachment");
+
+	const auto download = _temps.next_path(".txt");
+	platform::web_request fetch;
+	fetch.path = "/file";
+	fetch.download_file_path = download;
+	r = platform::send_request(host, fetch);
+	assert_equal(200, r.status_code, "download status");
+	assert_equal(true, r.body.empty(), "a download leaves the body empty");
+	assert_equal_strict("file body", read_test_file(download), "downloaded content");
+
+	// A bare file name is sent as the root's, as WinINet sent it: download_and_verify asks for one.
+	platform::web_request bare;
+	bare.path = "hello";
+	r = platform::send_request(host, bare);
+	assert_equal(200, r.status_code, "a path without its leading slash");
+	assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "is sent with one");
+
+	// Downloads and attachments reach files whose paths are longer than MAX_PATH.
+	const auto long_root = _temps.next_folder("long");
+	auto deep = long_root;
+	while (deep.text().size() < MAX_PATH + 20) deep = deep.combine(std::string(40, 'd'));
+
+	// The temporary files' own clean-up stops at MAX_PATH, so this folder is removed here.
+	const df::scope_exit remove_long_root([long_root]
+	{
+		std::error_code removed;
+		std::filesystem::remove_all(std::filesystem::path(L"\\\\?\\" + platform::to_shell_path(long_root)), removed);
+	});
+
+	assert_equal(true, platform::create_folder(deep).success(), "the long folder is made");
+	assert_equal(true, deep.exists(), "and exists");
+
+	const auto long_download = deep.combine_file("download.txt");
+	fetch.download_file_path = long_download;
+	r = platform::send_request(host, fetch);
+	assert_equal(200, r.status_code, "a download to a long path");
+	assert_equal_strict("file body", read_test_file(long_download), "the long path holds the download");
+
+	const auto long_zip = deep.combine_file("logs.zip");
+	write_test_file(long_zip, std::string_view("PK\x03\x04zip", 7));
+	auto long_upload = upload;
+	long_upload.file_path = long_zip;
+	r = platform::send_request(host, long_upload);
+	assert_equal(404, r.status_code, "an attachment from a long path");
+	assert_equal_strict(std::format(
+		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
+		                    "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
+		                    boundary, std::string_view("PK\x03\x04zip", 7)), server.last().body,
+	                    "is sent whole");
+
+	// A transfer cut short is no response at all, and leaves nothing at the download path. The client
+	// before libdesktop-os answered both with status 200 and what had arrived, so a truncated download
+	// was taken for a whole one.
+	platform::web_request cut;
+	cut.path = "/short";
+	r = platform::send_request(host, cut);
+	assert_equal(0, r.status_code, "a body cut short has no status");
+	assert_equal(true, r.body.empty(), "nor a body");
+
+	const auto cut_download = _temps.next_path(".txt");
+	cut.download_file_path = cut_download;
+	r = platform::send_request(host, cut);
+	assert_equal(0, r.status_code, "a download cut short has no status");
+	assert_equal(false, cut_download.exists(), "and leaves no file");
+
+	platform::web_request empty;
+	empty.path = "/empty";
+	r = platform::send_request(host, empty);
+	assert_equal(204, r.status_code, "no content");
+	assert_equal(true, r.body.empty(), "no body");
+
+	int closed_port = 0;
+	{
+		const loopback::server gone;
+		closed_port = gone.port();
+	}
+	const auto nowhere = platform::connect_to_host("127.0.0.1", false, closed_port);
+	assert_equal(true, nowhere != nullptr, "connecting does not reach the server");
+	r = platform::send_request(nowhere, get);
+	assert_equal(0, r.status_code, "a refused request has no status");
+	assert_equal(true, r.body.empty(), "nor a body");
 }
 
 void register_win_tests(test_registry& tests)
@@ -600,4 +815,6 @@ void register_win_tests(test_registry& tests)
 	tests.add("Should publish pasted bitmap after closing stage"s, should_publish_pasted_bitmap_after_closing_stage);
 	tests.add("Should recognise network locations"s, should_recognise_network_locations);
 	tests.add("Should keep tabs and line breaks on the clipboard"s, should_keep_tabs_and_line_breaks_on_the_clipboard);
+	tests.add("Should create folders on the way down"s, should_create_folders_on_the_way_down);
+	tests.add("Should send web requests and read their responses"s, should_send_web_requests_and_read_their_responses);
 }

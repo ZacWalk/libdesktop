@@ -5,22 +5,38 @@ of this list. Current limitations are listed under *Known gaps* in the
 [README](../README.md#known-gaps), [system.md](system.md#known-gaps) and
 [render.md](render.md#known-gaps).
 
-## Decisions needed first
+## libdesktop-os
 
-- [ ] **Merge each service with its `pf::` equivalent.** libdesktop-system and
-      libdesktop-core both provide files, settings, child processes, web
-      requests with async HTTP, sound, the clipboard and known folders. Merge
-      them one service at a time, keeping the better implementation. Decide
-      first where a merged service lives: in libdesktop-system, which every
-      app built on libdesktop-core then links; or with libdesktop-system's
-      Windows backend calling libdesktop-core's, its Linux backend staying its
-      own. Done when each pair has one implementation and both suites pass.
+A service libdesktop-core and libdesktop-system both implement moves into
+libdesktop-os one at a time, held to both suites' record of its outcomes
+([AGENTS.md](../AGENTS.md#libdesktop-os)). The web client, clipboard text, known
+folders and audio output have moved. Done when each pair below has one
+implementation and both suites pass.
+
+- [ ] **Files and file dialogs.** pf:: wraps Win32 thinly over `pf::file_path`,
+      UTF-8 text, and reports failure through `GetLastError` - dde words its
+      errors from it - while libdesktop-system works in `df::file_path`, with
+      extended-length paths, shell operations and `file_op_result`. Decide first
+      how the merged service takes a path - UTF-8, and when it adds the `\\?\`
+      prefix, which a relative path cannot take - and how it reports failure;
+      then record both stacks' outcomes for copy, move, rename, delete, recycle,
+      folder creation, enumeration and the dialogs before moving them.
+- [ ] **Settings.** pf:: keeps an INI beside the executable, else in a temporary
+      folder; libdesktop-system keeps the registry or its own INI, with escaped
+      line breaks. Merge the store, not the locations: every application must
+      go on reading the settings its users already have.
+- [ ] **pf::'s default user agent.** An empty user agent sends `PotatoApp/1.0`,
+      which names an application. Make the default neutral, or require one.
+
+Not duplicates, so not merged: pf::'s child processes, with pipes and line
+callbacks, beside `platform::run`, which starts a program and returns;
+`try_lock_instance`, one holder per user, beside `claim_startup_scope`; pf::'s
+asynchronous WinHTTP client, which libdesktop-system has no counterpart for;
+and spelling and images, where the stacks use different engines - the Windows
+spell checker and Hunspell, WIC and libfiles.
 
 ## libdesktop-system
 
-- [ ] **Audio output in libdesktop-system.** The WASAPI `platform::audio_output`
-      moves from libdesktop-render to libdesktop-system, merged with
-      libdesktop-core's `pf::audio_stream`.
 - [ ] **`df::blob` adopts a `std::vector`.** Diffractor copies each encoded
       image from libfiles' `std::vector` into a `df::blob`, which cannot take
       ownership of one. Done when the blob can adopt the vector and Diffractor's

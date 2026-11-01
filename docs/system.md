@@ -88,6 +88,15 @@ On Windows the sources name most of their import libraries with
 The CRT is the consumer's choice: nothing here sets
 `CMAKE_MSVC_RUNTIME_LIBRARY`.
 
+On Windows it also links libdesktop-os, privately: the web client
+(`connect_to_host`, `send_request`, `is_online`), clipboard text
+(`set_clipboard(text)`, `clipboard_text`) and the known folders are
+libdesktop-os's, which libdesktop-core shares. This module wraps them in what
+belongs to the application: its name as the user agent, its log messages, the
+clean-up of copied text, and a web response that is either whole or not one at
+all - a transfer that fails or is cut short answers status 0 with no body, and
+removes what it downloaded.
+
 ## The window layer's hooks
 
 The services know nothing of windows, but an application's window layer has

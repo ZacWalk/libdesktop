@@ -42,6 +42,9 @@ if(WIN32)
         src/render/platform_win_wic.cpp
     )
 
+    # The audio endpoint is libdesktop-os's (include/libdesktop/os.h), wrapped in platform::audio_output.
+    target_link_libraries(libdesktop-render PRIVATE libdesktop::os)
+
     # The SDK installs one fxc per version, and none of them is on the path.
     file(GLOB libdesktop_fxc_candidates
         "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/fxc.exe"

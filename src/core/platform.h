@@ -1647,6 +1647,9 @@ namespace pf
 
 	using sound_buffer_ptr = std::shared_ptr<sound_buffer>;
 
+	// The default output device, which every sound and stream plays through. A
+	// sound or stream still held after sound_shutdown plays on until it is
+	// released, and the device closes with the last of them.
 	bool sound_init();
 	void sound_shutdown();
 

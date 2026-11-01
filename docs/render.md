@@ -4,7 +4,8 @@ libdesktop-render is the desktop UI that began as Diffractor's: the `ui::` types
 - surfaces, textures, colours and styles - the draw contexts, frames, controls,
 commands and the `ui::app` they host, with the services its backends implement
 (`platform_render.h`): the Direct3D 11 and software renderers, DirectWrite text,
-WIC, native controls, Media Foundation movie writing and WASAPI sound. Windows is
+WIC, native controls, Media Foundation movie writing and sound, through
+libdesktop-os's WASAPI endpoint. Windows is
 its backend; on Linux it builds with stand-ins, which run a headless core.
 
 It is written in libdesktop-system and sits beside libdesktop-core (`pf::`) and
@@ -152,8 +153,9 @@ application, with its tests that need FFmpeg or its own decoders.
 
 ## Known gaps
 
-- Audio output belongs in libdesktop-system, merged with libdesktop-core's
-  `pf::audio_stream`.
+- Linux has no audio endpoint, so `platform::create_audio_output` answers that
+  none is available. libdesktop-os is where one goes, and it would serve
+  libdesktop-core's sounds and streams as well.
 - The headers rely on the umbrella's includes and order.
 - The window classes are named `LIBDESKTOP_*` whichever application registers
   them.

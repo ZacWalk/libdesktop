@@ -12,6 +12,7 @@
 #include "libdesktop/system.h"
 
 #include "libdesktop/platform_win.h"
+#include "libdesktop/os.h"
 
 #include <psapi.h>
 #include <Shlwapi.h>
@@ -43,9 +44,6 @@
 #include <windows.system.h>
 #pragma comment(lib, "runtimeobject")
 #endif
-
-#include <avrt.h>
-#pragma comment(lib, "avrt.lib")
 
 HINSTANCE get_resource_instance = nullptr;
 static HWND s_app_wnd = nullptr;
@@ -1415,16 +1413,14 @@ static void add_library_paths(REFIID libraryId, df::unique_folders& results)
 	}
 }
 
-static df::folder_path path_from_csidl(const int csidl)
+static df::folder_path path_of(const os::known_folder folder, const bool create = false)
 {
-	wchar_t sz[MAX_PATH] = {0};
-	SHGetFolderPath(app_wnd(), csidl, nullptr, SHGFP_TYPE_CURRENT, sz);
-	return df::folder_path(str::utf16_to_utf8(sz));
+	return df::folder_path(os::known_folder_path(folder, create));
 }
 
 static df::folder_path app_data()
 {
-	const auto folder = path_from_csidl(CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE).combine(s_app_name);
+	const auto folder = path_of(os::known_folder::local_app_data, true).combine(s_app_name);
 	platform::create_folder(folder);
 	return folder;
 }
@@ -1433,7 +1429,7 @@ static df::folder_path app_cache_data()
 {
 	// Existing users already have cache data at %LOCALAPPDATA%\<application>; this stays the
 	// location for desktop builds and the fallback when the Store lookup below fails.
-	const auto default_folder = path_from_csidl(CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE).combine(s_app_name);
+	const auto default_folder = path_of(os::known_folder::local_app_data, true).combine(s_app_name);
 
 #ifdef WINSTORE
 	// Store packages are expected to keep their index in the package LocalCache folder.
@@ -1515,10 +1511,10 @@ static df::folder_path shell_known_folder(REFIID id)
 
 static df::folder_path dropbox(const std::string_view sub_folder)
 {
-	const auto dropbox = path_from_csidl(CSIDL_PROFILE).combine("Dropbox");
+	const auto dropbox = path_of(os::known_folder::profile).combine("Dropbox");
 	if (dropbox.exists()) return dropbox;
 
-	const auto info_path = path_from_csidl(CSIDL_LOCAL_APPDATA).combine("Dropbox").combine_file("info.json");
+	const auto info_path = path_of(os::known_folder::local_app_data).combine("Dropbox").combine_file("info.json");
 
 	if (info_path.exists())
 	{
@@ -1578,7 +1574,7 @@ static df::folder_path onedrive_root_folder()
 	// The key exists before the value does on a fresh install, so the profile fallback covers both.
 	if (result.is_empty())
 	{
-		result = path_from_csidl(CSIDL_PROFILE).combine("OneDrive");
+		result = path_of(os::known_folder::profile).combine("OneDrive");
 	}
 
 	return result;
@@ -1615,11 +1611,11 @@ df::folder_path platform::known_path(const known_folder f)
 	case known_folder::app_data: return app_data();
 	case known_folder::app_cache_data: return app_cache_data();
 	case known_folder::downloads: return shell_known_folder(FOLDERID_Downloads);
-	case known_folder::pictures: return path_from_csidl(CSIDL_MYPICTURES);
-	case known_folder::video: return path_from_csidl(CSIDL_MYVIDEO);
-	case known_folder::music: return path_from_csidl(CSIDL_MYMUSIC);
-	case known_folder::documents: return path_from_csidl(CSIDL_MYDOCUMENTS);
-	case known_folder::desktop: return path_from_csidl(CSIDL_DESKTOP);
+	case known_folder::pictures: return path_of(os::known_folder::pictures);
+	case known_folder::video: return path_of(os::known_folder::videos);
+	case known_folder::music: return path_of(os::known_folder::music);
+	case known_folder::documents: return path_of(os::known_folder::documents);
+	case known_folder::desktop: return path_of(os::known_folder::desktop);
 	case known_folder::dropbox_photos: return dropbox("photos");
 	case known_folder::onedrive_pictures: return onedrive("pictures");
 	case known_folder::onedrive_video: return onedrive("video");
@@ -1636,19 +1632,19 @@ df::unique_folders platform::known_folders()
 	df::unique_folders result;
 
 	result.emplace(known_path(known_folder::pictures));
-	result.emplace(path_from_csidl(CSIDL_COMMON_PICTURES));
+	result.emplace(path_of(os::known_folder::public_pictures));
 	add_library_paths(FOLDERID_PicturesLibrary, result);
 	result.emplace(known_path(known_folder::video));
 
-	result.emplace(path_from_csidl(CSIDL_COMMON_VIDEO));
+	result.emplace(path_of(os::known_folder::public_videos));
 	add_library_paths(FOLDERID_VideosLibrary, result);
 
 	result.emplace(known_path(known_folder::music));
-	result.emplace(path_from_csidl(CSIDL_COMMON_MUSIC));
+	result.emplace(path_of(os::known_folder::public_music));
 	add_library_paths(FOLDERID_MusicLibrary, result);
 
 	result.emplace(known_path(known_folder::documents));
-	result.emplace(path_from_csidl(CSIDL_COMMON_DOCUMENTS));
+	result.emplace(path_of(os::known_folder::public_documents));
 	add_library_paths(FOLDERID_DocumentsLibrary, result);
 
 	result.emplace(known_path(known_folder::desktop));
@@ -1962,17 +1958,13 @@ platform::media_thread_priority::media_thread_priority()
 	// Join the MMCSS "Pro Audio" class so the OS scheduler keeps this audio thread
 	// running promptly even while the video-decode thread is busy. Failure is
 	// non-fatal (the thread simply runs at normal priority).
-	DWORD task_index = 0;
-	_task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
+	_task = os::join_pro_audio_class();
 }
 
 platform::media_thread_priority::~media_thread_priority()
 {
-	if (_task)
-	{
-		AvRevertMmThreadCharacteristics(_task);
-		_task = nullptr;
-	}
+	os::leave_pro_audio_class(_task);
+	_task = nullptr;
 }
 
 

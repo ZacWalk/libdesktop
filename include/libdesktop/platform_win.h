@@ -179,10 +179,10 @@ inline df::folder_path to_folder_path(const std::wstring_view w)
 	return df::folder_path(str::utf16_to_utf8(w));
 }
 
-// The UTF-16 text platform::set_clipboard offers. Tabs and line breaks pass through, so pasted text
-// keeps its columns and lines; every other control character becomes '.', which the application
-// that receives it cannot act on.
-std::wstring clipboard_unicode_text(std::string_view text);
+// The text platform::set_clipboard offers. Tabs and line breaks pass through, so pasted text keeps its
+// columns and lines; every other control character becomes '.', which the application that receives
+// it cannot act on.
+std::string clipboard_safe_text(std::string_view text);
 
 class data_object_client : public platform::clipboard_data
 {

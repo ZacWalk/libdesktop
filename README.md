@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/ZacWalk/libdesktop/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/libdesktop/actions/workflows/build.yml)
 
-A small C++20 platform layer for desktop applications, in five static libraries:
+A small C++20 platform layer for desktop applications, in six static libraries:
 
 | Library | Alias | Contents |
 |---|---|---|
@@ -10,16 +10,18 @@ A small C++20 platform layer for desktop applications, in five static libraries:
 | **libdesktop-ui** | `libdesktop::ui` | The reusable presentation layer in `src/ui`: widgets, text and document views, markdown rendering, lists and the prompt composer, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
 | **libdesktop-text** | `libdesktop::text` | The part of `src/ui` that is standard C++ alone: the text layer's vocabulary (`text_types.h`) and the syntax highlighters (`syntax.h`), in `pf::ui`. libdesktop-ui is written in it; an application on another window model links it alone to colour text it draws itself. |
 | **libdesktop-system** | `libdesktop::system` | The foundation and OS services that began as Diffractor's, in `include/libdesktop`: `df::` and `str::` (strings, paths, dates, geometry, containers, hashing, logging, JSON) and `platform::` (files, settings, processes, threads, known folders, the shell, sharing, the web, crash recovery), for Windows and Linux. Opt in with `LIBDESKTOP_SYSTEM`; [docs/system.md](docs/system.md) describes it. |
-| **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, controls and commands, the Direct3D 11 and software renderers, DirectWrite text, WIC, native controls, Media Foundation movie writing and WASAPI sound, for Windows, with Linux stand-ins. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
+| **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, controls and commands, the Direct3D 11 and software renderers, DirectWrite text, WIC, native controls, Media Foundation movie writing and sound, for Windows, with Linux stand-ins. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
+| **libdesktop-os** | `libdesktop::os` | The OS services libdesktop-core and libdesktop-system share, in `os::`: the web client, clipboard text, known folders and the audio endpoint both stacks' sound plays through. A service here names no application and writes no log, so both call it; neither exposes it to an application. Windows only so far. |
 
 libdesktop-ui operates on a UTF-8 text buffer the application hands it. It never
 opens a file, never knows a path, and never names an application — loading and
 saving stay in the app.
 
-libdesktop-core and libdesktop-ui have one backend, Win32/MSVC; libdesktop-text needs none and builds
+libdesktop-core, libdesktop-ui and libdesktop-os have one backend, Win32/MSVC; libdesktop-text needs none and builds
 everywhere libdesktop does.
 libdesktop-system has two: Windows with MSVC and Linux with GCC, and libdesktop-render builds on both,
-with stand-ins on Linux.
+with stand-ins on Linux. On Windows libdesktop-core and libdesktop-system both link libdesktop-os; its
+Linux implementations are still libdesktop-system's own.
 
 [dde](https://github.com/ZacWalk/dde) builds on libdesktop-ui;
 [Potato](https://github.com/ZacWalk/potato),
@@ -56,10 +58,13 @@ somewhere other than Windows, it does not belong here.
 ### Backends
 
 - **`platform_win.cpp`** — the Win32 implementation: `WinMain` and the message
-  loop, GDI drawing, WIC image decoding, WinINet (synchronous) and WinHTTP
-  (asynchronous) networking, common dialogs, clipboard, spell checking.
-- **`platform_win_audio.cpp`** — XAudio2, kept separate so the audio dependency
-  stays isolated.
+  loop, GDI drawing, WIC image decoding, WinHTTP (asynchronous) networking,
+  common dialogs, clipboard, spell checking. The synchronous web client,
+  clipboard text and the per-user storage folder are libdesktop-os's, which
+  `pf::` wraps.
+- **`platform_audio.cpp`** — the mixer behind `sound_buffer` and
+  `audio_stream`, playing through libdesktop-os's audio endpoint. It includes no
+  OS header, so only the endpoint is written per system.
 - **`platform_common.cpp`** — the parts with no OS dependency at all; compiles
   on every target.
 
@@ -95,8 +100,8 @@ Layout and hit testing are testable without a window, because
 |---|---|
 | `src/core/platform.h` | The whole `pf::` surface. Declarations, plus inline text/geometry helpers |
 | `src/core/platform_common.cpp` | Backend-independent implementation (the embedded-resource registry, `line_splitter`) |
-| `src/core/platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, WinINet/WinHTTP, dialogs, clipboard, spell check, child processes |
-| `src/core/platform_win_audio.cpp` | XAudio2 backend, isolated from the rest |
+| `src/core/platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, async WinHTTP, dialogs, clipboard, spell check, child processes |
+| `src/core/platform_audio.h` / `.cpp` | The mixer behind `sound_buffer` and `audio_stream`, and the thread that plays it through libdesktop-os's endpoint; no OS header |
 | `src/ui/ui.h` | libdesktop-ui umbrella header for the core UI building blocks |
 | `src/ui/theme.h` / `.cpp` | The `pf::ui::colors` table, the `theme` metrics, the style palette and the heading fonts |
 | `src/ui/text_types.h` | `text_location`, `text_selection`, `text_style`, `text_block`, `highlight_fn` (libdesktop-text) |
@@ -137,6 +142,11 @@ Layout and hit testing are testable without a window, because
 | `src/render/shaders/`, `src/render/res/` | The Direct3D shaders, compiled with fxc at build time, and the resource script an application's own includes, with its cursors and shadow |
 | `cmake/render.cmake` | The libdesktop-render target, its shaders and `libdesktop_render_resources()` |
 | `tests/render_tests.cpp`, `render_win_tests.cpp`, `render_tests.rc` | The libdesktop-render suite (CTest label `libdesktop-render`), on Windows and Linux |
+| `include/libdesktop/os.h` | libdesktop-os: the services both stacks share, reached as `#include "libdesktop/os.h"` by their backends alone |
+| `src/os/os_win.cpp` | Its Windows backend: the WinINet and WinHTTP web client, clipboard text, known folders |
+| `src/os/os_win_audio.cpp` | Its WASAPI audio endpoint, the playback devices and the Pro Audio thread class |
+| `tests/os_tests.cpp` | The libdesktop-os suite (CTest label `libdesktop-os`) |
+| `tests/loopback_http.h` / `.cpp` | A scripted HTTP server on 127.0.0.1, so the web clients are tested offline |
 
 ## Usage
 
@@ -299,7 +309,7 @@ uses the CMake and Ninja that ship with it.
 
 ```powershell
 .\dd.ps1 build        # both configurations
-.\dd.ps1 test         # build and run the libdesktop, libdesktop-ui, libdesktop-text, libdesktop-system and libdesktop-render suites
+.\dd.ps1 test         # build and run the libdesktop, libdesktop-ui, libdesktop-text, libdesktop-system, libdesktop-render and libdesktop-os suites
 ```
 
 `dd.ps1` locates Visual Studio, enters the MSVC environment, and falls back to
@@ -317,10 +327,10 @@ ctest --test-dir build/linux
 The suite in `tests/` is a console program covering the parts that can be
 checked without a window: text conversion, paths, geometry, embedded resources,
 line splitting, argument quoting, path containment, instance locks, per-user
-storage paths, headless pool/executor concurrency and teardown, and audio at zero volume
-(XAudio2 needs no window) — both a sample buffer and the stream queue that apps
-pace themselves against. It skips the audio cases when the machine has no
-output device.
+storage paths, headless pool/executor concurrency and teardown, the audio mixer
+sample by sample with no device, and audio at zero volume through the device —
+both a sample buffer and the stream queue that apps pace themselves against. It
+skips the device cases when the machine has no output device.
 
 ## Known gaps
 

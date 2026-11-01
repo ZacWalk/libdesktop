@@ -3,13 +3,19 @@
 // resources, and the handful of backend helpers with deterministic answers.
 
 #include "platform.h"
+#include "platform_audio.h"
+#include "loopback_http.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <format>
 #include <future>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -438,6 +444,381 @@ namespace
 		return wav;
 	}
 
+	// Any WAV the reader is asked about: a format, its data, and the chunks around them.
+	struct wav_spec
+	{
+		uint16_t tag = 1; // PCM
+		uint16_t channels = 1;
+		uint32_t rate = 11025;
+		uint16_t bits = 8;
+		bool extensible = false;
+		uint16_t sub_tag = 1; // the extensible sub-format's tag
+		bool bad_sub_format = false;
+		bool odd_chunk_first = false; // a padded three-byte chunk before the others
+		bool data_first = false;
+	};
+
+	std::vector<uint8_t> build_wav(const wav_spec& spec, const std::vector<uint8_t>& data)
+	{
+		const auto put16 = [](std::vector<uint8_t>& out, const uint32_t v)
+		{
+			out.push_back(static_cast<uint8_t>(v));
+			out.push_back(static_cast<uint8_t>(v >> 8));
+		};
+		const auto put32 = [&](std::vector<uint8_t>& out, const uint32_t v)
+		{
+			put16(out, v & 0xFFFF);
+			put16(out, v >> 16);
+		};
+		const auto tag = [](std::vector<uint8_t>& out, const char* s)
+		{
+			for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(s[i]));
+		};
+
+		std::vector<uint8_t> body;
+		const auto add_chunk = [&](const char* id, const std::vector<uint8_t>& bytes)
+		{
+			tag(body, id);
+			put32(body, static_cast<uint32_t>(bytes.size()));
+			body.insert(body.end(), bytes.begin(), bytes.end());
+			if (bytes.size() & 1) body.push_back(0);
+		};
+
+		const auto align = static_cast<uint32_t>(spec.channels * spec.bits / 8);
+		std::vector<uint8_t> fmt;
+		put16(fmt, spec.extensible ? 0xFFFE : spec.tag);
+		put16(fmt, spec.channels);
+		put32(fmt, spec.rate);
+		put32(fmt, spec.rate * align);
+		put16(fmt, align);
+		put16(fmt, spec.bits);
+
+		if (spec.extensible)
+		{
+			put16(fmt, 22); // cbSize
+			put16(fmt, spec.bits); // valid bits
+			put32(fmt, spec.channels == 1 ? 0x4 : 0x3); // front centre, or front left and right
+			put32(fmt, spec.sub_tag); // the GUID's first field is the tag it stands for
+			put16(fmt, 0x0000);
+			put16(fmt, 0x0010);
+			const uint8_t rest[] = {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, spec.bad_sub_format ? uint8_t{0x72} : uint8_t{0x71}};
+			fmt.insert(fmt.end(), std::begin(rest), std::end(rest));
+		}
+
+		if (spec.odd_chunk_first) add_chunk("LIST", {1, 2, 3});
+
+		if (spec.data_first)
+		{
+			add_chunk("data", data);
+			add_chunk("fmt ", fmt);
+		}
+		else
+		{
+			add_chunk("fmt ", fmt);
+			add_chunk("data", data);
+		}
+
+		std::vector<uint8_t> wav;
+		tag(wav, "RIFF");
+		put32(wav, static_cast<uint32_t>(4 + body.size()));
+		tag(wav, "WAVE");
+		wav.insert(wav.end(), body.begin(), body.end());
+		return wav;
+	}
+
+	std::vector<uint8_t> float_bytes(const float value)
+	{
+		std::vector<uint8_t> bytes(sizeof(value));
+		std::memcpy(bytes.data(), &value, sizeof(value));
+		return bytes;
+	}
+
+	bool near_sample(const float actual, const float expected)
+	{
+		return std::fabs(actual - expected) < 1e-5f;
+	}
+
+	// One render of the mix as float frames, as an endpoint of that many channels at that rate takes it.
+	std::vector<float> render_floats(pf::audio::mixer& mixer, const uint32_t frames, const uint32_t channels,
+	                                 const uint32_t rate)
+	{
+		const pf::audio::output_format format{rate, channels, pf::audio::sample_format::float32};
+		std::vector<uint8_t> bytes(static_cast<size_t>(frames) * format.frame_bytes());
+		mixer.render(bytes, format);
+		std::vector<float> result(static_cast<size_t>(frames) * channels);
+		std::memcpy(result.data(), bytes.data(), bytes.size());
+		return result;
+	}
+
+	bool all_silent(const std::vector<float>& frames)
+	{
+		return std::ranges::all_of(frames, [](const float x) { return x == 0.0f; });
+	}
+
+	// What a sound may be written in, and what is refused.
+	void test_wav_reader()
+	{
+		using pf::audio::read_wav;
+
+		// 8-bit unsigned mono: the games' samples.
+		const auto ramp = read_wav(make_wav(11025, 300));
+		CHECK(ramp.has_value());
+		if (ramp)
+		{
+			CHECK_EQ(ramp->sample_rate, 11025u);
+			CHECK_EQ(ramp->channels, 1u);
+			CHECK_EQ(ramp->block_align, 1u);
+			CHECK_EQ(ramp->frames(), 300u);
+			CHECK(near_sample(ramp->samples[0], -1.0f));
+			CHECK(near_sample(ramp->samples[128], 0.0f));
+			CHECK(near_sample(ramp->samples[255], 127.0f / 128.0f));
+		}
+
+		auto sound = read_wav(build_wav({.channels = 2, .bits = 16}, {0x00, 0x40, 0x00, 0xC0}));
+		CHECK(sound.has_value());
+		if (sound)
+		{
+			CHECK_EQ(sound->block_align, 4u);
+			CHECK_EQ(sound->frames(), 1u);
+			CHECK(near_sample(sound->samples[0], 0.5f));
+			CHECK(near_sample(sound->samples[1], -0.5f));
+		}
+
+		sound = read_wav(build_wav({.bits = 24}, {0x00, 0x00, 0x40}));
+		CHECK(sound && near_sample(sound->samples[0], 0.5f));
+		sound = read_wav(build_wav({.bits = 32}, {0x00, 0x00, 0x00, 0xC0}));
+		CHECK(sound && near_sample(sound->samples[0], -0.5f));
+		sound = read_wav(build_wav({.tag = 3, .bits = 32}, float_bytes(0.25f)));
+		CHECK(sound && near_sample(sound->samples[0], 0.25f));
+		sound = read_wav(build_wav({.bits = 32, .extensible = true, .sub_tag = 3}, float_bytes(0.25f)));
+		CHECK(sound && near_sample(sound->samples[0], 0.25f));
+		sound = read_wav(build_wav({.bits = 16, .extensible = true}, {0x00, 0x40}));
+		CHECK(sound && near_sample(sound->samples[0], 0.5f));
+
+		// The chunks in another order, and a padded odd-length chunk before them.
+		CHECK(read_wav(build_wav({.data_first = true}, {1, 2, 3})).has_value());
+		CHECK(read_wav(build_wav({.odd_chunk_first = true}, {1, 2, 3})).has_value());
+
+		// Refused: a sub-format that is neither PCM nor float, a compressed format, more than two channels,
+		// no whole frame, a file cut short, and a file that is not RIFF/WAVE.
+		CHECK(!read_wav(build_wav({.bits = 32, .extensible = true, .sub_tag = 3, .bad_sub_format = true},
+		                          float_bytes(0.25f))));
+		CHECK(!read_wav(build_wav({.tag = 2, .bits = 4}, {1, 2, 3, 4})));
+		CHECK(!read_wav(build_wav({.channels = 3, .bits = 16}, std::vector<uint8_t>(6))));
+		CHECK(!read_wav(build_wav({.bits = 16}, {1})));
+		CHECK(!read_wav(build_wav({}, {})));
+		const auto whole = make_wav(11025, 8);
+		CHECK(!read_wav(std::span(whole).first(20)));
+		auto not_wave = whole;
+		not_wave[8] = 'X';
+		CHECK(!read_wav(not_wave));
+	}
+
+	// Sounds through a mixer with no device behind it, so every sample can be checked.
+	void test_mixing_sounds()
+	{
+		const auto mixer = std::make_shared<pf::audio::mixer>();
+		CHECK(pf::audio::create_sound_buffer(mixer, {}) == nullptr);
+
+		// At the endpoint's own rate a sound plays its samples exactly, to both sides at full scale.
+		const auto wav = make_wav(48000, 16);
+		const auto source = *pf::audio::read_wav(wav);
+		const auto sound = pf::audio::create_sound_buffer(mixer, wav);
+		CHECK(sound != nullptr);
+		if (!sound) return;
+
+		CHECK(all_silent(render_floats(*mixer, 4, 2, 48000)));
+
+		sound->play(false);
+		auto out = render_floats(*mixer, 20, 2, 48000);
+		for (size_t i = 0; i < 16; ++i)
+		{
+			CHECK(near_sample(out[2 * i], source.samples[i]));
+			CHECK(near_sample(out[2 * i + 1], source.samples[i]));
+		}
+		CHECK(all_silent({out.begin() + 32, out.end()}));
+		CHECK_EQ(sound->play_position().value_or(1), 0u); // ended, and back where it began
+
+		// Panned hard left, then right of centre, which halves the left side; a mono endpoint hears no pan.
+		sound->set_volume(0.5f);
+		sound->set_pan(-1.0f);
+		sound->play(false);
+		out = render_floats(*mixer, 1, 2, 48000);
+		CHECK(near_sample(out[0], source.samples[0] * 0.5f));
+		CHECK(near_sample(out[1], 0.0f));
+		sound->set_pan(0.5f);
+		out = render_floats(*mixer, 1, 2, 48000);
+		CHECK(near_sample(out[0], source.samples[1] * 0.25f));
+		CHECK(near_sample(out[1], source.samples[1] * 0.5f));
+		out = render_floats(*mixer, 1, 1, 48000);
+		CHECK(near_sample(out[0], source.samples[2] * 0.5f));
+		sound->stop();
+
+		// At a quarter of the output rate each frame spans four, joined by straight lines.
+		const auto slow_wav = make_wav(12000, 8);
+		const auto slow_source = *pf::audio::read_wav(slow_wav);
+		const auto slow = pf::audio::create_sound_buffer(mixer, slow_wav);
+		slow->play(false);
+		out = render_floats(*mixer, 8, 1, 48000);
+		const auto s0 = slow_source.samples[0];
+		const auto s1 = slow_source.samples[1];
+		CHECK(near_sample(out[0], s0));
+		CHECK(near_sample(out[1], s0 + (s1 - s0) * 0.25f));
+		CHECK(near_sample(out[2], s0 + (s1 - s0) * 0.5f));
+		CHECK(near_sample(out[4], s1));
+		CHECK_EQ(slow->play_position().value_or(0), 2u);
+		slow->stop();
+
+		// The frequency is the rate the sound plays at, up to XAudio2's ratio of eight.
+		const auto pitched = pf::audio::create_sound_buffer(mixer, make_wav(11025, 11025));
+		pitched->set_volume(0.0f);
+		pitched->set_frequency(22050);
+		pitched->play(true);
+		render_floats(*mixer, 4410, 2, 44100);
+		CHECK_EQ(pitched->play_position().value_or(0), 2205u);
+		pitched->set_frequency(11025 * 20);
+		render_floats(*mixer, 100, 2, 44100);
+		CHECK_EQ(pitched->play_position().value_or(0), 2405u);
+		pitched->stop();
+
+		// Playing a running sound carries on; a seek moves it; stopped, the seek is where it next begins.
+		pitched->set_frequency(11025);
+		pitched->play(true);
+		render_floats(*mixer, 441, 2, 44100);
+		CHECK_EQ(pitched->play_position().value_or(0), 110u);
+		pitched->play(true);
+		CHECK_EQ(pitched->play_position().value_or(0), 110u);
+		pitched->set_play_position(5000);
+		CHECK_EQ(pitched->play_position().value_or(0), 5000u);
+		render_floats(*mixer, 4, 2, 44100);
+		CHECK_EQ(pitched->play_position().value_or(0), 5001u);
+		pitched->stop();
+		CHECK_EQ(pitched->play_position().value_or(0), 5000u);
+
+		// A loop wraps without a seam, started part-way through as well.
+		const auto loop_wav = make_wav(48000, 100);
+		const auto loop_source = *pf::audio::read_wav(loop_wav);
+		const auto loop = pf::audio::create_sound_buffer(mixer, loop_wav);
+		loop->set_play_position(60);
+		loop->play(true);
+		out = render_floats(*mixer, 50, 1, 48000);
+		CHECK(near_sample(out[39], loop_source.samples[99]));
+		CHECK(near_sample(out[40], loop_source.samples[0]));
+		CHECK_EQ(loop->play_position().value_or(0), 10u);
+		loop->stop();
+
+		// A stereo sound keeps its sides whatever the pan, and a mono endpoint hears both.
+		const auto stereo = pf::audio::create_sound_buffer(
+			mixer, build_wav({.channels = 2, .rate = 48000, .bits = 16}, {0x00, 0x40, 0x00, 0xE0}));
+		stereo->set_pan(1.0f);
+		stereo->play(true);
+		out = render_floats(*mixer, 1, 2, 48000);
+		CHECK(near_sample(out[0], 0.5f));
+		CHECK(near_sample(out[1], -0.25f));
+		out = render_floats(*mixer, 1, 1, 48000);
+		CHECK(near_sample(out[0], 0.125f));
+		stereo->stop();
+	}
+
+	// A stream plays its blocks in order at its own rate, a frame behind; a block counts as queued until
+	// its last frame has been taken, so the queue drains at exactly the stream's rate.
+	void test_mixing_streams()
+	{
+		const auto mixer = std::make_shared<pf::audio::mixer>();
+		CHECK(pf::audio::create_audio_stream(mixer, 0, 1, 4) == nullptr);
+		CHECK(pf::audio::create_audio_stream(mixer, 48000, 0, 4) == nullptr);
+		CHECK(pf::audio::create_audio_stream(mixer, 48000, 3, 4) == nullptr);
+		CHECK(pf::audio::create_audio_stream(mixer, 48000, 1, 0) == nullptr);
+
+		const auto stream = pf::audio::create_audio_stream(mixer, 48000, 1, 2);
+		CHECK(stream != nullptr);
+		if (!stream) return;
+
+		const std::vector<int16_t> block = {8192, 16384, -8192};
+		CHECK(!stream->write({}));
+		CHECK(stream->write(block));
+		CHECK(stream->write(block));
+		CHECK(!stream->can_write());
+		CHECK(!stream->write(block));
+		CHECK_EQ(stream->queued_blocks(), 2);
+
+		auto out = render_floats(*mixer, 4, 2, 48000);
+		CHECK(near_sample(out[0], 0.0f));
+		CHECK(near_sample(out[2], 0.25f));
+		CHECK(near_sample(out[3], 0.25f));
+		CHECK(near_sample(out[4], 0.5f));
+		CHECK(near_sample(out[6], -0.25f));
+		CHECK_EQ(stream->queued_blocks(), 1);
+		CHECK(stream->can_write());
+
+		// Stopped, nothing is queued or heard, and the next write starts from silence.
+		stream->stop();
+		CHECK_EQ(stream->queued_blocks(), 0);
+		CHECK(all_silent(render_floats(*mixer, 4, 2, 48000)));
+		CHECK(stream->write(block));
+		CHECK_EQ(stream->queued_blocks(), 1);
+
+		// Starved, it falls silent; written again, it plays on.
+		render_floats(*mixer, 8, 1, 48000);
+		CHECK_EQ(stream->queued_blocks(), 0);
+		CHECK(all_silent(render_floats(*mixer, 4, 1, 48000)));
+		CHECK(stream->write(block));
+		out = render_floats(*mixer, 2, 1, 48000);
+		CHECK(near_sample(out[1], 0.25f));
+		stream->stop();
+
+		// A block that ends part-way through a frame is refused whole, as XAudio2 refused it.
+		const auto stereo = pf::audio::create_audio_stream(mixer, 48000, 2, 4);
+		CHECK(!stereo->write(std::vector<int16_t>(3, 0)));
+		CHECK_EQ(stereo->queued_blocks(), 0);
+
+		// dui's pace: 44.1 kHz into a 48 kHz endpoint takes 44,100 frames a second.
+		const auto paced = pf::audio::create_audio_stream(mixer, 44100, 1, 45);
+		const std::vector<int16_t> thousand(1000, 0);
+		for (int i = 0; i < 45; ++i) CHECK(paced->write(thousand));
+		render_floats(*mixer, 48000, 2, 48000);
+		CHECK_EQ(paced->queued_blocks(), 1);
+	}
+
+	// The mix in each endpoint format: clipped, and the stereo mix in the front pair of a surround endpoint.
+	void test_mixer_output()
+	{
+		const auto mixer = std::make_shared<pf::audio::mixer>();
+		const auto sound = pf::audio::create_sound_buffer(
+			mixer, build_wav({.channels = 2, .rate = 48000, .bits = 16}, {0x00, 0x40, 0x00, 0xE0}));
+		CHECK(sound != nullptr);
+		if (!sound) return;
+		sound->play(true);
+
+		const pf::audio::output_format int16_format{48000, 2, pf::audio::sample_format::int16};
+		std::vector<uint8_t> bytes(int16_format.frame_bytes());
+		mixer->render(bytes, int16_format);
+		int16_t s16[2];
+		std::memcpy(s16, bytes.data(), sizeof(s16));
+		CHECK(std::abs(s16[0] - 16384) <= 1);
+		CHECK(std::abs(s16[1] + 8192) <= 1);
+
+		sound->set_volume(4.0f);
+		const pf::audio::output_format int32_format{48000, 2, pf::audio::sample_format::int32};
+		bytes.assign(int32_format.frame_bytes(), 0);
+		mixer->render(bytes, int32_format);
+		int32_t s32[2];
+		std::memcpy(s32, bytes.data(), sizeof(s32));
+		CHECK_EQ(s32[0], 2147483647);
+		CHECK_EQ(s32[1], -2147483647);
+
+		sound->set_volume(1.0f);
+		const pf::audio::output_format surround{48000, 6, pf::audio::sample_format::float32};
+		bytes.assign(surround.frame_bytes(), 0xFF);
+		mixer->render(bytes, surround);
+		float f[6];
+		std::memcpy(f, bytes.data(), sizeof(f));
+		CHECK(near_sample(f[0], 0.5f));
+		CHECK(near_sample(f[1], -0.25f));
+		for (auto c = 2; c < 6; ++c) CHECK(f[c] == 0.0f);
+		sound->stop();
+	}
+
 	// The queue is the app's clock, so what matters is that it fills, refuses
 	// an over-write, and drains again on its own.
 	void test_audio_stream()
@@ -469,7 +850,184 @@ namespace
 		CHECK_EQ(stream->queued_blocks(), 0);
 	}
 
-	// XAudio2 needs no window, so playback is testable headlessly. Everything
+	// Source frames a second a looping buffer plays: two readings of its cursor around a wait timed on the
+	// steady clock, not assumed from the sleep. The sample must outlast the wait at the rate measured.
+	double measured_rate(const pf::sound_buffer_ptr& sound, const uint32_t frames, const int wait_ms)
+	{
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto p0 = sound->play_position().value_or(0);
+		pf::platform_sleep(wait_ms);
+		const auto p1 = sound->play_position().value_or(0);
+		const auto t1 = std::chrono::steady_clock::now();
+		const auto advanced = (p1 + frames - p0) % frames;
+		return advanced / std::chrono::duration<double>(t1 - t0).count();
+	}
+
+	bool near(const double measured, const double expected, const double tolerance)
+	{
+		return measured > expected * (1.0 - tolerance) && measured < expected * (1.0 + tolerance);
+	}
+
+	// What the games rely on, recorded from XAudio2 before the mixer replaced it: the rate a pitch plays
+	// at, a re-triggered sound carrying on, a seek, a one-shot ending, a loop wrapping, and the engine's
+	// hand-over of its cursor from one pitch's sample to the next.
+	void test_sound_buffer_behaviour()
+	{
+		constexpr uint32_t long_frames = 33075; // three seconds at 11,025 Hz
+		const auto wav = make_wav(11025, long_frames);
+		const auto sound = pf::create_sound_buffer(wav);
+		CHECK(sound != nullptr);
+		if (!sound) return;
+		sound->set_volume(0.0f);
+
+		sound->play(true);
+		pf::platform_sleep(50);
+		CHECK(near(measured_rate(sound, long_frames, 400), 11025, 0.15));
+
+		sound->set_frequency(22050);
+		CHECK(near(measured_rate(sound, long_frames, 400), 22050, 0.15));
+
+		sound->set_frequency(28604);
+		CHECK(near(measured_rate(sound, long_frames, 400), 28604, 0.15));
+
+		// Playing a sound that is running carries on rather than starting it over.
+		sound->set_frequency(11025);
+		const auto before = sound->play_position().value_or(0);
+		sound->play(true);
+		pf::platform_sleep(60);
+		CHECK(sound->play_position().value_or(0) > before);
+
+		// Seeking a running sound plays on from there; stopped, it is where the next play() begins.
+		sound->set_play_position(8000);
+		const auto sought = sound->play_position().value_or(0);
+		CHECK(sought >= 8000u && sought < 9500u);
+		sound->stop();
+		CHECK_EQ(sound->play_position().value_or(0), 8000u);
+
+		// A one-shot sound ends on its own, its cursor back where it began, and plays again from there.
+		const auto short_wav = make_wav(11025, 1103);
+		const auto blip = pf::create_sound_buffer(short_wav);
+		CHECK(blip != nullptr);
+		if (!blip) return;
+		blip->set_volume(0.0f);
+		blip->play(false);
+		pf::platform_sleep(400);
+		CHECK_EQ(blip->play_position().value_or(1), 0u);
+		blip->play(false);
+		pf::platform_sleep(50);
+		const auto again = blip->play_position().value_or(0);
+		CHECK(again > 0u && again < 1103u);
+		blip->stop();
+
+		// A looping sound wraps and keeps going.
+		blip->play(true);
+		pf::platform_sleep(350);
+		const auto lap = blip->play_position().value_or(1103);
+		CHECK(lap < 1103u);
+		pf::platform_sleep(40);
+		CHECK(blip->play_position().value_or(lap) != lap);
+		blip->stop();
+
+		// The engine's hand-over: the next pitch's sample starts at the last one's cursor and runs on.
+		const auto next = pf::create_sound_buffer(wav);
+		CHECK(next != nullptr);
+		if (!next) return;
+		next->set_volume(0.0f);
+		sound->play(true);
+		pf::platform_sleep(200);
+		const auto cursor = sound->play_position().value_or(0);
+		sound->stop();
+		next->set_play_position(cursor);
+		next->play(true);
+		CHECK(next->play_position().value_or(0) >= cursor);
+		pf::platform_sleep(60);
+		CHECK(next->play_position().value_or(0) > cursor);
+		next->stop();
+	}
+
+	// The queue is dui's clock: a producer that waits for room writes 60 blocks of 735 frames a second at
+	// 44.1 kHz. Counted over two seconds after the queue has filled, between two full queues.
+	void test_audio_stream_pace()
+	{
+		const auto stream = pf::create_audio_stream(44100, 1, 4);
+		CHECK(stream != nullptr);
+		if (!stream) return;
+		stream->set_volume(0.0f);
+
+		const std::vector<int16_t> block(735, 0);
+		const auto pump = [&](const double seconds)
+		{
+			auto written = 0;
+			const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+			while (std::chrono::steady_clock::now() < end)
+			{
+				if (stream->can_write())
+				{
+					if (stream->write(block)) ++written;
+				}
+				else
+				{
+					pf::platform_sleep(1);
+				}
+			}
+			return written;
+		};
+
+		pump(0.5);
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto written = pump(2.0);
+		const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		CHECK(near(written / seconds, 60.0, 0.05));
+
+		// Stopped, the queue is empty and the next write queues one block. XAudio2's stop() left up to the
+		// whole queue to play when the stream started again, though stop() promises to drop it.
+		stream->stop();
+		CHECK_EQ(stream->queued_blocks(), 0);
+		CHECK(stream->write(block));
+		CHECK_EQ(stream->queued_blocks(), 1);
+		stream->stop();
+
+		// A block that ends part-way through a frame is refused.
+		const auto stereo = pf::create_audio_stream(44100, 2, 4);
+		CHECK(stereo != nullptr);
+		if (!stereo) return;
+		stereo->set_volume(0.0f);
+		CHECK(!stereo->write(std::vector<int16_t>(3, 0)));
+		CHECK_EQ(stereo->queued_blocks(), 0);
+	}
+
+	// Held past sound_shutdown, a sound plays on and a stream drains, as both did under XAudio2: what holds
+	// them keeps the device, so a producer pacing itself on the queue is never left waiting. Nothing new
+	// is made once it is shut down, and the device closes with the last of them.
+	void test_held_past_shutdown()
+	{
+		const auto sound = pf::create_sound_buffer(make_wav(11025, 33075));
+		const auto stream = pf::create_audio_stream(44100, 1, 4);
+		CHECK(sound != nullptr);
+		CHECK(stream != nullptr);
+
+		if (!sound || !stream)
+		{
+			pf::sound_shutdown();
+			return;
+		}
+
+		sound->set_volume(0.0f);
+		stream->set_volume(0.0f);
+		sound->play(true);
+		CHECK(stream->write(std::vector<int16_t>(735, 0)));
+
+		pf::sound_shutdown();
+		CHECK(pf::create_sound_buffer(make_wav(11025, 100)) == nullptr);
+		CHECK(pf::create_audio_stream(44100, 1, 4) == nullptr);
+
+		const auto before = sound->play_position().value_or(0);
+		pf::platform_sleep(150);
+		CHECK(sound->play_position().value_or(before) != before);
+		CHECK_EQ(stream->queued_blocks(), 0);
+	}
+
+	// The mixer needs no window, so playback is testable headlessly. Everything
 	// runs at zero volume: a test suite must not make a noise.
 	void test_audio()
 	{
@@ -513,8 +1071,9 @@ namespace
 		}
 
 		test_audio_stream();
-
-		pf::sound_shutdown();
+		test_sound_buffer_behaviour();
+		test_audio_stream_pace();
+		test_held_past_shutdown();
 	}
 
 	void test_backend_helpers()
@@ -645,6 +1204,193 @@ namespace
 		CHECK(!pf::is_path_within(root, {}));
 		CHECK(!pf::is_path_within({}, pf::file_path("c:\\root\\folder\\a.txt")));
 	}
+
+	std::string read_whole_file(const pf::file_path& path)
+	{
+		std::string result;
+		if (const auto f = pf::open_for_read(path))
+		{
+			result.resize(f->size());
+			uint32_t read = 0;
+			if (!result.empty() && !f->read(reinterpret_cast<uint8_t*>(result.data()),
+				static_cast<uint32_t>(result.size()), &read)) read = 0;
+			result.resize(read);
+		}
+		return result;
+	}
+
+	void write_whole_file(const pf::file_path& path, const std::string_view text)
+	{
+		if (const auto f = pf::open_file_for_write(path))
+			f->write(reinterpret_cast<const uint8_t*>(text.data()), static_cast<uint32_t>(text.size()));
+	}
+
+	// The synchronous web client against a scripted loopback server: what each request puts on the
+	// wire, and what each response comes back as, including the ways a response can be cut short.
+	void test_web_client()
+	{
+		loopback::server server;
+		CHECK(server.listening());
+		if (!server.listening()) return;
+
+		constexpr std::string_view boundary = "54B8723DE6044695A68C838E8BF0CB00";
+		server.respond("/hello", {loopback::http_response(200, "OK", "hello world", "Content-Type: text/plain\r\n")});
+		server.respond("/file", {loopback::http_response(200, "OK", "file body")});
+		server.respond("/short", {"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n0123456789"});
+		server.respond("/empty", {"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"});
+		server.respond("/slow", {loopback::http_response(200, "OK", "late"), 3000});
+
+		const auto host = pf::connect_to_host("127.0.0.1", false, server.port(), "libdesktop-tests/1.0");
+		CHECK(host != nullptr);
+		if (!host) return;
+
+		pf::web_request get;
+		get.path = "/hello";
+		auto r = pf::send_request(host, get);
+		CHECK_EQ(r.status_code, 200);
+		CHECK_STR(r.body, "hello world");
+		CHECK_STR(r.content_type, "text/plain");
+		CHECK(r.error == pf::web_response_error::none);
+		CHECK_STR(server.last().request_line, "GET /hello HTTP/1.1");
+		CHECK_STR(loopback::header_value(server.last(), "User-Agent"), "libdesktop-tests/1.0");
+
+		pf::web_request query;
+		query.path = "/query";
+		query.query = {{"a", "1"}, {"b", "x y"}};
+		query.headers = {{"X-Test", "1"}};
+		r = pf::send_request(host, query);
+		CHECK_EQ(r.status_code, 404);
+		CHECK_STR(r.body, "missing");
+		CHECK(r.error == pf::web_response_error::none);
+		CHECK_STR(server.last().request_line, "GET /query?a=1&b=x%20y HTTP/1.1");
+		CHECK_STR(loopback::header_value(server.last(), "X-Test"), "1");
+
+		pf::web_request form;
+		form.verb = pf::web_request_verb::POST;
+		form.path = "/form";
+		form.form_data = {{"name", "value"}};
+		r = pf::send_request(host, form);
+		CHECK_EQ(r.status_code, 404);
+		CHECK_STR(server.last().request_line, "POST /form HTTP/1.1");
+		CHECK_STR(loopback::header_value(server.last(), "Content-Type"),
+		          std::format("multipart/form-data; boundary={}", boundary));
+		CHECK_STR(server.last().body, std::format(
+			"--{0}\r\nContent-Disposition: form-data; name=\"name\"\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n"
+			"\r\nvalue\r\n--{0}--", boundary));
+
+		const auto temp = pf::platform_temp_file_path("ldt");
+		const pf::file_path zip(temp + ".zip");
+		write_whole_file(zip, std::string_view("PK\x03\x04zip", 7));
+		pf::web_request upload;
+		upload.verb = pf::web_request_verb::POST;
+		upload.path = "/upload";
+		upload.form_data = {{"k", "v"}};
+		upload.file_form_data_name = "ff";
+		upload.file_name = "logs.zip";
+		upload.upload_file_path = zip;
+		r = pf::send_request(host, upload);
+		CHECK_EQ(r.status_code, 404);
+		CHECK_STR(server.last().body, std::format(
+			"--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n"
+			"\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; filename=\"logs.zip\"\r\n"
+			"Content-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--", boundary,
+			std::string_view("PK\x03\x04zip", 7)));
+
+		pf::web_request unreadable = upload;
+		unreadable.upload_file_path = pf::file_path(temp + "-missing.zip");
+		const auto requests_before = server.requests().size();
+		r = pf::send_request(host, unreadable);
+		CHECK_EQ(r.status_code, 0);
+		CHECK(r.error == pf::web_response_error::transport);
+		CHECK_EQ(server.requests().size(), requests_before);
+
+		const pf::file_path download(temp + "-download.txt");
+		pf::web_request fetch;
+		fetch.path = "/file";
+		fetch.download_file_path = download;
+		r = pf::send_request(host, fetch);
+		CHECK_EQ(r.status_code, 200);
+		CHECK(r.body.empty());
+		CHECK(r.error == pf::web_response_error::none);
+		CHECK_STR(read_whole_file(download), "file body");
+
+		// A body shorter than its Content-Length is a failed transfer. A download cut short keeps
+		// what arrived; the error says it is incomplete.
+		pf::web_request cut;
+		cut.path = "/short";
+		r = pf::send_request(host, cut);
+		CHECK_EQ(r.status_code, 200);
+		CHECK(r.error == pf::web_response_error::transport);
+		CHECK(r.body.empty());
+
+		const pf::file_path cut_download(temp + "-short.txt");
+		cut.download_file_path = cut_download;
+		r = pf::send_request(host, cut);
+		CHECK_EQ(r.status_code, 200);
+		CHECK(r.error == pf::web_response_error::transport);
+		CHECK_STR(read_whole_file(cut_download), "0123456789");
+
+		pf::web_request empty;
+		empty.path = "/empty";
+		r = pf::send_request(host, empty);
+		CHECK_EQ(r.status_code, 204);
+		CHECK(r.body.empty());
+		CHECK(r.error == pf::web_response_error::none);
+
+		pf::web_request relative;
+		relative.path = "hello";
+		CHECK(pf::send_request(host, relative).error == pf::web_response_error::invalid_request);
+
+		pf::web_request injected;
+		injected.path = "/hello";
+		injected.headers = {{"X-Test", "a\r\nX-Evil: 1"}};
+		CHECK(pf::send_request(host, injected).error == pf::web_response_error::invalid_request);
+
+		pf::web_request limited;
+		limited.path = "/hello";
+		limited.max_response_bytes = 5;
+		r = pf::send_request(host, limited);
+		CHECK(r.error == pf::web_response_error::response_limit);
+		CHECK(r.body.empty());
+		CHECK_STR(loopback::header_value(server.last(), "User-Agent"), "libdesktop-tests/1.0");
+
+		pf::web_request slow;
+		slow.path = "/slow";
+		slow.timeout_ms = 300;
+		const auto started = std::chrono::steady_clock::now();
+		r = pf::send_request(host, slow);
+		const auto waited = std::chrono::steady_clock::now() - started;
+		CHECK(r.error == pf::web_response_error::transport);
+		CHECK(waited < std::chrono::milliseconds(2500));
+
+		// An empty user agent is pf::'s default, which still names Potato.
+		const auto anonymous = pf::connect_to_host("127.0.0.1", false, server.port());
+		CHECK(anonymous != nullptr);
+		if (anonymous)
+		{
+			pf::send_request(anonymous, get);
+			CHECK_STR(loopback::header_value(server.last(), "User-Agent"), "PotatoApp/1.0");
+		}
+
+		int closed_port = 0;
+		{
+			const loopback::server gone;
+			closed_port = gone.port();
+		}
+		const auto nowhere = pf::connect_to_host("127.0.0.1", false, closed_port, "x");
+		CHECK(nowhere != nullptr);
+		if (nowhere)
+		{
+			r = pf::send_request(nowhere, get);
+			CHECK_EQ(r.status_code, 0);
+			CHECK(r.error == pf::web_response_error::transport);
+		}
+
+		pf::platform_delete_file(zip);
+		pf::platform_delete_file(download);
+		pf::platform_delete_file(cut_download);
+		pf::platform_delete_file(pf::file_path(temp));
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -675,11 +1421,16 @@ int main()
 	test_pool_waiting_on_serial_executor();
 	test_geometry();
 	test_embedded_resources();
+	test_wav_reader();
+	test_mixing_sounds();
+	test_mixing_streams();
+	test_mixer_output();
 	test_audio();
 	test_backend_helpers();
 	test_line_splitter();
 	test_child_process_arguments();
 	test_path_containment();
+	test_web_client();
 
 	CHECK(std::atexit([] { g_shutdown_release.set_value(); }) == 0);
 	std::printf("libdesktop tests: %s (%d checks, %d failures)\n",

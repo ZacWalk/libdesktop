@@ -12,6 +12,7 @@
 #include "libdesktop/system.h"
 
 #include "libdesktop/platform_win.h"
+#include "libdesktop/os.h"
 
 #include <psapi.h>
 #include <Shlwapi.h>
@@ -864,9 +865,11 @@ static uint32_t file_attributes(const df::folder_path path)
 	return ::GetFileAttributes(w.c_str());
 }
 
-static void make_extended_path(std::wstring& path)
+// Gives a path of from characters or more the \\?\ form: from MAX_PATH, or sooner for a call that
+// refuses sooner.
+static void make_extended_path(std::wstring& path, const size_t from = MAX_PATH)
 {
-	if (path.size() < MAX_PATH || path.starts_with(L"\\\\?\\")) return;
+	if (path.size() < from || path.starts_with(L"\\\\?\\")) return;
 
 	if (path.starts_with(L"\\\\"))
 	{
@@ -2713,6 +2716,13 @@ bool platform::exists(const df::file_path path)
 		(attrib & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+// SHCreateDirectoryExW refused a relative path; CreateDirectoryW would make one in the current directory.
+static bool is_qualified_path(const std::wstring_view w)
+{
+	const auto slash = [](const wchar_t c) { return c == L'\\' || c == L'/'; };
+	return w.size() > 2 && ((slash(w[0]) && slash(w[1])) || (w[1] == L':' && slash(w[2])));
+}
+
 platform::file_op_result platform::create_folder(const df::folder_path path)
 {
 	file_op_result result;
@@ -2726,7 +2736,7 @@ platform::file_op_result platform::create_folder(const df::folder_path path)
 	const auto parent = path.parent();
 
 	// A server's name, or a single relative segment, is its own parent: there is nothing above it to
-	// create, and asking again would recurse until the stack ran out. SHCreateDirectoryExW refuses it.
+	// create, and asking again would recurse until the stack ran out.
 	if (parent != path && !parent.is_root() && !parent.exists())
 	{
 		auto parent_result = create_folder(parent);
@@ -2737,18 +2747,37 @@ platform::file_op_result platform::create_folder(const df::folder_path path)
 		}
 	}
 
-	const auto w = to_shell_path(path);
-	const auto res = SHCreateDirectoryExW(app_wnd(), w.c_str(), nullptr);
+	// CreateDirectoryW takes the \\?\ form a long path needs, where the shell's SHCreateDirectoryExW
+	// stopped short. It needs it 12 characters before MAX_PATH: without it, a folder must leave room for
+	// an 8.3 name inside, so one of 248 characters or more is refused.
+	const auto shell_path = to_shell_path(path);
 
-	if (res == 0)
+	if (!is_qualified_path(shell_path))
 	{
-		SHChangeNotify(SHCNE_MKDIR, SHCNF_PATH, w.c_str(), nullptr);
+		result.error_message = format_os_error(ERROR_BAD_PATHNAME);
+		return result;
+	}
+
+	auto w = shell_path;
+	make_extended_path(w, MAX_PATH - 12);
+
+	if (CreateDirectoryW(w.c_str(), nullptr))
+	{
+		SHChangeNotify(SHCNE_MKDIR, SHCNF_PATH, shell_path.c_str(), nullptr);
+		result.code = file_op_result_code::OK;
+		return result;
+	}
+
+	const auto error = GetLastError();
+
+	// Made meanwhile by another thread or process is made.
+	if (error == ERROR_ALREADY_EXISTS && path.exists())
+	{
 		result.code = file_op_result_code::OK;
 	}
 	else
 	{
-		result.code = file_op_result_code::FAILED;
-		result.error_message = format_os_error(res);
+		result.error_message = format_os_error(error);
 	}
 
 	return result;
@@ -3633,15 +3662,15 @@ bool platform::set_clipboard(const std::vector<df::file_path>& files, const std:
 	return true;
 }
 
-std::wstring clipboard_unicode_text(const std::string_view text)
+std::string clipboard_safe_text(const std::string_view text)
 {
-	auto result = str::utf8_to_utf16(text);
+	std::string result(text);
 
 	for (auto& c : result)
 	{
-		if (c < 32 && c != L'\t' && c != L'\n' && c != L'\r')
+		if (static_cast<unsigned char>(c) < 32 && c != '\t' && c != '\n' && c != '\r')
 		{
-			c = L'.';
+			c = '.';
 		}
 	}
 
@@ -3650,83 +3679,44 @@ std::wstring clipboard_unicode_text(const std::string_view text)
 
 bool platform::set_clipboard(const std::string_view text)
 {
-	const auto w = clipboard_unicode_text(text);
-	const auto text_size = w.size();
-
-	if (text_size > SIZE_MAX / sizeof(wchar_t) - 1)
+	switch (os::write_clipboard_text(reinterpret_cast<uintptr_t>(app_wnd()), clipboard_safe_text(text)))
 	{
+	case os::clipboard_write::ok:
+		return true;
+	case os::clipboard_write::too_large:
 		df::log(__FUNCTION__, "Text too large for clipboard");
-		return false;
-	}
-
-	auto* const hglbCopy = GlobalAlloc(GMEM_MOVEABLE, (text_size + 1) * sizeof(wchar_t));
-
-	if (!hglbCopy)
-	{
+		break;
+	case os::clipboard_write::alloc_failed:
 		df::log(__FUNCTION__, "GlobalAlloc failed");
-		return false;
-	}
-
-	auto* const text_copy = static_cast<wchar_t*>(GlobalLock(hglbCopy));
-
-	if (!text_copy)
-	{
-		GlobalFree(hglbCopy);
+		break;
+	case os::clipboard_write::lock_failed:
 		df::log(__FUNCTION__, "GlobalLock failed");
-		return false;
-	}
-
-	memcpy(text_copy, w.data(), text_size * sizeof(wchar_t));
-	text_copy[text_size] = static_cast<wchar_t>(0); // null character 
-	GlobalUnlock(hglbCopy);
-
-	if (!OpenClipboard(app_wnd()))
-	{
-		GlobalFree(hglbCopy);
+		break;
+	case os::clipboard_write::open_failed:
 		df::log(__FUNCTION__, "OpenClipboard failed");
-		return false;
-	}
-
-	if (!EmptyClipboard())
-	{
-		CloseClipboard();
-		GlobalFree(hglbCopy);
+		break;
+	case os::clipboard_write::empty_failed:
 		df::log(__FUNCTION__, "EmptyClipboard failed");
-		return false;
-	}
-
-	// The clipboard owns the memory only once it has accepted it; refused, it is still ours.
-	if (!SetClipboardData(CF_UNICODETEXT, hglbCopy))
-	{
-		CloseClipboard();
-		GlobalFree(hglbCopy);
+		break;
+	case os::clipboard_write::set_failed:
 		df::log(__FUNCTION__, "SetClipboardData failed");
-		return false;
+		break;
 	}
 
-	CloseClipboard();
-	return true;
+	return false;
 }
 
 std::optional<std::string> platform::clipboard_text()
 {
-	if (!OpenClipboard(app_wnd()))
+	auto result = os::read_clipboard_text(reinterpret_cast<uintptr_t>(app_wnd()));
+
+	if (!result.opened)
 	{
 		df::log(__FUNCTION__, "OpenClipboard failed");
 		return std::nullopt;
 	}
 
-	std::optional<std::string> result;
-	if (const auto data = GetClipboardData(CF_UNICODETEXT))
-	{
-		if (const auto text = static_cast<const wchar_t*>(GlobalLock(data)))
-		{
-			result = str::utf16_to_utf8(text);
-			GlobalUnlock(data);
-		}
-	}
-	CloseClipboard();
-	return result;
+	return std::move(result.text);
 }
 
 platform::drop_effect platform::perform_drag(const std::any& frame_handle, const std::vector<df::file_path>& files,

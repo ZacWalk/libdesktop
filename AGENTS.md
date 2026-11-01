@@ -5,10 +5,11 @@ libdesktop-core (`dde`, `libdos`, `potato` and `stuntcarracer`), and Diffractor
 builds on libdesktop-system, libdesktop-render and libdesktop-text. It is a library with no
 application of its own.
 
-It ships five static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
+It ships six static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
 (`pf::ui`), `libdesktop-text` (the part of `pf::ui` that is standard C++ alone:
-`ui/text_types.h` and `ui/syntax.h`) and, opt-in, `libdesktop-system` (`df::`,
-`str::` and `platform::`) and `libdesktop-render` (`ui::`);
+`ui/text_types.h` and `ui/syntax.h`), opt-in `libdesktop-system` (`df::`,
+`str::` and `platform::`) and `libdesktop-render` (`ui::`), and `libdesktop-os`
+(`os::`), the services libdesktop-core and libdesktop-system share;
 [README.md](README.md#libdesktop) is the canonical overview of their contents
 and aliases.
 
@@ -22,8 +23,8 @@ libdesktop-ui's ownership boundary is described in
 ## Non-negotiables
 
 1. **`src/core/platform.h` includes no OS headers.** Not `windows.h`, not
-   transitively. The Windows SDK appears only in `src/core/platform_win.cpp` and
-   `src/core/platform_win_audio.cpp`.
+   transitively. The Windows SDK appears only in `src/core/platform_win.cpp`;
+   `src/core/platform_audio.cpp` is standard C++ over libdesktop-os.
 2. **The API must be expressible on another OS.** Nothing Win32-shaped may leak
    into a signature: no `HWND`, no `HRESULT`, no hundredths-of-a-decibel volume,
    no resource IDs. Prefer neutral units — linear gain, normalised pan, Hz,
@@ -58,7 +59,7 @@ Run the repository gate after changes here:
 ```
 
 The gate builds and tests the `libdesktop`, `libdesktop-ui`, `libdesktop-text`,
-`libdesktop-system` and `libdesktop-render` CTest labels, in Debug and Release.
+`libdesktop-system`, `libdesktop-render` and `libdesktop-os` CTest labels, in Debug and Release.
 libdesktop-system, libdesktop-render and libdesktop-text also build on Linux: run
 the commands in the [README](README.md#build-and-test) there too after changing
 any of them. The
@@ -145,6 +146,41 @@ reaching only the applications that set `LIBDESKTOP_RENDER`.
 5. **Tests move with the code.** `tests/render_tests.cpp` and
    `tests/render_win_tests.cpp` use Diffractor's assertions, so a test moves
    between Diffractor's suites and these unchanged.
+
+## libdesktop-os
+
+The OS services libdesktop-core and libdesktop-system share, so each has one
+implementation to maintain and to port: today the web client, clipboard text,
+the known folders and the audio endpoint. `pf::` and `platform::` keep their own
+APIs and wrap it; neither exposes it, and no application includes
+`libdesktop/os.h`.
+
+1. **It asks nothing of an application.** No `s_app_name`, no `df::log`, no
+   `app_wnd()`, no locale it expects someone to have set, and no COM but what
+   `os::audio_thread` joins. A service takes what it needs - an owner window, a
+   user agent, a path - and reports failure as a value; the wrapper adds the
+   stack's policy: libdesktop-system's names, log messages and text clean-up,
+   pf::'s defaults. This is why it is a library of its own: libdesktop-system's
+   translation units carry its application contract, down to the write probe its
+   log makes at startup, and every pf:: app would inherit it.
+2. **`os.h` includes no OS header**; `src/os/os_win.cpp` and `os_win_audio.cpp`
+   are its Windows backend. Text and paths are UTF-8.
+3. **A merge is held to both stacks' outcomes.** Before a service moves here, the
+   pf:: and platform:: suites record what each implementation does - whole, cut
+   short and failing - and the merged service keeps both, or the difference is
+   deliberate and stated in the test that checks it.
+4. **Tests.** `tests/os_tests.cpp` tests the service itself, under the CTest label
+   `libdesktop-os`; `tests/loopback_http.h` serves the web client offline to all
+   three suites.
+5. **Audio is one engine, and it is Diffractor's.** `platform::audio_output` is
+   the endpoint itself, which Diffractor's player drives directly: its clock
+   times the video, `reset()` empties the ring, `write_silence()` keeps a clip's
+   tail from replaying. pf::'s sounds and streams are libdesktop-core's mixer
+   (`src/core/platform_audio.cpp`) playing through it on a thread of its own.
+   So the endpoint is held to Diffractor's suite and gate, and the mixer adapts
+   to the endpoint, never the reverse. A new system needs the endpoint alone.
+
+Which services remain to merge, and why each waits, is in [docs/todo.md](docs/todo.md).
 
 ## Adding to libdesktop-ui
 

@@ -66,6 +66,9 @@ if(WIN32)
 
     target_compile_definitions(libdesktop-system PUBLIC UNICODE _UNICODE)
 
+    # The services platform:: shares with libdesktop-core (include/libdesktop/os.h).
+    target_link_libraries(libdesktop-system PRIVATE libdesktop::os)
+
     # A Store package is updated by the Store, so the application-owned update and install path is
     # left out of the API as well as the backend.
     option(LIBDESKTOP_STORE_PACKAGE "Build libdesktop-system for a Store package (defines WINSTORE)" OFF)

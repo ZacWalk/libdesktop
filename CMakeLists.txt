@@ -2,6 +2,42 @@ cmake_minimum_required(VERSION 3.21)
 
 project(libdesktop LANGUAGES CXX VERSION 0.1.0)
 
+# --- libdesktop-os: the OS services libdesktop-core and libdesktop-system share ---
+# A service here names no application and writes no log, so both stacks call it: libdesktop-core's
+# backend for pf::, libdesktop-system's Windows backend for platform:: (docs/system.md). Its backend
+# is Windows; libdesktop-system's Linux backend still carries its own implementations.
+if(WIN32)
+    add_library(libdesktop-os STATIC
+        include/libdesktop/os.h
+        src/os/os_win.cpp
+        src/os/os_win_audio.cpp
+        src/os/os_win_text.h
+    )
+    add_library(libdesktop::os ALIAS libdesktop-os)
+
+    target_compile_features(libdesktop-os PUBLIC cxx_std_20)
+    target_include_directories(libdesktop-os PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_compile_definitions(libdesktop-os PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(libdesktop-os PRIVATE /W3)
+    endif()
+    target_link_libraries(libdesktop-os PUBLIC wininet winhttp user32 shell32 ole32 avrt)
+
+    if(PROJECT_IS_TOP_LEVEL)
+        enable_testing()
+
+        add_executable(libdesktop_os_tests tests/os_tests.cpp tests/check.h tests/loopback_http.cpp
+            tests/loopback_http.h)
+        target_link_libraries(libdesktop_os_tests PRIVATE libdesktop::os)
+        if(MSVC)
+            target_compile_options(libdesktop_os_tests PRIVATE /W3)
+        endif()
+
+        add_test(NAME libdesktop-os COMMAND libdesktop_os_tests)
+        set_tests_properties(libdesktop-os PROPERTIES LABELS libdesktop-os)
+    endif()
+endif()
+
 # --- libdesktop-system: the foundation and OS services, for Windows and Linux --
 # Opt-in for a consumer, so an application that links libdesktop-core alone
 # neither fetches nor builds it. Built directly, it is on.
@@ -17,7 +53,8 @@ if(LIBDESKTOP_SYSTEM)
         # A plain console program on both platforms: platform_add_app is the Win32 backend's.
         add_executable(libdesktop_system_tests tests/system_tests.cpp tests/system_test.h)
         if(WIN32)
-            target_sources(libdesktop_system_tests PRIVATE tests/system_win_tests.cpp tests/system_tests.manifest)
+            target_sources(libdesktop_system_tests PRIVATE tests/system_win_tests.cpp tests/system_tests.manifest
+                tests/loopback_http.cpp tests/loopback_http.h)
         endif()
         target_link_libraries(libdesktop_system_tests PRIVATE libdesktop::system)
         target_precompile_headers(libdesktop_system_tests PRIVATE
@@ -123,17 +160,22 @@ if(WIN32)
 
     enable_language(RC)
 
-    target_sources(libdesktop-core PRIVATE src/core/platform_win.cpp src/core/platform_win_audio.cpp)
+    target_sources(libdesktop-core PRIVATE src/core/platform_win.cpp src/core/platform_audio.h
+        src/core/platform_audio.cpp)
 
     # WIN32_LEAN_AND_MEAN / NOMINMAX are defined by platform_win.cpp itself;
     # defining them here as well would be a macro redefinition.
     target_compile_definitions(libdesktop-core PUBLIC WIN32 _WINDOWS UNICODE _UNICODE)
 
+    # The services pf:: shares with libdesktop-system, its audio endpoint among them. Private: an
+    # application links it through libdesktop-core and never includes it.
+    target_link_libraries(libdesktop-core PRIVATE libdesktop::os)
+
     # platform_win.cpp still carries #pragma comment(lib, ...) for these; naming
     # them here is what a non-MSVC backend will rely on once the pragmas go.
     target_link_libraries(libdesktop-core PUBLIC
-        wininet shell32 comdlg32 shlwapi windowscodecs winhttp comctl32
-        ole32 oleaut32 user32 gdi32 advapi32 xaudio2
+        shell32 comdlg32 shlwapi windowscodecs winhttp comctl32
+        ole32 oleaut32 user32 gdi32 advapi32
     )
 else()
     message(FATAL_ERROR "libdesktop has a Win32 backend only; add src for this platform first.")
@@ -184,7 +226,7 @@ if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
 
     platform_add_app(libdesktop_tests CONSOLE
-        SOURCES     tests/platform_tests.cpp
+        SOURCES     tests/platform_tests.cpp tests/loopback_http.cpp tests/loopback_http.h
         DESCRIPTION "libdesktop unit tests"
         EMBED       tests/data/sample.css
     )
