@@ -109,6 +109,60 @@ namespace
 		std::filesystem::remove_all(root);
 	}
 
+	// A folder is listed with one read of it rather than one open per entry, and what the listing says
+	// of each entry is what asking for that entry alone answers.
+	void test_enumerate_files()
+	{
+		const auto root = temp_path("listing");
+		std::filesystem::remove_all(root);
+		std::filesystem::create_directories(root / "child");
+		write_file(root / "photo.jpg", "0123456789");
+		write_file(root / "hidden.txt", "x");
+		SetFileAttributesW((root / "hidden.txt").c_str(), FILE_ATTRIBUTE_HIDDEN);
+
+		const auto listing = os::enumerate_files(utf8(root), false);
+		CHECK(listing.success);
+		CHECK_EQ(listing.entries.size(), 2u);
+
+		for (const auto& entry : listing.entries)
+		{
+			const auto alone = os::query_file(utf8(root) + "\\" + entry.name);
+			CHECK(entry.attributes.exists());
+			CHECK(entry.attributes.identity.valid);
+			CHECK(entry.attributes.identity == alone.identity);
+			CHECK_EQ(entry.attributes.directory, alone.directory);
+			CHECK_EQ(entry.attributes.size, alone.size);
+			CHECK_EQ(entry.attributes.modified, alone.modified);
+			CHECK_EQ(entry.can_recurse, entry.name == "child");
+		}
+
+		CHECK_EQ(os::enumerate_files(utf8(root), true).entries.size(), 3u);
+
+		const auto missing = os::enumerate_files(utf8(root / "missing"), false);
+		CHECK(!missing.success);
+		CHECK(missing.error == ERROR_FILE_NOT_FOUND || missing.error == ERROR_PATH_NOT_FOUND);
+
+		SetFileAttributesW((root / "hidden.txt").c_str(), FILE_ATTRIBUTE_NORMAL);
+		std::filesystem::remove_all(root);
+	}
+
+	// What a file system's ID for a file gives an identity. FAT's root, ReFS's 128-bit IDs and a server
+	// reporting no ID cannot be made here, so the rule is checked as a table; a volume root and a folder
+	// on this machine's disk are checked as they are.
+	void test_identity_index()
+	{
+		CHECK(os::identity_index(5, 0, false) == std::optional<uint64_t>{5});
+		CHECK(!os::identity_index(0, 0, false).has_value());
+		CHECK(os::identity_index(0, 0, true) == std::optional<uint64_t>{0});
+		CHECK(!os::identity_index(~uint64_t{0}, 0, true).has_value());
+		CHECK(!os::identity_index(5, 1, false).has_value());
+		CHECK(!os::identity_index(~uint64_t{0}, ~uint64_t{0}, false).has_value());
+
+		const auto temp = std::filesystem::temp_directory_path();
+		CHECK(os::query_file(utf8(temp.root_path())).identity.valid);
+		CHECK(os::query_file(utf8(temp)).identity.valid);
+	}
+
 	// The user's clipboard text is put back afterwards.
 	void test_clipboard_text()
 	{
@@ -461,6 +515,8 @@ int main()
 	test_url_encode();
 	test_known_folders();
 	test_files();
+	test_enumerate_files();
+	test_identity_index();
 	test_clipboard_text();
 	test_web_client();
 	test_describe_wave_format();

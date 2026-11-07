@@ -95,6 +95,13 @@ namespace os
 		bool operator==(const file_identity&) const = default;
 	};
 
+	// The `index` a file system's ID for a file gives an identity, from the ID's low and high 64 bits;
+	// none when it names no one file. All ones is an unknown ID, and so is zero, except where
+	// `zero_is_root`: FAT and exFAT number a file by the directory holding it, and the root is held by
+	// none. An ID wider than 64 bits - ReFS keeps 128-bit IDs - does not fit, and its low half alone can
+	// name two files.
+	std::optional<uint64_t> identity_index(uint64_t low, uint64_t high, bool zero_is_root);
+
 	struct file_attributes
 	{
 		file_presence presence = file_presence::unknown;
@@ -128,6 +135,9 @@ namespace os
 	};
 
 	file_attributes query_file(std::string_view path);
+	// One read of the folder, never one per entry. Each entry carries the identity the listing gives
+	// it - for a file that is not a link, the one query_file answers - or none where the file system
+	// lists no usable one (see identity_index); query_file asks for one.
 	file_enumeration enumerate_files(std::string_view folder, bool show_hidden);
 
 	enum class file_open_mode

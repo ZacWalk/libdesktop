@@ -30,8 +30,10 @@
 #include <atomic>
 #include <charconv>
 #include <climits>
+#include <cstddef>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -141,13 +143,60 @@ namespace
 		return {code, error, std::move(diagnostic)};
 	}
 
+	// FAT and exFAT number a file by the directory holding it, so a volume's root - held by none - is 0.
+	bool numbers_root_zero(const HANDLE handle)
+	{
+		wchar_t file_system[MAX_PATH + 1] = {};
+		if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, nullptr, file_system,
+		                                   MAX_PATH + 1))
+		{
+			return false;
+		}
+
+		for (const auto* const name : {L"FAT", L"FAT12", L"FAT16", L"FAT32", L"exFAT"})
+		{
+			if (_wcsicmp(file_system, name) == 0) return true;
+		}
+
+		return false;
+	}
+
+	uint64_t low_half(const FILE_ID_128& id)
+	{
+		uint64_t result = 0;
+		std::memcpy(&result, id.Identifier, sizeof(result));
+		return result;
+	}
+
+	uint64_t high_half(const FILE_ID_128& id)
+	{
+		uint64_t result = 0;
+		std::memcpy(&result, id.Identifier + sizeof(result), sizeof(result));
+		return result;
+	}
+
+	// The file system's own ID for an open file, when it names one file. The 128-bit ID is asked for where
+	// the file system keeps one, because on ReFS the 64-bit ID the older query returns can name two files.
 	void fill_identity(const HANDLE handle, os::file_attributes& result)
 	{
 		BY_HANDLE_FILE_INFORMATION info = {};
 		if (!GetFileInformationByHandle(handle, &info)) return;
 
+		auto low = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+		uint64_t high = 0;
+
+		FILE_ID_INFO id = {};
+		if (GetFileInformationByHandleEx(handle, FileIdInfo, &id, sizeof(id)))
+		{
+			low = low_half(id.FileId);
+			high = high_half(id.FileId);
+		}
+
+		const auto index = os::identity_index(low, high, low == 0 && high == 0 && numbers_root_zero(handle));
+		if (!index) return;
+
 		result.identity.volume = info.dwVolumeSerialNumber;
-		result.identity.index = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+		result.identity.index = *index;
 		result.identity.valid = true;
 	}
 
@@ -165,6 +214,119 @@ namespace
 		result.created = file_time(created);
 		result.modified = file_time(modified);
 		result.size = (static_cast<uint64_t>(size_high) << 32) | size_low;
+	}
+
+	bool can_recurse(const DWORD attributes)
+	{
+		return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+	}
+
+	FILETIME to_file_time(const LARGE_INTEGER time)
+	{
+		return {time.LowPart, static_cast<DWORD>(time.HighPart)};
+	}
+
+	// What FIND_FIRST_EX_LARGE_FETCH asks of the file system per read, and the largest read every SMB
+	// server accepts.
+	constexpr DWORD directory_read_bytes = 64 * 1024;
+
+	// A listed ID as an identity's index. A listing never holds a volume's root, so zero there is unknown.
+	std::optional<uint64_t> file_index(const LARGE_INTEGER id)
+	{
+		return os::identity_index(static_cast<uint64_t>(id.QuadPart), 0, false);
+	}
+
+	std::optional<uint64_t> file_index(const FILE_ID_128& id)
+	{
+		return os::identity_index(low_half(id), high_half(id), false);
+	}
+
+	// Reads one information class through to its end. Answers false, having listed nothing, when the
+	// first read fails, so the caller can try another.
+	template <typename Info>
+	bool read_listing(const HANDLE folder, const FILE_INFO_BY_HANDLE_CLASS restart_class,
+	                  const FILE_INFO_BY_HANDLE_CLASS next_class, const uint32_t volume, const bool show_hidden,
+	                  os::file_enumeration& result)
+	{
+		// Whole words, so every record's 64-bit fields are aligned as the structures require, and left
+		// unfilled, since every read writes what it returns.
+		const auto buffer = std::make_unique_for_overwrite<uint64_t[]>(directory_read_bytes / sizeof(uint64_t));
+		std::vector<os::file_entry> entries;
+		auto info_class = restart_class;
+
+		for (;;)
+		{
+			if (!GetFileInformationByHandleEx(folder, info_class, buffer.get(), directory_read_bytes))
+			{
+				const auto error = GetLastError();
+				if (error == ERROR_NO_MORE_FILES) break;
+				if (info_class == restart_class) return false;
+
+				// The listing ended on a failure rather than at its end - a share that dropped part way -
+				// so it must not pass for a complete one.
+				result.entries = std::move(entries);
+				result.error = error;
+				return true;
+			}
+
+			info_class = next_class;
+			const auto* record = reinterpret_cast<const std::byte*>(buffer.get());
+
+			for (;;)
+			{
+				const auto& found = *reinterpret_cast<const Info*>(record);
+				const std::wstring_view name(found.FileName, found.FileNameLength / sizeof(wchar_t));
+				const auto attributes = found.FileAttributes;
+
+				if (name != L"." && name != L".." && (show_hidden || (attributes & FILE_ATTRIBUTE_HIDDEN) == 0))
+				{
+					os::file_entry entry;
+					entry.name = narrow(name);
+					fill_attributes(entry.attributes, attributes, to_file_time(found.CreationTime),
+					                to_file_time(found.LastWriteTime), static_cast<DWORD>(found.EndOfFile.HighPart),
+					                found.EndOfFile.LowPart);
+
+					if (const auto index = file_index(found.FileId))
+					{
+						entry.attributes.identity.volume = volume;
+						entry.attributes.identity.index = *index;
+						entry.attributes.identity.valid = true;
+					}
+
+					entry.can_recurse = can_recurse(attributes);
+					entries.emplace_back(std::move(entry));
+				}
+
+				if (found.NextEntryOffset == 0) break;
+				record += found.NextEntryOffset;
+			}
+		}
+
+		result.entries = std::move(entries);
+		result.success = true;
+		return true;
+	}
+
+	// Lists a folder through one open of it, each entry with the identity the file system keeps for it:
+	// the same volume serial number and file index query_file answers for a file that is not a link.
+	// The extended listing leaves out the 8.3 names NTFS otherwise looks up for every entry; file systems
+	// and redirectors without it list the other. Answers false, having listed nothing, when the folder
+	// cannot be read either way, for the listing by name to report why or to list it without identities.
+	bool list_with_identities(const std::wstring& root, const bool show_hidden, os::file_enumeration& result)
+	{
+		const file_handle folder(CreateFileW(root.c_str(), FILE_LIST_DIRECTORY,
+		                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+		                                     OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+		if (!folder.is_valid()) return false;
+
+		DWORD volume = 0;
+		if (!GetVolumeInformationByHandleW(folder.get(), nullptr, 0, &volume, nullptr, nullptr, nullptr, 0))
+			return false;
+
+		return read_listing<FILE_ID_EXTD_DIR_INFO>(folder.get(), FileIdExtdDirectoryRestartInfo,
+		                                           FileIdExtdDirectoryInfo, volume, show_hidden, result) ||
+			read_listing<FILE_ID_BOTH_DIR_INFO>(folder.get(), FileIdBothDirectoryRestartInfo, FileIdBothDirectoryInfo,
+			                                    volume, show_hidden, result);
 	}
 
 	std::wstring dialog_filter(const std::vector<os::file_dialog_filter>& filters)
@@ -624,6 +786,13 @@ std::string os::known_folder_path(const known_folder folder, const bool create, 
 
 // ── Files and file dialogs ─────────────────────────────────────────────────────────────────
 
+std::optional<uint64_t> os::identity_index(const uint64_t low, const uint64_t high, const bool zero_is_root)
+{
+	if (high != 0 || low == ~uint64_t{0}) return std::nullopt;
+	if (low == 0 && !zero_is_root) return std::nullopt;
+	return low;
+}
+
 os::file_attributes os::query_file(const std::string_view path)
 {
 	file_attributes result;
@@ -663,6 +832,11 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 	auto root = native_path(folder);
 	if (root.empty()) root = L".";
 	if (!root.ends_with(L'\\') && !root.ends_with(L'/')) root += L'\\';
+
+	if (list_with_identities(root, show_hidden, result)) return result;
+
+	// A file system or redirector that cannot list identities is listed by name, and its entries carry
+	// none: opening every entry to ask is what made a walk of a large collection take minutes.
 	const auto search = root + L'*';
 
 	WIN32_FIND_DATAW data = {};
@@ -686,12 +860,7 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 		entry.name = narrow(data.cFileName);
 		fill_attributes(entry.attributes, data.dwFileAttributes, data.ftCreationTime, data.ftLastWriteTime,
 		                data.nFileSizeHigh, data.nFileSizeLow);
-		entry.can_recurse = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
-		                    (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
-
-		const auto child = root + data.cFileName;
-		const auto identity = query_file(narrow(child));
-		if (identity.identity.valid) entry.attributes.identity = identity.identity;
+		entry.can_recurse = can_recurse(data.dwFileAttributes);
 		result.entries.emplace_back(std::move(entry));
 	}
 	while (FindNextFileW(handle, &data) != 0);
