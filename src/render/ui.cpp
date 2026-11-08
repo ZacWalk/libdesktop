@@ -32,6 +32,7 @@ float ui::animation_step_factor = 0.333f;
 
 std::function<ui::surface_ptr(df::cspan)> ui::decode_embedded_image;
 std::function<std::unique_ptr<ui::surface_scaler>()> ui::make_surface_scaler;
+df::cspan ui::icon_font_data;
 
 df::ui_counters df::ui_perf;
 df::gpu_counters df::gpu_perf;
@@ -41,34 +42,14 @@ ui::surface_ptr ui::decode_embedded(const df::cspan data)
 	return decode_embedded_image ? decode_embedded_image(data) : nullptr;
 }
 
-ui::color32 ui::style::color::dialog_text = 0;
-ui::color32 ui::style::color::dialog_selected_text = 0;
-ui::color32 ui::style::color::dialog_background = 0;
-ui::color32 ui::style::color::dialog_selected_background = 0;
-ui::color32 ui::style::color::button_background = 0;
-ui::color32 ui::style::color::edit_background = 0;
-ui::color32 ui::style::color::edit_text = 0;
+namespace
+{
+	ui::style::theme installed_theme;
+}
 
-ui::color32 ui::style::color::toolbar_background = 0;
-ui::color32 ui::style::color::bubble_background = 0;
-ui::color32 ui::style::color::sidebar_background = 0;
-ui::color32 ui::style::color::group_background = 0;
-ui::color32 ui::style::color::view_background = 0;
-ui::color32 ui::style::color::view_selected_background = 0;
-ui::color32 ui::style::color::view_text = 0;
+const ui::style::theme& ui::style::colors = installed_theme;
 
-ui::color32 ui::style::color::menu_background = 0;
-ui::color32 ui::style::color::menu_text = 0;
-ui::color32 ui::style::color::menu_shortcut_text = 0;
-
-ui::color32 ui::style::color::important_background = 0;
-ui::color32 ui::style::color::warning_background = 0;
-ui::color32 ui::style::color::success_background = 0;
-ui::color32 ui::style::color::info_background = 0;
-ui::color32 ui::style::color::desktop_background = 0;
-
-
-void ui::style::color::install(const system_colors& system)
+void ui::style::install(const system_colors& system)
 {
 	constexpr color32 red = 0xaa2211;
 	constexpr color32 green = 0x2E8B33;
@@ -76,32 +57,32 @@ void ui::style::color::install(const system_colors& system)
 	constexpr color32 blue = 0x0288D1;
 	constexpr color32 blue2 = 0x117799;
 
-	dialog_text = 0x00eeeeee;
-	dialog_selected_text = 0x00ffffff;
-	dialog_background = 0x00555555;
-	dialog_selected_background = bgr(0x005588EE);
-	button_background = 0x00444444;
-	edit_background = system.edit_background;
-	edit_text = system.edit_text;
+	auto& t = installed_theme;
+	t.dialog_text = 0x00eeeeee;
+	t.dialog_selected_text = 0x00ffffff;
+	t.dialog_background = 0x00555555;
+	t.dialog_selected_background = bgr(0x005588EE);
+	t.button_background = 0x00444444;
+	t.edit_background = system.edit_background;
+	t.edit_text = system.edit_text;
 
-	sidebar_background = 0x00333333;
-	bubble_background = 0x00333333;
-	group_background = 0x00444444;
-	toolbar_background = 0x00666666;
+	t.sidebar_background = 0x00333333;
+	t.bubble_background = 0x00333333;
+	t.group_background = 0x00444444;
+	t.toolbar_background = 0x00666666;
 
-	important_background = bgr(orange);
-	warning_background = bgr(red);
-	success_background = bgr(green);
-	info_background = bgr(blue2);
+	t.important_background = bgr(orange);
+	t.warning_background = bgr(red);
+	t.success_background = bgr(green);
+	t.info_background = bgr(blue2);
 
-	view_background = 0x00333333;
-	view_selected_background = bgr(blue);
-	view_text = 0x00eeeeee;
+	t.view_background = 0x00333333;
+	t.view_selected_background = bgr(blue);
+	t.view_text = 0x00eeeeee;
 
-	menu_background = 0x00444444;
-	menu_text = 0x00eeeeee;
-	menu_shortcut_text = bgr(0x006699EE);
+	t.menu_background = 0x00444444;
+	t.menu_text = 0x00eeeeee;
+	t.menu_shortcut_text = bgr(0x006699EE);
 
-	desktop_background = system.desktop_background;
-
+	t.desktop_background = system.desktop_background;
 }

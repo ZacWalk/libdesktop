@@ -7,8 +7,8 @@
 // This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
 
 // Purpose: The Windows backend's windows and rendering: Direct3D 11 and software draw contexts, GPU
-// adapters and device loss, window placement and the native controls' probes. platform_win.h holds the
-// operating-system services they build on.
+// adapters and device loss, window placement and the snap-layouts caption button. platform_win.h holds
+// the operating-system services they build on.
 
 #pragma once
 
@@ -27,10 +27,8 @@ constexpr int max_vert_count = 4 * 512;
 constexpr int max_index_count = 6 * 512;
 constexpr int max_text_len = 2000;
 
-// Colour every render target is cleared to before the scene is drawn. Both the Direct3D and the
-// software backend must use this, otherwise anything the scene does not explicitly paint shows
-// through as black on one backend and as this grey on the other.
-constexpr float scene_clear_shade = 0.222f;
+// The scene clear colour is ui::scene_clear_shade; the Windows backends spell it unqualified.
+using ui::scene_clear_shade;
 
 bool is_device_loss_error(HRESULT hr);
 
@@ -91,28 +89,6 @@ namespace platform
 	// left to grab. A window deliberately straddling two displays is none of those and is left alone.
 	bool window_needs_refit(recti saved, recti work_area, bool reaches_a_display);
 
-	struct edit_spelling_range
-	{
-		std::string word;
-		int pos_start = 0;
-		int pos_end = 0;
-	};
-
-	std::vector<edit_spelling_range> probe_edit_spelling_ranges(
-		const std::wstring& text, const std::function<bool(std::string_view)>& is_word_valid);
-	// What an edit control with this dictionary underlines in text.
-	std::vector<edit_spelling_range> probe_edit_unknown_words(
-		const std::wstring& text, const ui::spelling_dictionary* dictionary);
-	recti probe_edit_spelling_bounds(HWND hwnd, int pos_start, int pos_end);
-
-	enum class edit_context_menu_route
-	{
-		native_edit_procedure,
-		custom_spelling_menu,
-	};
-
-	edit_context_menu_route probe_edit_context_menu_route(bool spelling_error_under_pointer, bool custom_menu_created);
-
 	// Windows 11 offers snap layouts over a window's maximize button, and only over a button the
 	// window reports as one. Only a resizable frame with a maximize box has one to report: Fullscreen
 	// strips the resizing frame, and dialogs have no maximize box.
@@ -122,23 +98,6 @@ namespace platform
 	// maximized: Windows then opens the flyout at a standard caption's depth, over the middle of the
 	// taller restore button the top bar draws, and the flyout takes the click meant for the button.
 	bool presents_maximize_caption_button(df::os_release release, uint32_t root_style);
-
-	// The hover and press of a toolbar button reported as the maximize caption button. Windows sends
-	// that button non-client mouse messages, which the toolbar control never tracks. Ids are toolbar
-	// command ids; zero is none.
-	struct caption_button_tracker
-	{
-		int hover_id = 0;
-		int pressed_id = 0;
-
-		// Each answers whether what the toolbar draws changed.
-		bool hover(int id);
-		bool press(int id);
-		bool leave();
-
-		// The id to invoke: a release over the button its press began on, otherwise zero.
-		int release(int id);
-	};
 
 	struct caption_button_probe
 	{
@@ -154,7 +113,8 @@ namespace platform
 	};
 
 	// Builds a toolbar holding an ordinary button and a maximize button in a hidden frame, and sends
-	// it the messages Windows sends while the pointer rests on, presses and leaves the maximize button.
+	// the frame the messages Windows sends while the pointer rests on, presses and leaves the maximize
+	// button.
 	caption_button_probe probe_toolbar_caption_button();
 }
 

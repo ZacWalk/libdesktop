@@ -1,4 +1,4 @@
-﻿// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 // 
 // This program is free software; you can redistribute it and / or modify it
@@ -279,7 +279,9 @@ namespace platform
 
 	std::vector<sound_device> list_audio_playback_devices();
 
-#ifdef _DEBUG
+	// What a window shows now, as a surface. Windows answers in Debug builds alone; Linux always, from
+	// the window's own pixels.
+#if defined(_DEBUG) || !defined(_WIN32)
 	ui::surface_ptr capture_window_surface(const std::any& window_handle);
 #endif
 
@@ -329,22 +331,6 @@ namespace platform
 	};
 
 	font_cache_probe probe_font_cache(int base_font_size);
-
-	// Test-only probe of the double-buffered paint applied to native common controls. The buffering
-	// relies on the control drawing itself on demand into a supplied device context. If a control
-	// class ignored that request the control would blit an empty buffer and appear blank, so the
-	// probe reports what each class actually drew into a pre-filled buffer.
-	struct control_paint_probe
-	{
-		int trackbar_painted_pixels = 0; // pixels the trackbar changed from the pre-fill
-		int trackbar_colors = 0; // distinct colors the trackbar left in the buffer
-		int toolbar_painted_pixels = 0;
-		int toolbar_colors = 0;
-		int button_painted_pixels = 0;
-		int button_colors = 0;
-	};
-
-	control_paint_probe probe_buffered_control_paint();
 
 	// Test-only probe of the software backend's scratch buffer. The scratch tile stops being
 	// reallocated once it reaches its final size, so growing the client no longer reallocates

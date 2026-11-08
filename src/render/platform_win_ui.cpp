@@ -1,4 +1,4 @@
-﻿// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 // 
 // This program is free software; you can redistribute it and / or modify it
@@ -7,11 +7,14 @@
 // This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
 
 // Purpose: Windows UI framework. Implements window management, message handling,
-// input processing, native control hosting and painting, clipboard, drag-drop, and
-// system integration. The native controls a host creates - edit, buttons, slider, date picker,
-// toolbar - are in platform_win_controls.cpp, and the window plumbing the two files share is in
-// platform_win_ui_internal.h. The process lifecycle around the window - crash dumps, restart and
-// recovery registration, the graphics crash guard - is in platform_win_process.cpp.
+// input processing, painting, clipboard, drag-drop, and system integration. The drawn controls in a frame
+// host's tree, and the menus, are the ones every platform shares (render_controls.h), fed their input
+// here through each frame's input manager, with the keyboard routed to them ahead of the application's
+// shortcuts as an edit's was. A frame that only holds frames - the application's window around its
+// regions - makes no surface, and answers for the edges, caption and caption button of the regions it
+// holds. The window plumbing is in platform_win_ui_internal.h. The process lifecycle around the window -
+// crash dumps, restart and recovery registration, the graphics crash guard - is in
+// platform_win_process.cpp.
 
 #include "libdesktop/render.h"
 #include "libdesktop/platform_win.h"
@@ -19,9 +22,11 @@
 #include "libdesktop/platform_win_visual.h"
 #include "libdesktop/platform_win_process.h"
 #include "libdesktop/platform_win_ui_internal.h"
+#include "libdesktop/render_controls.h"
 
 #include <dwmapi.h>
 #include <Dbt.h>
+#include <imm.h>
 #include <versionhelpers.h>
 #include <Shellapi.h>
 #include <Shobjidl.h>
@@ -132,7 +137,7 @@ static constexpr auto s_window_rect = "window_rect";
 
 extern std::atomic_bool number_format_invalid;
 
-class control_host_impl;
+class frame_impl;
 class win32_app;
 
 uint32_t ui_wait_for_signal(platform::thread_event& te, uint32_t timeout_ms, const std::function<bool(LPMSG m)>& cb);
@@ -174,15 +179,6 @@ ui::key_state ui::current_key_state()
 	return result;
 }
 
-std::any ui::focus()
-{
-	return GetFocus();
-}
-
-void ui::focus(const std::any& w)
-{
-	SetFocus(std::any_cast<HWND>(w));
-}
 
 
 struct resources_t
@@ -315,17 +311,6 @@ char32_t keys::END = VK_END;
 /////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-static bool is_edit_class(const wchar_t* class_name)
-{
-	return _wcsicmp(class_name, L"Edit") == 0;
-}
-
-static bool is_edit(const HWND hWnd)
-{
-	wchar_t class_name[100];
-	return IsWindow(hWnd) && ::GetClassName(hWnd, class_name, 100) && is_edit_class(class_name);
-}
-
 static void track_mouse_leave(const HWND hWnd)
 {
 	TRACKMOUSEEVENT tme = {0};
@@ -336,95 +321,7 @@ static void track_mouse_leave(const HWND hWnd)
 	TrackMouseEvent(&tme);
 }
 
-static bool wants_return(const HWND hWnd)
-{
-	if (is_edit(hWnd))
-	{
-		return GetWindowLongPtr(hWnd, GWL_STYLE) & ES_WANTRETURN && !(GetKeyState(VK_CONTROL) & 0x8000);
-	}
-
-	return false;
-}
-
-int global_base_font_size = normal_font_size;
-
-static void draw_menu_item(const ui::command_ptr& command, const LPDRAWITEMSTRUCT lpDrawItemStruct,
-                           const owner_context_ptr& ctx)
-{
-	const int padding = df::round(2 * ctx->scale_factor);
-
-	const HDC dc = lpDrawItemStruct->hDC;
-	const win_rect item_bounds = lpDrawItemStruct->rcItem;
-	const auto menu_background = ui::style::color::menu_background;
-
-	if (command == nullptr)
-	{
-		auto sep_bounds = item_bounds;
-		sep_bounds.bottom = sep_bounds.top = (sep_bounds.bottom + sep_bounds.top) / 2;
-
-		const auto cx = df::round(8 * ctx->scale_factor);
-		const auto cy = df::round(1 * ctx->scale_factor);
-
-		fill_solid_rect(dc, item_bounds, menu_background);
-		fill_solid_rect(dc, sep_bounds.inflate(-cx, cy),
-		                ui::average(menu_background, ui::style::color::view_background));
-	}
-	else
-	{
-		const auto is_disabled = lpDrawItemStruct->itemState & (ODS_GRAYED | ODS_DISABLED);
-		const auto is_selected = lpDrawItemStruct->itemState & ODS_SELECTED;
-		const auto is_checked = lpDrawItemStruct->itemState & ODS_CHECKED;
-		const auto menu_color = command->clr;
-		const auto icon = is_checked && command->icon == icon_index{} ? ui::chrome_icons.check : command->icon;
-		const auto icon_cxy = calc_icon_cxy(ctx->scale_factor);
-		const auto button_width = icon_cxy + padding * 2;
-		const auto menu_text_base = menu_color
-			                            ? ui::average(menu_color, ui::style::color::menu_text)
-			                            : ui::style::color::menu_text;
-		const auto text_clr = is_disabled ? ui::average(menu_background, menu_text_base) : menu_text_base;
-		auto bg_clr = menu_background;
-
-		if (is_selected)
-		{
-			bg_clr = ui::lighten(menu_background, 0.22f);
-		}
-
-		fill_solid_rect(dc, item_bounds, bg_clr);
-
-		if (icon != icon_index{})
-		{
-			const recti icon_bounds(item_bounds.left, item_bounds.top, item_bounds.left + button_width,
-			                        item_bounds.bottom);
-
-			if (is_checked)
-			{
-				fill_solid_rect(dc, win_rect(icon_bounds), ui::average(menu_background, menu_text_base));
-			}
-
-			draw_icon(dc, ctx, icon, icon_bounds, text_clr);
-		}
-
-		auto text_bounds = item_bounds;
-		text_bounds.left += button_width + padding;
-		text_bounds.right -= button_width;
-
-		auto* const old_font = SelectObject(dc, ctx->dialog);
-		SetBkMode(dc, TRANSPARENT);
-		SetTextColor(dc, text_clr);
-
-		const auto w = str::utf8_to_utf16(command->text);
-		DrawText(dc, w.data(), static_cast<int>(w.size()), &text_bounds, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-		if (!str::is_empty(command->keyboard_accelerator_text))
-		{
-			SetTextColor(dc, ui::style::color::menu_shortcut_text);
-			const auto w = str::utf8_to_utf16(command->keyboard_accelerator_text);
-			DrawText(dc, w.data(), static_cast<int>(w.size()), &text_bounds, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
-		}
-
-		SelectObject(dc, old_font);
-	}
-}
+int global_base_font_size = ui::default_font_size;
 
 
 static recti get_client_rect(const HWND h)
@@ -461,11 +358,9 @@ recti ui::desktop_bounds(const bool work_area)
 }
 
 
-static void scroll_impl(const HWND hwnd, const int dx, const int dy, const recti bounds,
-                        const bool scroll_child_controls)
+static void scroll_impl(const HWND hwnd, const int dx, const int dy, const recti bounds)
 {
-	auto flags = SW_INVALIDATE | SW_ERASE;
-	if (scroll_child_controls) flags |= SW_SCROLLCHILDREN;
+	constexpr auto flags = SW_INVALIDATE | SW_ERASE;
 
 	if (bounds.is_empty())
 	{
@@ -473,9 +368,8 @@ static void scroll_impl(const HWND hwnd, const int dx, const int dy, const recti
 	}
 	else
 	{
-		win_rect win_bounds(bounds);
-		const auto* const prc_scroll = scroll_child_controls ? nullptr : static_cast<LPCRECT>(win_bounds);
-		ScrollWindowEx(hwnd, dx, dy, prc_scroll, win_bounds, nullptr, nullptr, flags);
+		const win_rect win_bounds(bounds);
+		ScrollWindowEx(hwnd, dx, dy, win_bounds, win_bounds, nullptr, nullptr, flags);
 	}
 }
 
@@ -546,11 +440,6 @@ public:
 		SetFocus(hwnd());
 	}
 
-	sizei measure(int cx) const override
-	{
-		return {};
-	}
-
 	bool is_visible() const override
 	{
 		return IsWindowVisible(hwnd()) != 0;
@@ -605,10 +494,10 @@ public:
 		}
 	}
 
-	void scroll(const int dx, const int dy, const recti bounds, const bool scroll_child_controls) override
+	void scroll(const int dx, const int dy, const recti bounds) override
 	{
 		auto t = static_cast<T*>(this);
-		scroll_impl(t->m_hWnd, dx, dy, bounds, scroll_child_controls);
+		scroll_impl(t->m_hWnd, dx, dy, bounds);
 	}
 
 	void close(bool is_cancel) override
@@ -637,8 +526,6 @@ public:
 
 	void options_changed() override
 	{
-		auto t = static_cast<T*>(this);
-		t->_gdi_ctx->set_window_font(hwnd(), ui::style::font_face::dialog);
 	}
 };
 
@@ -685,11 +572,18 @@ public:
 	void end_hidden_standby() const;
 
 	virtual LRESULT handle_message(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) = 0;
+	// Before a paint reads what it has to draw: anything this invalidates is drawn by that paint.
+	virtual void before_paint() {}
 	virtual void on_render(const draw_context_device_ptr& ctx) = 0;
 	virtual void on_resize(sizei extent, bool is_minimized) = 0;
+	// A container's background, where the frames it holds leave it uncovered.
+	virtual void paint_background(HDC dc, const RECT& r) const = 0;
 
 	factories_ptr _f;
 	draw_context_device_ptr _draw_ctx;
+
+	// Holds frames and draws nothing: its draw context only measures, and is never given a surface.
+	bool _container = false;
 
 	ComPtr<IDXGISwapChain> _swap_chain;
 	mutable bool _device_loss_handled = false;
@@ -705,7 +599,7 @@ public:
 	sizei _extent;
 	// Allocated back buffer size, which is >= _extent and quantised. Only meaningful with a swap chain.
 	sizei _buffer_extent;
-	ui::control_frame_weak_ptr _owner;
+	ui::frame_weak_ptr _owner;
 	owner_context_ptr _gdi_ctx;
 
 	void destroy_frame_base()
@@ -929,7 +823,7 @@ void frame_base::handle_resize(const sizei extent, const bool is_minimised)
 				InvalidateRect(m_hWnd, nullptr, FALSE);
 			}
 
-			if (_draw_ctx)
+			if (_draw_ctx && !_container)
 			{
 				_draw_ctx->resize(_extent);
 			}
@@ -938,12 +832,26 @@ void frame_base::handle_resize(const sizei extent, const bool is_minimised)
 
 	on_resize(extent, is_minimised);
 
+	// A container has nothing to draw but the background its frames leave uncovered; they repaint as
+	// they are moved, and are flushed into the same composition frame.
+	if (_container)
+	{
+		if (extent_changed && !is_minimised && !_extent.is_empty() && m_hWnd != nullptr)
+		{
+			InvalidateRect(m_hWnd, nullptr, FALSE);
+			RedrawWindow(m_hWnd, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW);
+		}
+
+		return;
+	}
+
 	// Resizing leaves the surface holding undefined or stale content. Painting the new layout
 	// here instead of waiting for WM_PAINT stops that content reaching the screen: the WM_PAINT
 	// would otherwise arrive only once the message queue drained, so every intervening
 	// composition frame shows the window at its new size with the previous frame's pixels.
 	if (extent_changed && !is_minimised && !_extent.is_empty() && m_hWnd != nullptr)
 	{
+		before_paint();
 		handle_render();
 		ValidateRect(m_hWnd, nullptr);
 
@@ -1084,6 +992,8 @@ void frame_base::present() const
 
 void frame_base::handle_render(recti damage)
 {
+	if (_container) return;
+
 	// Leaving the standby has to draw everything that was skipped, not only what this paint was for.
 	const auto was_hidden = _hidden_standby;
 	if (skip_hidden_frame()) return;
@@ -1135,8 +1045,22 @@ LRESULT frame_base::on_window_message(const HWND hwnd, const UINT uMsg, const WP
 		return DefWindowProc(hwnd, uMsg, wParam, lParam);
 	case WM_PAINT:
 		{
+			if (_container)
+			{
+				PAINTSTRUCT ps{};
+
+				if (const auto dc = BeginPaint(m_hWnd, &ps))
+				{
+					paint_background(dc, ps.rcPaint);
+					EndPaint(m_hWnd, &ps);
+				}
+
+				return 0;
+			}
+
 			// Read the update region before validating: it is what lets a backend repaint only the
 			// part of the window that changed.
+			before_paint();
 			RECT update{};
 			const auto has_update = GetUpdateRect(m_hWnd, &update, FALSE) != 0;
 			handle_render(has_update ? recti(update.left, update.top, update.right, update.bottom) : recti{});
@@ -1169,294 +1093,484 @@ LRESULT frame_base::on_window_message(const HWND hwnd, const UINT uMsg, const WP
 }
 
 
-class bubble_impl final : public frame_base, public ui::bubble_frame
+class win32_app final : public ui::platform_app
 {
-protected:
-	// Non-zero: SetTimer treats 0 as a valid id but this class also uses 0 as its "no timer"
-	// sentinel, so a timer created with id 0 could never be stopped.
-	static constexpr UINT_PTR bubble_fade_timer_id = 1;
-
-	UINT_PTR _timer_id = 0;
-	int _alpha = 0;
-	int _alpha_target = 0;
-	recti _bounds;
-	ui::bubble_content_ptr _content;
-	pointi _focus_loc;
-
 public:
-	bubble_impl(owner_context_ptr ctx) : frame_base(std::move(ctx))
+	ui::app_ptr _app;
+	std::vector<HANDLE> app_thread_events;
+	std::vector<std::function<void()>> app_event_actions;
+	HANDLE _timer_handle = nullptr;
+	int _frame_delay = 0;
+	std::shared_ptr<frame_impl> _frame;
+
+	// The notification carries no path, so the watched folder is retained here to tell the app which
+	// folder to compare.
+	struct folder_watch
+	{
+		HANDLE h = nullptr;
+		df::folder_path path;
+	};
+
+	std::vector<folder_watch> _folder_changes;
+	platform::thread_event _idle_event;
+	LPARAM _last_mouse_move = 0;
+	wchar_t _pending_high_surrogate = 0;
+	bool _enable_screen_saver = true;
+	factories_ptr _f;
+
+	win32_app() : _idle_event(false, false)
 	{
 	}
 
-	~bubble_impl() override
+	void update_event_handles();
+	void tick() const;
+
+	static bool is_pre_translate_message(const int message)
 	{
-		if (m_hWnd)
-		{
-			DestroyWindow(m_hWnd);
-			m_hWnd = nullptr;
-		}
+		return message != WM_TIMER &&
+			message != WM_PAINT &&
+			message != WM_ERASEBKGND;
 	}
 
-	bool create(const HWND parent, const factories_ptr& f)
+	bool pre_translate_message(MSG& m);
+	void monitor_folders(const std::vector<df::folder_path>& folders_paths) override;
+	void destroy();
+	void idle() const;
+	int ui_message_loop();
+	uint32_t ui_wait_for_signal(const std::vector<std::reference_wrapper<platform::thread_event>>& events,
+	                            bool wait_all, uint32_t timeout_ms, const std::function<bool(LPMSG m)>& cb);
+	void sys_command(ui::sys_command_type cmd) override;
+	void full_screen(bool full) override;
+
+	void frame_delay(int delay) override;
+
+	void queue_idle() override
 	{
-		const auto* const class_name = L"LIBDESKTOP_BUBBLE";
-
-		// hbrBackground stays null: register_class treats ERROR_CLASS_ALREADY_EXISTS as success and the
-		// class is never unregistered, so a brush handed over here would outlive the owner_context that
-		// owns it and every later window of this class would erase with a deleted HBRUSH.
-		if (register_class(CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, nullptr, nullptr, nullptr,
-		                   nullptr, class_name, nullptr))
-		{
-			constexpr auto style_ex = WS_EX_LAYERED; // WS_EX_NOREDIRECTIONBITMAP;
-			m_hWnd = CreateWindowEx(style_ex, class_name, nullptr, WS_POPUP, 0, 0, 0, 0, parent, nullptr,
-			                        get_resource_instance, this);
-			df::assert_true(m_hWnd != nullptr);
-
-			if (m_hWnd)
-			{
-				create_draw_context(f, false, true);
-				_gdi_ctx->set_window_font(m_hWnd, ui::style::font_face::dialog);
-				return true;
-			}
-		}
-
-		return false;
+		_idle_event.set();
 	}
 
-	LRESULT handle_message(const HWND hwnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam) override
-	{
-		if (uMsg == WM_DESTROY) return on_window_destroy(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-		if (uMsg == WM_NCHITTEST) return HTTRANSPARENT;
-		if (uMsg == WM_TIMER)
-		{
-			step_timer();
-			return 0;
-		}
-		return DefWindowProc(hwnd, uMsg, wParam, lParam);
-	}
+	void set_font_base_size(int i) override;
 
-	void step_timer()
-	{
-		if (_alpha != _alpha_target)
-		{
-			_alpha = ui::gated_fade_alpha_step(_alpha, _alpha_target);
+	ui::frame_ptr create_app_frame(const platform::setting_file_ptr& store, const ui::frame_host_weak_ptr& host,
+	                               const ui::frame_style& style) override;
 
-			// Re-present the layered window with the updated fade alpha.
-			if (_draw_ctx && _alpha > 0)
-			{
-				handle_render();
-			}
-			else if (_alpha == 0 && m_hWnd)
-			{
-				ShowWindow(m_hWnd, SW_HIDE);
-			}
-		}
+	void enable_screen_saver(bool enable) override;
 
-		if (_alpha == _alpha_target && _timer_id)
-		{
-			KillTimer(m_hWnd, _timer_id);
-			_timer_id = 0;
-			if (_alpha == 0 && m_hWnd) ShowWindow(m_hWnd, SW_HIDE);
-		}
-	}
+	void show_progress(int64_t done, int64_t total) override;
+	void end_progress() override;
 
-	bool is_visible() const override
-	{
-		return m_hWnd && _alpha > 0;
-	}
+private:
+	ITaskbarList3* taskbar();
 
-	void hide() override
-	{
-		set_alpha(0);
-	}
-
-	const int shadow_xy = 32;
-	const int shadow_padding = 16;
-	const int vert_padding = shadow_padding + 6;
-	const int horz_padding = shadow_padding + 10;
-	const float radius = 8.0;
-
-	void show(const ui::bubble_content_ptr& content, const recti button_rect, const int x_focus,
-	          const int preferred_size, const bool horizontal) override
-	{
-		if (_draw_ctx)
-		{
-			const auto scale_factor = _gdi_ctx->scale_factor;
-
-			// Before measuring: measure builds and caches the element text layouts, so a stale size
-			// here would lay the bubble out - and cache glyph rasters - at the previous font size.
-			// A bubble shares the app's owner context and so never sees a WM_DPICHANGED of its own;
-			// showing it is the only point at which it can pick up a scale change.
-			_draw_ctx->update_font_size(df::round(global_base_font_size * scale_factor));
-			update_dpi_metrics();
-
-			const auto element_extent = content->measure(*_draw_ctx, df::round(preferred_size * scale_factor));
-			const auto cx = std::max(80, element_extent.cx) + horz_padding * 2;
-			const auto cy = std::max(36, element_extent.cy) + vert_padding * 2;
-
-			const auto xx_focus = (x_focus == -1
-				                       ? (button_rect.left + button_rect.right) / 2
-				                       : button_rect.left + x_focus) - cx / 2;
-			const auto yy_focus = (button_rect.top + button_rect.bottom - cy) / 2;
-
-			auto x = horizontal ? button_rect.left - cx : xx_focus;
-			auto y = horizontal ? yy_focus : button_rect.top - cy;
-
-			auto focus_loc = recti(x, y, x + cx, y + cy).center();
-			const auto desktop_bounds = desktop_bounds_impl(GetParent(m_hWnd), true);
-
-			if (horizontal)
-			{
-				if (button_rect.left - cx < desktop_bounds.left)
-				{
-					// on the right
-					x = button_rect.right;
-					focus_loc.x = button_rect.right - 5;
-				}
-				else
-				{
-					// on the left
-					x = button_rect.left - cx;
-					focus_loc.x = button_rect.left + 5;
-				}
-			}
-			else
-			{
-				if (button_rect.top - cy < desktop_bounds.top)
-				{
-					// on the bottom
-					y = button_rect.bottom;
-					focus_loc.y = button_rect.bottom - 5;
-				}
-				else
-				{
-					// on the top
-					y = button_rect.top - cy;
-					focus_loc.y = button_rect.top + 5;
-				}
-			}
-
-			_bounds = recti(x, y, x + cx, y + cy).clamp(desktop_bounds.inflate(shadow_padding));
-			_focus_loc = focus_loc;
-			_content = content;
-
-			ui::control_layouts positions;
-			_content->layout(*_draw_ctx, center_rect(element_extent, sizei{cx, cy}), positions);
-
-			InvalidateRect(m_hWnd, nullptr, FALSE);
-			SetWindowPos(m_hWnd, nullptr, _bounds.left, _bounds.top, cx, cy,
-			             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
-
-			set_alpha(255);
-		}
-	}
-
-	void on_render(const draw_context_device_ptr& ctx) override
-	{
-		ctx->set_layer_alpha(_alpha);
-		ctx->draw_bubble_background(_bounds, _focus_loc, shadow_padding, radius);
-		_draw_ctx->colors = {
-			ui::style::color::bubble_background, ui::style::color::view_text, ui::style::color::view_selected_background
-		};
-		_content->render(*ctx, {});
-	}
-
-	void on_resize(const sizei extent, const bool is_minimized) override
-	{
-	}
-
-	LRESULT on_window_destroy(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/)
-	{
-		if (_timer_id) KillTimer(m_hWnd, _timer_id);
-		destroy_frame_base();
-		return 0;
-	}
-
-	void set_alpha(const int a)
-	{
-		if (_alpha_target != a)
-		{
-			_alpha_target = a;
-
-			if (!ui::animations_enabled)
-			{
-				if (_timer_id)
-				{
-					KillTimer(m_hWnd, _timer_id);
-					_timer_id = 0;
-				}
-
-				_alpha = ui::gated_fade_alpha_step(_alpha, _alpha_target);
-				if (_draw_ctx && _alpha > 0)
-				{
-					handle_render();
-				}
-				else if (m_hWnd)
-				{
-					ShowWindow(m_hWnd, SW_HIDE);
-				}
-			}
-			else if (_timer_id == 0u)
-			{
-				// A non-zero nIDEvent: 0 is also the "no timer" sentinel, so passing it means the
-				// 30 Hz fade timer can never be matched by KillTimer and runs for the window's life.
-				_timer_id = SetTimer(m_hWnd, bubble_fade_timer_id, 1000 / 30, nullptr);
-			}
-		}
-	}
+	ComPtr<ITaskbarList3> _taskbar;
+	bool _taskbar_unavailable = false;
+	TBPFLAG _taskbar_state = TBPF_NOPROGRESS;
+	int64_t _taskbar_done = -1;
+	int64_t _taskbar_total = -1;
 };
 
+class frame_impl;
+
+// The input manager of the frame that holds the keyboard, which a key goes to; null when none of the
+// application's frames does.
+static ui::input_manager_ptr keyboard_input();
+
+// What a frame gives the controls it draws, the menus it opens and the bubbles it shows.
+class win_host_services final : public ui::control_host, public ui::menu_host, public ui::bubble_host
+{
+public:
+	frame_impl* owner = nullptr;
+	// The system caret an input method places its window by, while a control takes typing.
+	bool ime_caret = false;
+
+	ui::measure_context* measure() override;
+	void invalidate(recti bounds) override;
+	bool has_keyboard_focus() const override;
+	void take_keyboard_focus() override;
+	void capture_pointer(bool capture) override;
+	void set_cursor(ui::style::cursor cursor) override;
+	pointi client_to_screen(pointi loc) const override;
+	void track_menu(recti screen_bounds, const std::vector<ui::command_ptr>& commands) override;
+	ui::frame_ptr create_popup(const ui::frame_host_weak_ptr& content, const ui::color_style& colors) override;
+	std::shared_ptr<ui::frame_host> listener() const override;
+	void keyboard_to_frame() override;
+	void text_input(bool active, recti caret) override;
+	void caret_timer(bool on, uint32_t interval_ms) override;
+	bool is_dialog() const override;
+	void close(bool cancel) override;
+	bool presents_caption_button() const override;
+
+	ui::measure_context* menu_measure() override;
+	ui::frame_ptr create_menu_popup(const ui::frame_host_weak_ptr& content, const ui::frame_ptr& parent) override;
+	recti menu_work_area(recti bounds) override;
+	void run_menu_loop(ui::menu_session& session) override;
+
+	ui::frame_ptr create_bubble_popup(const ui::frame_host_weak_ptr& content) override;
+	ui::measure_context* bubble_measure(const ui::frame_ptr& popup) override;
+	recti bubble_work_area(recti anchor) override;
+
+	void end_ime_caret();
+};
+
+// The drawn menu open now, whichever host opened it. Losing activation dismisses it, and only the
+// active window hears of that, while a menu may belong to a host inside it. One runs at a time, on
+// the UI thread.
+static ui::menu_session* s_open_menu = nullptr;
+
+// Windows 11 offers snap layouts over a window's maximize button, and only over a button the window
+// reports as one, so whether a drawn toolbar may report its maximize button as that caption button is
+// the root window's to say: a dialog or a child host answers by the frame it sits in.
+static bool root_presents_caption_button(const HWND hwnd)
+{
+	static const auto release = windows_release();
+	const auto root = hwnd ? GetAncestor(hwnd, GA_ROOT) : nullptr;
+	return root && platform::presents_maximize_caption_button(release,
+	                                                          static_cast<uint32_t>(GetWindowLong(root, GWL_STYLE)));
+}
+
+// Windows sends the button it is told is the maximize caption button non-client mouse messages,
+// which the controls' own pointer handling never sees, so its hover and press are kept here, for a
+// top-level window: the button may be in a frame it holds, which lets the window answer for it.
+// True when the message was the caption button's, with result what the window answers.
+struct caption_hit
+{
+	ui::input_manager_ptr input;
+	int id = 0;
+};
+
+static bool caption_button_message(const std::function<caption_hit(LPARAM)>& hit_at, ui::input_manager_ptr& tracked,
+                                   const HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam,
+                                   LRESULT& result, bool& leave_tracked)
+{
+	switch (msg)
+	{
+	case WM_NCHITTEST:
+		if (hit_at(lparam).id != 0)
+		{
+			result = HTMAXBUTTON;
+			return true;
+		}
+		break;
+
+	case WM_NCMOUSEMOVE:
+		{
+			const auto hit = wparam == HTMAXBUTTON ? hit_at(lparam) : caption_hit{};
+
+			// Without this Windows never reports the pointer leaving, and the button would stay lit.
+			if (hit.id != 0 && !leave_tracked)
+			{
+				TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE | TME_NONCLIENT, hwnd, HOVER_DEFAULT};
+				leave_tracked = TrackMouseEvent(&tme) != FALSE;
+			}
+
+			// Windows' own handling still follows; it does not draw this button.
+			if (tracked && tracked != hit.input) tracked->caption_leave();
+			if (hit.input) hit.input->caption_hover(hit.id);
+			tracked = hit.input;
+			break;
+		}
+
+	case WM_NCMOUSELEAVE:
+		leave_tracked = false;
+		if (tracked) tracked->caption_leave();
+		tracked.reset();
+		break;
+
+	// Passed on, these would run Windows' tracking of a caption button it does not draw.
+	case WM_NCLBUTTONDOWN:
+	case WM_NCLBUTTONDBLCLK:
+		if (wparam == HTMAXBUTTON)
+		{
+			const auto hit = hit_at(lparam);
+			if (hit.input) hit.input->caption_press(hit.id);
+			tracked = hit.input;
+			result = 0;
+			return true;
+		}
+		break;
+
+	case WM_NCLBUTTONUP:
+		if (wparam == HTMAXBUTTON)
+		{
+			const auto hit = hit_at(lparam);
+			if (tracked) tracked->caption_release(hit.input == tracked ? hit.id : 0);
+			result = 0;
+			return true;
+		}
+		break;
+
+	default:
+		break;
+	}
+
+	return false;
+}
+
+// A window, or a region of one, that draws its host - its elements and the drawn controls among them -
+// and places the frames its frame elements hold. What a frame is to the window around it decides the
+// window Windows makes for it and what it tells its hosts:
+// - app: the application's window, with the drawn caption, resize edges and the system's messages;
+// - dialog: a window of its own over another, with a modal wait and an owner context of its own;
+// - pane: a frame of any style - a region of the window it is in, a popup list or menu, or a layered
+//   bubble.
 class frame_impl final :
 	public frame_base,
 	public ui_frame_window<frame_impl, ui::frame>,
 	public std::enable_shared_from_this<frame_impl>,
 	public IDropTarget
 {
+public:
+	enum class kind
+	{
+		app,
+		dialog,
+		pane
+	};
+
+	// The frames made in this one, which take its scale changes and its graphics resets, and the frame
+	// this one was made in.
+	std::vector<std::weak_ptr<frame_impl>> _children;
+	std::weak_ptr<frame_impl> _parent;
+
+	// The drawn controls in its host's tree get this frame's pointer and keyboard through _controls.
+	win_host_services _services;
+	ui::input_manager_ptr _controls;
+	// The input manager whose caption button the pointer is on, for a top-level window.
+	ui::input_manager_ptr _caption_input;
+	// The pointer is over one of the controls, so the frame host has been told it left.
+	bool _over_controls = false;
+	bool _controls_captured = false;
+	bool _caption_leave_tracked = false;
+	static constexpr UINT_PTR caret_timer_id = 0x43415254;
+	// Distinct from the frame's tick (0) and the hidden standby poll.
+	static constexpr UINT_PTR fade_timer_id = 1;
+
+	win32_app* _pa = nullptr;
+	ui::weak_app_ptr _app;
+	ui::frame_host_weak_ptr _host;
+	// A pane's parent's host, which hears of the pane's focus as well.
+	ui::frame_host_weak_ptr _parent_host;
+	const kind _kind;
+	const ui::frame_style _style;
+
+	platform::thread_event _close;
+	std::atomic<ui::close_result> _modal_result = ui::close_result::ok;
+	bool _tracking = false;
+	bool _hover = false;
+	bool _is_first_nccalc_ = true;
+	UINT_PTR _timer_id = 0;
 	pointi _pan_start_loc;
 	ULONGLONG _zoom_gesture_distance = 0;
-	ui::frame_weak_ptr _parent_frame;
-	ui::frame_host_weak_ptr _host;
-	ui::frame_host_weak_ptr _parent_host;
-	bool _hover = false;
-	bool _tracking = false;
-	bool _has_focus = false;
-	ui::frame_style _style;
-	UINT_PTR _timer_id = 0;
+	ComPtr<IDataObject> _drag_data;
 
-public:
-	frame_impl(const owner_context_ptr& ctx, ui::frame_weak_ptr parent_frame,
-	           const ui::frame_host_weak_ptr& parent_host,
-	           const ui::frame_host_weak_ptr& host, const ui::frame_style& style) :
-		frame_base(ctx), _parent_frame(std::move(parent_frame)), _host(host), _parent_host(parent_host), _style(style)
+	// A layered frame's alpha, faded towards its target while it is shown or hidden.
+	UINT_PTR _fade_timer = 0;
+	int _alpha = 0;
+	int _alpha_target = 0;
+
+	win_rect _window_rgn;
+	win_rect _full_screen_bounds;
+	bool _composition_enabled = false;
+	bool _is_full_screen = false;
+	bool _has_focus = false;
+
+	WINDOWPLACEMENT restore_window_placement{};
+	DWORD restore_style = 0;
+	DWORD restore_ex_style = 0;
+	uint32_t cmd_show = SW_SHOW;
+
+	frame_impl(const owner_context_ptr& ctx, const ui::frame_host_weak_ptr& host, ui::weak_app_ptr app,
+	           win32_app* pa, const kind k, const ui::frame_style& style,
+	           ui::frame_host_weak_ptr parent_host = {}) :
+		frame_base(ctx),
+		_pa(pa),
+		_app(std::move(app)),
+		_host(host),
+		_parent_host(std::move(parent_host)),
+		_kind(k),
+		_style(style),
+		_close(true, false)
 	{
+		_services.owner = this;
+		_controls = std::make_shared<ui::input_manager>(&_services);
+		_container = style.container;
 	}
 
-	// Nothing guarantees destroy() is reached - a frame released when its owning view or dialog goes
-	// away just drops the last reference. Without this the HWND survives with a stale user-data
-	// pointer, its registered IDropTarget dangles, and the draw context is never torn down.
+	void paint_background(const HDC dc, const RECT& r) const override
+	{
+		const auto c = _style.colors.background;
+		const auto brush = CreateSolidBrush(RGB(ui::get_r(c), ui::get_g(c), ui::get_b(c)));
+		FillRect(dc, &r, brush);
+		DeleteObject(brush);
+	}
+
 	~frame_impl() override
 	{
-		if (m_hWnd && IsWindow(m_hWnd))
+		// destroy_frame_base() nulls m_hWnd, so the handle is captured first or the window leaks.
+		const auto hwnd = m_hWnd;
+
+		destroy_frame_base();
+
+		if (hwnd && IsWindow(hwnd))
 		{
-			DestroyWindow(m_hWnd);
+			DestroyWindow(hwnd);
 		}
+
+		clear();
+		m_hWnd = nullptr;
+	}
+
+	bool is_app_frame() const
+	{
+		return _kind == kind::app;
+	}
+
+	// The application's window and a dialog have an owner context, and a scale, of their own; the rest
+	// share the one of the window they are in.
+	bool owns_context() const
+	{
+		return _kind == kind::app || _kind == kind::dialog;
+	}
+
+	// The deepest shown frame inside this one whose window holds a screen point; this one when none does.
+	std::shared_ptr<frame_impl> frame_at(const POINT screen)
+	{
+		for (auto i = _children.rbegin(); i != _children.rend(); ++i)
+		{
+			const auto c = i->lock();
+			if (!c || !c->m_hWnd || !IsWindowVisible(c->m_hWnd)) continue;
+			if ((GetWindowLong(c->m_hWnd, GWL_STYLE) & WS_CHILD) == 0) continue;
+
+			RECT r{};
+			GetWindowRect(c->m_hWnd, &r);
+			if (PtInRect(&r, screen)) return c->frame_at(screen);
+		}
+
+		return shared_from_this();
+	}
+
+	// The caption button at a screen point, in this window or a frame inside it.
+	caption_hit caption_at(const LPARAM lparam)
+	{
+		const POINT screen{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+		const auto f = frame_at(screen);
+		POINT client = screen;
+		ScreenToClient(f->m_hWnd, &client);
+		const auto id = f->_controls->caption_button_at({client.x, client.y});
+		return id ? caption_hit{f->_controls, id} : caption_hit{};
+	}
+
+	HWND Create(
+		_In_opt_ const HWND hWndParent,
+		_In_ const win_rect rect,
+		_In_ const DWORD dwStyle,
+		_In_ const DWORD dwExStyle)
+	{
+		const auto* const class_name = is_app_frame() ? L"LIBDESKTOP_MAIN" : L"LIBDESKTOP_FRAME";
+		auto* const icon = is_app_frame() ? resources.app_icon_32 : nullptr;
+
+		if (register_class(CS_DBLCLKS, icon, nullptr, class_name))
+		{
+			auto x = rect.left;
+			auto y = rect.top;
+			auto cx = rect.width();
+			auto cy = rect.height();
+
+			if (rect.is_empty())
+			{
+				x = CW_USEDEFAULT;
+				y = CW_USEDEFAULT;
+				cx = CW_USEDEFAULT;
+				cy = CW_USEDEFAULT;
+			}
+
+			m_hWnd = CreateWindowEx(
+				dwExStyle,
+				class_name,
+				nullptr,
+				dwStyle,
+				x,
+				y,
+				cx,
+				cy,
+				hWndParent, nullptr,
+				get_resource_instance,
+				this);
+
+			df::assert_true(IsWindow(m_hWnd));
+
+			if (m_hWnd)
+			{
+				create_draw_context(_pa->_f, _style.hardware_accelerated, _style.layered);
+				if (_style.can_drop) RegisterDragDrop(m_hWnd, this);
+			}
+		}
+
+		return m_hWnd;
 	}
 
 	void destroy() override
 	{
 		DestroyWindow(m_hWnd);
+		clear();
 	}
 
-	LRESULT handle_message(const HWND hwnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam) override
+	void position(const recti bounds) override
 	{
+		SetWindowPos(m_hWnd, nullptr, bounds.left, bounds.top, bounds.width(), bounds.height(),
+		             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	}
+
+	void clear()
+	{
+		// An owner can still hold the controls; they are inert once their window has gone.
+		const auto keep_alive = weak_from_this().lock();
+		_services.end_ime_caret();
+		_controls->detach();
+		_modal_result = ui::close_result::ok;
+	}
+
+	// These two messages aren't defined in winuser.h, but they are sent to windows
+	// with captions. They appear to paint the window caption and frame.
+	// Unfortunately if you override the standard non-client rendering as we do
+	// with CustomFrameWindow, sometimes Windows (not deterministically
+	// reproducibly but definitely frequently) will send these messages to the
+	// window and paint the standard caption/title over the top of the custom one.
+	// So we need to handle these messages in CustomFrameWindow to prevent this
+	// from happening.
+	const int WM_NCUAHDRAWCAPTION = 0xAE;
+	const int WM_NCUAHDRAWFRAME = 0xAF;
+
+	LRESULT handle_message(const HWND hWnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam) override
+	{
+		// A top-level window answers for the caption button, whichever of its frames draws it; one inside
+		// another passes it through to the window it is in.
+		if ((GetWindowLong(hWnd, GWL_STYLE) & WS_CHILD) == 0)
+		{
+			LRESULT result = 0;
+			const auto hit_at = [this](const LPARAM lp) { return caption_at(lp); };
+
+			if (caption_button_message(hit_at, _caption_input, hWnd, uMsg, wParam, lParam, result,
+			                           _caption_leave_tracked))
+			{
+				return result;
+			}
+		}
+
+		if (uMsg == WM_CREATE) return on_window_create(uMsg, wParam, lParam);
 		if (uMsg == WM_DESTROY) return on_window_destroy(uMsg, wParam, lParam);
+		if (uMsg == WM_PRINTCLIENT) return on_window_print_client(uMsg, wParam, lParam);
 		if (uMsg == WM_ERASEBKGND) return on_window_erase_background(uMsg, wParam, lParam);
 		if (uMsg == WM_SETCURSOR) return on_window_set_cursor(uMsg, wParam, lParam);
+		if (uMsg == WM_ACTIVATE) return on_window_activate(uMsg, wParam, lParam);
+		if (uMsg == WM_MOUSEACTIVATE) return on_window_mouse_activate(uMsg, wParam, lParam);
 		if (uMsg == WM_SETFOCUS) return on_window_set_focus(uMsg, wParam, lParam);
 		if (uMsg == WM_KILLFOCUS) return on_window_kill_focus(uMsg, wParam, lParam);
 		if (uMsg == WM_KEYDOWN) return on_window_key_down(uMsg, wParam, lParam);
+		if (uMsg == WM_CLOSE) return on_window_close(uMsg, wParam, lParam);
+		if (uMsg == WM_CONTEXTMENU) return on_window_context_menu(uMsg, wParam, lParam);
 		if (uMsg == WM_TIMER) return on_window_timer(uMsg, wParam, lParam);
+		if (uMsg == WM_DPICHANGED && owns_context()) return on_window_dpi_changed(uMsg, wParam, lParam);
 		if (uMsg == WM_LBUTTONDOWN) return on_mouse_left_button_down(uMsg, wParam, lParam);
 		if (uMsg == WM_LBUTTONUP) return on_mouse_left_button_up(uMsg, wParam, lParam);
 		if (uMsg == WM_MBUTTONDOWN) return on_mouse_middle_button_down(uMsg, wParam, lParam);
@@ -1464,17 +1578,190 @@ public:
 		if (uMsg == WM_XBUTTONUP) return on_mouse_x_button_up(uMsg, wParam, lParam);
 		if (uMsg == WM_MOUSELEAVE) return on_mouse_leave(uMsg, wParam, lParam);
 		if (uMsg == WM_MOUSEMOVE) return on_mouse_move(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSEWHEEL) return on_mouse_wheel(uMsg, wParam, lParam);
 		constexpr auto pointer_wheel_message = 0x024e;
 		constexpr auto pointer_hwheel_message = 0x024f;
+		if (uMsg == WM_MOUSEWHEEL || uMsg == pointer_wheel_message) return on_mouse_wheel(uMsg, wParam, lParam);
 		if (uMsg == WM_MOUSEHWHEEL || uMsg == pointer_hwheel_message) return on_mouse_hwheel(uMsg, wParam, lParam);
-		if (uMsg == pointer_wheel_message) return on_mouse_wheel(uMsg, wParam, lParam);
 		if (uMsg == WM_LBUTTONDBLCLK) return on_mouse_left_button_double_click(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSEACTIVATE) return on_window_mouse_activate(uMsg, wParam, lParam);
-		if (uMsg == WM_GESTURENOTIFY) return on_window_gesture_notify(uMsg, wParam, lParam);
-		if (uMsg == WM_GESTURE) return on_window_gesture(uMsg, wParam, lParam);
 		if (uMsg == WM_NCHITTEST) return on_window_nc_hit_test(uMsg, wParam, lParam);
-		return DefWindowProc(hwnd, uMsg, wParam, lParam);
+		if (uMsg == WM_CANCELMODE) return on_window_cancel_mode(uMsg, wParam, lParam);
+
+		// A pane pans and pinches; a dialog's touch stays the system's.
+		if (_kind == kind::pane)
+		{
+			if (uMsg == WM_GESTURENOTIFY) return on_window_gesture_notify(uMsg, wParam, lParam);
+			if (uMsg == WM_GESTURE) return on_window_gesture(uMsg, wParam, lParam);
+		}
+
+		if (is_app_frame())
+		{
+			if (uMsg == WM_WTSSESSION_CHANGE) return on_session_change(uMsg, wParam, lParam);
+			if (uMsg == WM_POWERBROADCAST) return on_power_broadcast(uMsg, wParam, lParam);
+			if (uMsg == WM_QUERYENDSESSION) return on_query_end_session(uMsg, wParam, lParam);
+			if (uMsg == WM_ENDSESSION) return on_end_session(uMsg, wParam, lParam);
+			if (uMsg == WM_SETTINGCHANGE) return on_system_settings_change(uMsg, wParam, lParam);
+			if (uMsg == WM_DEVICECHANGE) return on_system_device_change(uMsg, wParam, lParam);
+			if (uMsg == WM_GETMINMAXINFO) return on_window_min_max_info(uMsg, wParam, lParam);
+			if (uMsg == WM_NCACTIVATE) return on_window_nc_activate(uMsg, wParam, lParam);
+			if (uMsg == WM_NCCALCSIZE) return on_window_nc_calc_size(uMsg, wParam, lParam);
+			if (uMsg == WM_NCPAINT) return on_window_nc_paint(uMsg, wParam, lParam);
+			if (uMsg == WM_NCUAHDRAWCAPTION) return 0;
+			if (uMsg == WM_NCUAHDRAWFRAME) return 0;
+			if (uMsg == WM_DWMCOMPOSITIONCHANGED) return on_dwm_composition_changed(uMsg, wParam, lParam);
+		}
+		return DefWindowProc(hWnd, uMsg, wParam, lParam);
+	}
+
+	// The cursor over the client is the frame's own, or the one the control under the pointer set.
+	LRESULT on_window_set_cursor(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+	{
+		if (std::bit_cast<HWND>(wParam) == m_hWnd && LOWORD(lParam) == HTCLIENT)
+		{
+			if (!_over_controls && _cursor) SetCursor(_cursor);
+			return TRUE;
+		}
+
+		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+	}
+
+	LRESULT on_window_mouse_activate(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+	{
+		if (_style.no_focus || _style.layered) return MA_NOACTIVATE;
+		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+	}
+
+	// What a frame's hosts hear of its focus when none of its controls holds it. A pane names itself to
+	// its host and to its parent's; any other frame tells its host alone, naming nothing.
+	void report_focus(const bool has_focus)
+	{
+		if (_kind == kind::pane)
+		{
+			const auto pane = std::static_pointer_cast<ui::frame>(shared_from_this());
+			if (const auto h = _host.lock()) h->pane_focus_changed(has_focus, pane);
+			if (const auto ph = _parent_host.lock()) ph->pane_focus_changed(has_focus, pane);
+		}
+		else
+		{
+			if (const auto h = _host.lock()) h->focus_changed(has_focus, nullptr);
+			if (const auto ph = _parent_host.lock()) ph->focus_changed(has_focus, nullptr);
+		}
+	}
+
+	// The control that holds the focus is what the frame host hears about, as a native control's own
+	// focus was; the window itself only when no control does.
+	LRESULT on_window_set_focus(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
+	{
+		const auto keep_alive = weak_from_this().lock();
+		if (!_controls->keyboard_focus(true)) report_focus(true);
+		_has_focus = true;
+		return 0;
+	}
+
+	LRESULT on_window_kill_focus(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
+	{
+		const auto keep_alive = weak_from_this().lock();
+		_services.end_ime_caret();
+		_zoom_gesture_distance = 0;
+		if (!_controls->keyboard_focus(false)) report_focus(false);
+
+		// The keyboard went to another of the application's windows - a view beside the controls, or a
+		// dialog: the control lost it then, as a native control did. Activation gives this window the
+		// keyboard back, which must not hand it to that control. Only when the application itself loses
+		// the keyboard is the control kept, to have it back on return.
+		const auto to = std::bit_cast<HWND>(wParam);
+		if (to && GetWindowThreadProcessId(to, nullptr) == GetCurrentThreadId()) _controls->clear_focus();
+
+		_has_focus = false;
+		return 0;
+	}
+
+	// The application's own shortcuts saw the key first; one that reaches a pane is its host's.
+	LRESULT on_window_key_down(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+	{
+		if (_kind != kind::pane) return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+		const auto h = _host.lock();
+		if (h) return h->key_down(static_cast<int>(wParam), ui::current_key_state());
+		return 0;
+	}
+
+	LRESULT on_window_cancel_mode(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
+	{
+		cancel_menu();
+		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+	}
+
+	// The drawn menu's loop waits for a posted message, so a dismissal from a sent one wakes it.
+	void cancel_menu()
+	{
+		if (!s_open_menu) return;
+		s_open_menu->cancel();
+		PostMessage(m_hWnd, WM_NULL, 0, 0);
+	}
+
+	LRESULT on_window_create(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/);
+
+	LRESULT on_window_destroy(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
+	{
+		// The host's on_window_destroy releases its own reference to this frame, which can be the last.
+		// Holding one here keeps this object alive until the handler has finished with its members.
+		const auto keep_alive = weak_from_this().lock();
+
+		if (_timer_id) KillTimer(m_hWnd, _timer_id);
+		if (_fade_timer) KillTimer(m_hWnd, _fade_timer);
+		if (_style.can_drop) RevokeDragDrop(m_hWnd);
+		if (is_app_frame()) WTSUnRegisterSessionNotification(m_hWnd);
+		const auto h = _host.lock();
+		if (h) h->on_window_destroy();
+
+		// destroy() breaks the draw context <-> text renderer reference cycle, so it must run even when the
+		// device has already been lost - otherwise the context and its whole texture atlas leak.
+		if (_draw_ctx) _draw_ctx->destroy();
+
+		// destroy_frame_base() nulls m_hWnd, so the handle has to be captured first or
+		// DefWindowProc is called with nullptr and the default WM_DESTROY handling is skipped.
+		auto* const hwnd = m_hWnd;
+		destroy_frame_base();
+		const auto result = DefWindowProc(hwnd, uMsg, wParam, lParam);
+		clear();
+
+		return result;
+	}
+
+	LRESULT on_window_close(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
+	{
+		const auto app = _app.lock();
+
+		if (is_app_frame())
+		{
+			if (app && app->can_exit())
+			{
+				df::is_closing = true;
+				platform::event_exit.set();
+
+				DestroyWindow(m_hWnd);
+				PostQuitMessage(0);
+			}
+		}
+		else if (_kind == kind::pane)
+		{
+			return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+		}
+		else
+		{
+			_modal_result = ui::close_result::cancel;
+			_close.set();
+		}
+
+		return 0;
+	}
+
+	LRESULT on_window_nc_hit_test(uint32_t /*uMsg*/, WPARAM wParam, LPARAM lParam) const;
+
+	// Each control is drawn as enabled as what is above it in the tree is now, and its frame takes back a
+	// focus whose control has gone, before the paint reads what changed.
+	void before_paint() override
+	{
+		_controls->refresh();
 	}
 
 	void on_render(const draw_context_device_ptr& ctx_in) override
@@ -1485,14 +1772,13 @@ public:
 		{
 			ctx->frame_has_focus = _has_focus;
 			ctx->colors = _style.colors;
-			ctx->clear(ui::color(_style.colors.background, 1.0f));
+
+			// A layered frame shows only what its host draws, at the alpha it has faded to.
+			if (_style.layered) ctx->set_layer_alpha(_alpha);
+			else ctx->clear(ui::color(_style.colors.background, 1.0f));
 
 			const auto h = _host.lock();
-
-			if (h)
-			{
-				h->on_window_paint(*ctx);
-			}
+			if (h) h->on_window_paint(*ctx);
 		}
 	}
 
@@ -1502,191 +1788,33 @@ public:
 
 		if (ctx)
 		{
-			ctx->resize(_extent);
+			if (is_app_frame()) update_region();
+			if (!_container) ctx->resize(_extent);
 
 			const auto h = _host.lock();
 
 			if (h)
 			{
-				h->on_window_layout(*ctx, extent, is_minimized);
+				h->on_window_layout(*ctx, _extent, is_minimized);
+				if (!is_minimized) place_frames(_controls->layout());
 			}
 		}
 	}
 
-	bool create(const HWND parent, const ui::frame_style& style, const factories_ptr& f)
+	static LRESULT on_window_print_client(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
 	{
-		const auto* const class_name = L"LIBDESKTOP_FRAME";
-		auto dw_style = style.child ? WS_CHILD : WS_POPUP;
-		auto dw_ex_style = 0; // style.child ? 0 : WS_EX_COMPOSITED;
-		if (style.no_focus) dw_ex_style |= WS_EX_NOACTIVATE;
-		if (style.can_focus) dw_style |= WS_TABSTOP;
-
-		if (register_class(CS_DBLCLKS, nullptr, nullptr,
-		                   nullptr,
-		                   nullptr, class_name, nullptr))
-		{
-			m_hWnd = CreateWindowEx(dw_ex_style, class_name, nullptr, dw_style, 0, 0, 0, 0, parent, nullptr,
-			                        get_resource_instance, this);
-			df::assert_true(m_hWnd != nullptr);
-
-			if (m_hWnd)
-			{
-				create_draw_context(f, _style.hardware_accelerated, false);
-				_gdi_ctx->set_window_font(m_hWnd, ui::style::font_face::dialog);
-				if (_style.timer_milliseconds)
-				{
-					_timer_id = SetTimer(m_hWnd, 0, _style.timer_milliseconds, nullptr);
-				}
-
-				if (_style.can_drop)
-				{
-					RegisterDragDrop(m_hWnd, this);
-				}
-
-				return true;
-			}
-
-			return false;
-		}
-
-		return false;
-	}
-
-	bool is_valid_device() const
-	{
-		return _draw_ctx && _draw_ctx->is_valid();
-	}
-
-	void layout() override
-	{
-		if (_draw_ctx && !_extent.is_empty() && IsWindow(m_hWnd))
-		{
-			const auto h = _host.lock();
-
-			if (h)
-			{
-				h->on_window_layout(*_draw_ctx, _extent, IsIconic(m_hWnd));
-			}
-		}
-	}
-
-	LRESULT on_window_destroy(const uint32_t /*uMsg*/, const WPARAM /*wParam*/, const LPARAM /*lParam*/)
-	{
-		// The host's on_window_destroy releases its own reference to this frame, which can be the last.
-		// Holding one here keeps this object alive until the handler has finished with its members.
-		const auto keep_alive = weak_from_this().lock();
-
-		if (_timer_id) KillTimer(m_hWnd, _timer_id);
-
-		if (_style.can_drop)
-		{
-			RevokeDragDrop(m_hWnd);
-		}
-
-		const auto h = _host.lock();
-		if (h) h->on_window_destroy();
-
-		// destroy() breaks the draw context <-> text renderer reference cycle, so it must run even when the
-		// device has already been lost - otherwise the context and its whole texture atlas leak.
-		if (_draw_ctx)
-		{
-			_draw_ctx->destroy();
-		}
-
-		destroy_frame_base();
-
 		return 0;
 	}
 
-	LRESULT on_window_nc_hit_test(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		if (_style.child)
-		{
-			const pointi screen_loc = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-			const auto parent = GetParent(m_hWnd);
-			win_rect rc;
-			GetWindowRect(parent, &rc);
-
-			// Only yield where the parent actually has a resize grab band; full screen strips
-			// WS_THICKFRAME and a maximized frame cannot be edge resized.
-			const auto parent_can_resize = (GetWindowLong(parent, GWL_STYLE) & WS_THICKFRAME) != 0 &&
-				IsZoomed(parent) == 0;
-
-			const auto scale_factor = _draw_ctx ? _draw_ctx->scale_factor : 1.0;
-			const auto side = df::round(ui_resize_side_thickness * scale_factor);
-
-			if (parent_can_resize && (screen_loc.x < rc.left + side || screen_loc.x >= rc.right - side))
-			{
-				return HTTRANSPARENT;
-			}
-		}
-
-		POINT client_loc{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-		ScreenToClient(m_hWnd, &client_loc);
-		const auto h = _host.lock();
-		if (h && h->is_caption_area({client_loc.x, client_loc.y}))
-		{
-			return _style.child ? HTTRANSPARENT : HTCAPTION;
-		}
-
-		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
-	}
-
-	LRESULT on_window_set_cursor(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		SetCursor(_cursor);
-		return 1;
-	}
-
-	static LRESULT on_window_erase_background(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM /*lParam*/)
+	LRESULT on_window_erase_background(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/) const
 	{
 		return 1;
 	}
 
-	void redraw() override
-	{
-		df::bump(df::ui_perf.redraws);
-
-		if (is_valid_device())
-		{
-			// A video frame nobody can see is not worth drawing; the standby repaints once it can be.
-			if (skip_hidden_frame()) return;
-
-			// No begin_draw runs here, so any damage limit from the last paint is stale - the
-			// textures this re-present exists to show changed outside it.
-			_draw_ctx->reset_damage();
-
-			const auto presented = _draw_ctx->render();
-
-			if (presented.failed)
-			{
-				handle_device_loss(presented.backend_code, "redraw");
-				return;
-			}
-
-			present();
-		}
-		else
-		{
-			InvalidateRect(hwnd(), nullptr, 0);
-		}
-	}
-
-	void redraw_now() override
-	{
-		RedrawWindow(hwnd(), nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-	}
-
-	LRESULT on_window_timer(const uint32_t /*uMsg*/, const WPARAM /*wParam*/, const LPARAM /*lParam*/) const
-	{
-		const auto h = _host.lock();
-		if (h) h->tick();
-		return 0;
-	}
-
-	LRESULT on_mouse_move(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
+	LRESULT on_mouse_move(uint32_t /*uMsg*/, WPARAM wParam, const LPARAM lParam)
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+		const auto keep_alive = weak_from_this().lock();
 
 		if (!_hover)
 		{
@@ -1695,40 +1823,67 @@ public:
 		}
 
 		const auto h = _host.lock();
+
+		// Over one of its controls the host has the pointer no longer, as with a native child window.
+		if (!_tracking && _controls->mouse_move(loc))
+		{
+			if (!_over_controls)
+			{
+				_over_controls = true;
+				if (h) h->on_mouse_leave(loc);
+			}
+
+			return 0;
+		}
+
+		if (_over_controls)
+		{
+			_over_controls = false;
+			if (_cursor) SetCursor(_cursor);
+		}
+
 		if (h) h->on_mouse_move(loc, _tracking);
 		return 0;
 	}
 
-	LRESULT on_mouse_left_button_down(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
+	LRESULT on_mouse_left_button_down(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+		const auto keep_alive = weak_from_this().lock();
+
+		if (_controls->mouse_down(loc, to_key_state(wParam))) return 0;
+
+		const auto h = _host.lock();
 
 		if (!_tracking)
 		{
 			_tracking = true;
 			SetCapture(m_hWnd);
 
-			if (!_style.no_focus)
+			// A pane that takes the keyboard takes it with a press on its ground, for itself, unless its host
+			// keeps that ground for controls; a dialog's keyboard stays with its controls.
+			if (_kind == kind::pane && _style.can_focus && !_style.no_focus && (!h || h->takes_keyboard_at(loc)))
 			{
-				SetFocus(m_hWnd);
+				focus();
 			}
 		}
 
-		const auto h = _host.lock();
 		if (h) h->on_mouse_left_button_down(loc, to_key_state(wParam));
-
 		return 0;
 	}
 
 	LRESULT on_mouse_left_button_up(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+		const auto keep_alive = weak_from_this().lock();
+
+		if (!_tracking && _controls->mouse_up(loc, to_key_state(wParam))) return 0;
 
 		if (_tracking)
 		{
 			_tracking = false;
 			ReleaseCapture();
-			invalidate({}, false);
+			InvalidateRect(m_hWnd, nullptr, TRUE);
 		}
 
 		const auto h = _host.lock();
@@ -1736,51 +1891,47 @@ public:
 		return 0;
 	}
 
-	LRESULT on_mouse_middle_button_down(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
+	LRESULT on_mouse_middle_button_down(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam) const
 	{
 		const auto h = _host.lock();
 		if (h) h->on_mouse_middle_button_down({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, to_key_state(wParam));
 		return 0;
 	}
 
-	LRESULT on_mouse_middle_button_up(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
+	LRESULT on_mouse_middle_button_up(const uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam) const
 	{
 		const auto h = _host.lock();
 		if (h) h->on_mouse_middle_button_up({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, to_key_state(wParam));
 		return 0;
 	}
 
-	LRESULT on_mouse_left_button_double_click(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam) const
+	LRESULT on_mouse_left_button_double_click(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-		const auto h = _host.lock();
+		const auto keep_alive = weak_from_this().lock();
+		if (_controls->mouse_double_click(loc, to_key_state(wParam))) return 0;
+
 		constexpr ULONG_PTR pointer_signature = 0xff515700;
 		constexpr ULONG_PTR pointer_signature_mask = 0xffffff00;
 		constexpr ULONG_PTR touch_flag = 0x80;
 		const auto extra = static_cast<ULONG_PTR>(GetMessageExtraInfo());
 		const auto is_touch = (extra & pointer_signature_mask) == pointer_signature && (extra & touch_flag) != 0;
-		if (h && !(is_touch && h->touch_double_tap(loc))) h->on_mouse_left_button_double_click(
-			loc, to_key_state(wParam));
+
+		const auto h = _host.lock();
+		if (h && !(is_touch && h->touch_double_tap(loc))) h->on_mouse_left_button_double_click(loc, to_key_state(wParam));
 		return 0;
-	}
-
-	LRESULT on_window_mouse_activate(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		if (_style.no_focus)
-		{
-			return MA_NOACTIVATE;
-		}
-
-		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 	}
 
 	LRESULT on_mouse_leave(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam)
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 		_hover = false;
+		_controls->mouse_leave();
+		const auto was_over_controls = _over_controls;
+		_over_controls = false;
 		const auto h = _host.lock();
-		if (h) h->on_mouse_leave(loc);
-		InvalidateRect(m_hWnd, nullptr, FALSE);
+		if (h && !was_over_controls) h->on_mouse_leave(loc);
+		InvalidateRect(m_hWnd, nullptr, TRUE);
 		return 0;
 	}
 
@@ -1789,9 +1940,13 @@ public:
 		POINT loc = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 		ScreenToClient(m_hWnd, &loc);
 
+		const auto delta = static_cast<short>(HIWORD(wParam));
+		const auto keys = wheel_key_state(uMsg, wParam);
+		if (uMsg == WM_MOUSEWHEEL && _controls->wheel({loc.x, loc.y}, delta, keys)) return 0;
+
 		bool was_handled = false;
 		const auto h = _host.lock();
-		if (h) h->on_mouse_wheel({loc.x, loc.y}, static_cast<short>(HIWORD(wParam)), wheel_key_state(uMsg, wParam), was_handled);
+		if (h) h->on_mouse_wheel({loc.x, loc.y}, delta, keys, was_handled);
 		if (!was_handled && IsWindow(GetParent(m_hWnd)))
 			SendMessage(GetParent(m_hWnd), uMsg, wParam, lParam);
 		return 0;
@@ -1805,26 +1960,6 @@ public:
 		const auto h = _host.lock();
 		if (h) h->on_mouse_hwheel({loc.x, loc.y}, GET_WHEEL_DELTA_WPARAM(wParam), wheel_key_state(uMsg, wParam), was_handled);
 		return was_handled ? 0 : DefWindowProc(m_hWnd, uMsg, wParam, lParam);
-	}
-
-	LRESULT on_mouse_x_button_up(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-		const int fwButton = GET_XBUTTON_WPARAM(wParam);
-		const auto h = _host.lock();
-
-		switch (fwButton)
-		{
-		case XBUTTON1:
-			if (h) h->on_mouse_other_button_up(ui::other_mouse_button::xb1, loc, to_key_state(wParam));
-			break;
-		case XBUTTON2:
-			if (h) h->on_mouse_other_button_up(ui::other_mouse_button::xb2, loc, to_key_state(wParam));
-			break;
-		default: break;
-		}
-
-		return 1;
 	}
 
 	LRESULT on_window_gesture_notify(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
@@ -1854,21 +1989,19 @@ public:
 					POINT gesture_location{gi.ptsLocation.x, gi.ptsLocation.y};
 					ScreenToClient(m_hWnd, &gesture_location);
 					const pointi current_loc = {gesture_location.x, gesture_location.y};
+					const auto h = _host.lock();
 
 					if (gi.dwFlags & GF_BEGIN)
 					{
 						_pan_start_loc = current_loc;
-						const auto h = _host.lock();
 						if (h) h->pan_start(_pan_start_loc);
 					}
 					else if (gi.dwFlags & GF_END)
 					{
-						const auto h = _host.lock();
 						if (h) h->pan_end(_pan_start_loc, current_loc);
 					}
 					else
 					{
-						const auto h = _host.lock();
 						if (h) h->pan(_pan_start_loc, current_loc);
 					}
 
@@ -1910,801 +2043,6 @@ public:
 		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 	}
 
-	LRESULT on_window_set_focus(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
-	{
-		const auto h = _host.lock();
-		if (h) h->focus_changed(true, shared_from_this());
-		const auto ph = _parent_host.lock();
-		if (ph) ph->focus_changed(true, shared_from_this());
-		_has_focus = true;
-		return 0;
-	}
-
-	LRESULT on_window_kill_focus(uint32_t uMsg, WPARAM wParam, LPARAM /*lParam*/)
-	{
-		const auto h = _host.lock();
-		_zoom_gesture_distance = 0;
-		if (h) h->focus_changed(false, shared_from_this());
-		const auto ph = _parent_host.lock();
-		if (ph) ph->focus_changed(false, shared_from_this());
-		_has_focus = false;
-		return 0;
-	}
-
-	LRESULT on_window_key_down(uint32_t /*uMsg*/, const WPARAM wParam, LPARAM /*lParam*/) const
-	{
-		const auto h = _host.lock();
-		if (h) return h->key_down(static_cast<int>(wParam), ui::current_key_state());
-		return 0;
-	}
-
-	void set_cursor(const ui::style::cursor cursor) override
-	{
-		HICON icon = nullptr;
-		if (cursor_icon(cursor, icon)) set_cursor(icon);
-	}
-
-	void set_cursor(const HICON cursor)
-	{
-		_cursor = cursor;
-		SetCursor(cursor);
-	}
-
-	void reset_graphics() override
-	{
-		// Rebuilds the swap chain and draw context. After a Direct3D device loss the shared
-		// factories have already switched to software, so this produces a CPU draw context.
-		recreate_draw_context();
-
-		const auto h = _host.lock();
-
-		if (h && _draw_ctx && !_extent.is_empty())
-		{
-			h->on_window_layout(*_draw_ctx, _extent, IsIconic(m_hWnd));
-		}
-	}
-
-	void options_changed() override
-	{
-		if (is_valid_device())
-		{
-			_draw_ctx->update_font_size(_gdi_ctx->calc_base_font_size());
-		}
-
-		_gdi_ctx->set_window_font(hwnd(), ui::style::font_face::dialog);
-	}
-
-	void track_menu(const recti button_bounds, const std::vector<ui::command_ptr>& buttons) override
-	{
-		const auto parent = _parent_frame.lock();
-
-		if (parent)
-		{
-			parent->track_menu(button_bounds, buttons);
-		}
-	}
-
-	void dpi_changed() const
-	{
-		update_dpi_metrics();
-
-		if (is_valid_device())
-		{
-			_draw_ctx->update_font_size(_gdi_ctx->calc_base_font_size());
-		}
-
-		_gdi_ctx->set_window_font(hwnd(), ui::style::font_face::dialog);
-	}
-
-	ComPtr<IDataObject> _drag_data;
-
-	pointi to_client(const POINTL& pt) const
-	{
-		POINT point = {pt.x, pt.y};
-		ScreenToClient(m_hWnd, &point);
-		return {point.x, point.y};
-	}
-
-	STDMETHOD(QueryInterface)(_In_ REFIID iid, _Deref_out_ void** ppvObject) noexcept override
-	{
-		df::trace(std::format("frame_impl::QueryInterface {}", win32_to_string(iid)));
-
-		if (ppvObject == nullptr) return E_POINTER;
-
-		if (IsEqualGUID(iid, IID_IDropTarget) || IsEqualGUID(iid, IID_IUnknown))
-		{
-			*ppvObject = static_cast<IDropTarget*>(this);
-			return S_OK;
-		}
-
-		*ppvObject = nullptr;
-		return E_NOINTERFACE;
-	}
-
-	STDMETHOD_(ULONG, AddRef)() noexcept override
-	{
-		return 1;
-	}
-
-	STDMETHOD_(ULONG, Release)() noexcept override
-	{
-		return 1;
-	}
-
-	static void set_drop_effect(const platform::drop_effect e, DWORD* pdwEffect)
-	{
-		if (pdwEffect)
-		{
-			switch (e)
-			{
-			case platform::drop_effect::copy:
-				*pdwEffect = DROPEFFECT_COPY;
-				break;
-			case platform::drop_effect::move:
-				*pdwEffect = DROPEFFECT_MOVE;
-				break;
-			case platform::drop_effect::link:
-				*pdwEffect = DROPEFFECT_LINK;
-				break;
-			case platform::drop_effect::none:
-			default:
-				*pdwEffect = DROPEFFECT_NONE;
-			}
-		}
-	}
-
-	STDMETHODIMP DragEnter(IDataObject* pDataObj, const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
-	{
-		_drag_data = pDataObj;
-		const auto h = _host.lock();
-
-		if (h)
-		{
-			const data_object_client data(_drag_data.Get());
-			const auto result = h->drag_over(data, to_key_state(grfKeyState), to_client(pt));
-			set_drop_effect(result, pdwEffect);
-		}
-
-		return S_OK;
-	}
-
-	STDMETHODIMP DragLeave() override
-	{
-		_drag_data = nullptr;
-		const auto h = _host.lock();
-		if (h) h->drag_leave();
-		return S_OK;
-	}
-
-	STDMETHODIMP DragOver(const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
-	{
-		const auto h = _host.lock();
-
-		if (h)
-		{
-			const data_object_client data(_drag_data.Get());
-			const auto result = h->drag_over(data, to_key_state(grfKeyState), to_client(pt));
-			set_drop_effect(result, pdwEffect);
-		}
-
-		return S_OK;
-	}
-
-	STDMETHODIMP Drop(IDataObject* pDataObj, const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
-	{
-		// Drop ends the drag, so the source data object must not be held past this call.
-		_drag_data = nullptr;
-
-		const auto h = _host.lock();
-
-		if (h)
-		{
-			data_object_client data(pDataObj);
-			const auto result = h->drag_drop(data, to_key_state(grfKeyState), to_client(pt));
-			set_drop_effect(result, pdwEffect);
-		}
-
-		return S_OK;
-	}
-};
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static constexpr sizei menu_size_border = {3, 3};
-
-class win32_app final : public ui::platform_app
-{
-public:
-	ui::app_ptr _app;
-	std::vector<HANDLE> app_thread_events;
-	std::vector<std::function<void()>> app_event_actions;
-	HANDLE _timer_handle = nullptr;
-	int _frame_delay = 0;
-	std::shared_ptr<control_host_impl> _frame;
-
-	// The notification carries no path, so the watched folder is retained here to tell the app which
-	// folder to compare.
-	struct folder_watch
-	{
-		HANDLE h = nullptr;
-		df::folder_path path;
-	};
-
-	std::vector<folder_watch> _folder_changes;
-	platform::thread_event _idle_event;
-	LPARAM _last_mouse_move = 0;
-	wchar_t _pending_high_surrogate = 0;
-	bool _enable_screen_saver = true;
-	factories_ptr _f;
-
-	win32_app() : _idle_event(false, false)
-	{
-	}
-
-	void update_event_handles();
-	void tick() const;
-
-	static bool is_pre_translate_message(const int message)
-	{
-		return message != WM_TIMER &&
-			message != WM_PAINT &&
-			message != WM_ERASEBKGND;
-	}
-
-	static bool is_edit_char(const HWND hwnd, const char32_t c, const ui::key_state keys)
-	{
-		if (keys.control)
-		{
-			if (c == 'C' ||
-				c == 'Z' ||
-				c == 'X' ||
-				c == 'V' ||
-				c == 'A')
-			{
-				if (c == 'A')
-				{
-					// Select all
-					SendMessage(hwnd, EM_SETSEL, 0, -1);
-				}
-
-				return true;
-			}
-		}
-
-		if (c == VK_RETURN && wants_return(hwnd))
-		{
-			return true;
-		}
-
-		/*if (iswcntrl())
-
-
-		return
-			c == VK_SPACE ||
-			c == VK_LEFT ||
-			c == VK_RIGHT ||
-			c == VK_UP ||
-			c == VK_DOWN ||
-			c == VK_HOME ||
-			c == VK_END ||
-			c == VK_INSERT ||
-			c == VK_DELETE ||
-			c == VK_BACK;*/
-
-		return c != VK_ESCAPE &&
-			c != VK_RETURN &&
-			c != VK_TAB;
-	}
-
-	bool pre_translate_message(MSG& m);
-	void monitor_folders(const std::vector<df::folder_path>& folders_paths) override;
-	void destroy();
-	void idle() const;
-	int ui_message_loop();
-	uint32_t ui_wait_for_signal(const std::vector<std::reference_wrapper<platform::thread_event>>& events,
-	                            bool wait_all, uint32_t timeout_ms, const std::function<bool(LPMSG m)>& cb);
-	void sys_command(ui::sys_command_type cmd) override;
-	void full_screen(bool full) override;
-
-	void frame_delay(int delay) override;
-
-	void queue_idle() override
-	{
-		_idle_event.set();
-	}
-
-	void set_font_base_size(int i) override;
-
-	ui::control_frame_ptr
-	create_app_frame(const platform::setting_file_ptr& store, const ui::frame_host_weak_ptr& host) override;
-
-	void enable_screen_saver(bool enable) override;
-
-	void show_progress(int64_t done, int64_t total) override;
-	void end_progress() override;
-
-private:
-	ITaskbarList3* taskbar();
-
-	ComPtr<ITaskbarList3> _taskbar;
-	bool _taskbar_unavailable = false;
-	TBPFLAG _taskbar_state = TBPF_NOPROGRESS;
-	int64_t _taskbar_done = -1;
-	int64_t _taskbar_total = -1;
-};
-
-class control_host_impl final :
-	public frame_base,
-	public ui_frame_window<control_host_impl, ui::control_frame>,
-	public native_control_host,
-	public std::enable_shared_from_this<control_host_impl>
-{
-public:
-	using base_class = frame_base;
-	using this_class = control_host_impl;
-	using this_type = control_host_impl;
-
-	control_host_impl(const control_frame* other) = delete;
-	control_host_impl& operator=(const control_frame& other) = delete;
-
-	std::unordered_map<int, control_base2_ptr> _children;
-	std::unordered_map<unsigned long, std::shared_ptr<ui::command>> _menu_commands;
-	std::vector<std::weak_ptr<frame_impl>> _child_frames;
-	std::vector<std::weak_ptr<control_host_impl>> _child_hosts;
-
-	// Radio group of the most recently created radio button; used to mark the first button of each
-	// group with WS_GROUP so Windows scopes auto-radio exclusivity to that group.
-	std::optional<int> _last_radio_group;
-
-	win32_app* _pa = nullptr;
-	ui::weak_app_ptr _app;
-	ui::frame_host_weak_ptr _host;
-
-	platform::thread_event _close;
-	std::atomic<ui::close_result> _modal_result = ui::close_result::ok;
-	bool _tracking = false;
-	bool _is_popup = false;
-	bool _hover = false;
-	bool _is_first_nccalc_ = true;
-	UINT_PTR _timer_id = 0;
-
-	ui::color_style _colors;
-
-	win_rect _window_rgn;
-	win_rect _full_screen_bounds;
-	bool _composition_enabled = false;
-	bool _is_full_screen = false;
-	bool _is_app_frame = false;
-	bool _has_focus = false;
-	mutable int _next_id = 2000;
-	int _def_id = IDOK;
-
-	WINDOWPLACEMENT restore_window_placement{};
-	DWORD restore_style = 0;
-	DWORD restore_ex_style = 0;
-	recti _hover_command_bounds;
-	uint32_t cmd_show = SW_SHOW;
-
-	control_host_impl(const owner_context_ptr& ctx, const ui::frame_host_weak_ptr& host, ui::weak_app_ptr app,
-	                  win32_app* pa,
-	                  const bool is_app_frame, const ui::color_style& colors) :
-		frame_base(ctx),
-		_pa(pa),
-		_app(std::move(app)),
-		_host(host),
-		_close(true, false),
-		_colors(colors),
-		_is_app_frame(is_app_frame)
-	{
-	}
-
-	~control_host_impl() override
-	{
-		// destroy_frame_base() nulls m_hWnd, so the handle is captured first or the window leaks.
-		// The window is destroyed before clear() because the child control windows hold subclass
-		// and parent pointers into the control objects that clear() frees.
-		const auto hwnd = m_hWnd;
-
-		destroy_frame_base();
-
-		if (hwnd && IsWindow(hwnd))
-		{
-			DestroyWindow(hwnd);
-		}
-
-		clear();
-		m_hWnd = nullptr;
-	}
-
-	HWND Create(
-		_In_opt_ const HWND hWndParent,
-		_In_ const win_rect rect,
-		_In_ const DWORD dwStyle,
-		_In_ const DWORD dwExStyle)
-	{
-		const auto* const class_name = _is_app_frame ? L"LIBDESKTOP_MAIN" : L"LIBDESKTOP_DLG";
-		auto* const icon = _is_app_frame ? resources.app_icon_32 : nullptr;
-
-		if (register_class(CS_DBLCLKS, icon, nullptr, nullptr,
-		                   nullptr, class_name, nullptr))
-		{
-			auto x = rect.left;
-			auto y = rect.top;
-			auto cx = rect.width();
-			auto cy = rect.height();
-
-			if (rect.is_empty())
-			{
-				x = CW_USEDEFAULT;
-				y = CW_USEDEFAULT;
-				cx = CW_USEDEFAULT;
-				cy = CW_USEDEFAULT;
-			}
-
-			m_hWnd = CreateWindowEx(
-				dwExStyle,
-				class_name,
-				nullptr,
-				dwStyle,
-				x,
-				y,
-				cx,
-				cy,
-				hWndParent, nullptr,
-				get_resource_instance,
-				this);
-
-
-			create_draw_context(_pa->_f, false, false);
-
-			df::assert_true(IsWindow(m_hWnd));
-		}
-
-		return m_hWnd;
-	}
-
-	void destroy() override
-	{
-		DestroyWindow(m_hWnd);
-		clear();
-	}
-
-	void position(const recti bounds) override
-	{
-		SetWindowPos(m_hWnd, nullptr, bounds.left, bounds.top, bounds.width(), bounds.height(),
-		             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-	}
-
-	void clear()
-	{
-		// A child's callback may hold the last reference to this host. The children are released from
-		// a local, with the host kept alive, so the map being cleared is never destroyed under itself.
-		const auto keep_alive = weak_from_this().lock();
-		auto children = std::move(_children);
-		_children.clear();
-		_menu_commands.clear();
-		_modal_result = ui::close_result::ok;
-		children.clear();
-	}
-
-	int alloc_ids(const int count = 1) const
-	{
-		const auto result = _next_id;
-		_next_id += count;
-		return result;
-	}
-
-	LRESULT on_notify(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
-	{
-		const auto id = static_cast<int>(wParam);
-		const auto pnmh = std::bit_cast<LPNMHDR>(lParam);
-		const auto child = _children.find(id);
-
-		if (child != _children.end())
-		{
-			return child->second->on_notify(_host, _colors, id, pnmh);
-		}
-
-		return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
-	}
-
-	// These two messages aren't defined in winuser.h, but they are sent to windows
-	// with captions. They appear to paint the window caption and frame.
-	// Unfortunately if you override the standard non-client rendering as we do
-	// with CustomFrameWindow, sometimes Windows (not deterministically
-	// reproducibly but definitely frequently) will send these messages to the
-	// window and paint the standard caption/title over the top of the custom one.
-	// So we need to handle these messages in CustomFrameWindow to prevent this
-	// from happening.
-	const int WM_NCUAHDRAWCAPTION = 0xAE;
-	const int WM_NCUAHDRAWFRAME = 0xAF;
-
-	LRESULT handle_message(const HWND hWnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam) override
-	{
-		if (uMsg == WM_CREATE) return on_window_create(uMsg, wParam, lParam);
-		if (uMsg == WM_DESTROY) return on_window_destroy(uMsg, wParam, lParam);
-		if (uMsg == WM_PRINTCLIENT) return on_window_print_client(uMsg, wParam, lParam);
-		if (uMsg == WM_ERASEBKGND) return on_window_erase_background(uMsg, wParam, lParam);
-		if (uMsg == WM_ACTIVATE) return on_window_activate(uMsg, wParam, lParam);
-		if (uMsg == WM_SETFOCUS) return on_window_set_focus(uMsg, wParam, lParam);
-		if (uMsg == WM_KILLFOCUS) return on_window_kill_focus(uMsg, wParam, lParam);
-		if (uMsg == WM_CLOSE) return on_window_close(uMsg, wParam, lParam);
-		if (uMsg == WM_COMMAND) return on_window_command(uMsg, wParam, lParam);
-		if (uMsg == WM_HSCROLL) return on_window_hscroll(uMsg, wParam, lParam);
-		if (uMsg == WM_CONTEXTMENU) return on_window_context_menu(uMsg, wParam, lParam);
-		if (uMsg == WM_CTLCOLORBTN) return on_window_color(uMsg, wParam, lParam);
-		if (uMsg == WM_CTLCOLORDLG) return on_window_color(uMsg, wParam, lParam);
-		if (uMsg == WM_CTLCOLOREDIT) return on_window_color(uMsg, wParam, lParam);
-		if (uMsg == WM_CTLCOLORLISTBOX) return on_window_color(uMsg, wParam, lParam);
-		if (uMsg == WM_CTLCOLORSTATIC) return on_window_color(uMsg, wParam, lParam);
-		if (uMsg == WM_DRAWITEM) return on_window_draw_item(uMsg, wParam, lParam);
-		if (uMsg == WM_MEASUREITEM) return on_window_measure_item(uMsg, wParam, lParam);
-		if (uMsg == WM_TIMER) return on_window_timer(uMsg, wParam, lParam);
-		if (uMsg == WM_DPICHANGED) return on_window_dpi_changed(uMsg, wParam, lParam);
-		if (uMsg == WM_LBUTTONDOWN) return on_mouse_left_button_down(uMsg, wParam, lParam);
-		if (uMsg == WM_LBUTTONUP) return on_mouse_left_button_up(uMsg, wParam, lParam);
-		if (uMsg == WM_XBUTTONUP) return on_mouse_x_button_up(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSELEAVE) return on_mouse_leave(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSEMOVE) return on_mouse_move(uMsg, wParam, lParam);
-		if (uMsg == WM_MOUSEWHEEL || uMsg == 0x024e) return on_mouse_wheel(uMsg, wParam, lParam);
-		if (uMsg == WM_LBUTTONDBLCLK) return on_mouse_left_button_double_click(uMsg, wParam, lParam);
-		if (uMsg == WM_NCHITTEST) return on_window_nc_hit_test(uMsg, wParam, lParam);
-		if (uMsg == DM_GETDEFID) return on_get_def_id(uMsg, wParam, lParam);
-		if (uMsg == WM_NOTIFY) return on_notify(uMsg, wParam, lParam);
-
-		if (_is_app_frame)
-		{
-			if (uMsg == WM_WTSSESSION_CHANGE) return on_session_change(uMsg, wParam, lParam);
-			if (uMsg == WM_POWERBROADCAST) return on_power_broadcast(uMsg, wParam, lParam);
-			if (uMsg == WM_QUERYENDSESSION) return on_query_end_session(uMsg, wParam, lParam);
-			if (uMsg == WM_ENDSESSION) return on_end_session(uMsg, wParam, lParam);
-			if (uMsg == WM_SETTINGCHANGE) return on_system_settings_change(uMsg, wParam, lParam);
-			if (uMsg == WM_DEVICECHANGE) return on_system_device_change(uMsg, wParam, lParam);
-			if (uMsg == WM_GETMINMAXINFO) return on_window_min_max_info(uMsg, wParam, lParam);
-			if (uMsg == WM_INITMENUPOPUP) return on_window_menu_popup(uMsg, wParam, lParam);
-			if (uMsg == WM_NCACTIVATE) return on_window_nc_activate(uMsg, wParam, lParam);
-			if (uMsg == WM_NCCALCSIZE) return on_window_nc_calc_size(uMsg, wParam, lParam);
-			if (uMsg == WM_NCPAINT) return on_window_nc_paint(uMsg, wParam, lParam);
-			if (uMsg == WM_NCUAHDRAWCAPTION) return 0;
-			if (uMsg == WM_NCUAHDRAWFRAME) return 0;
-			if (uMsg == WM_DWMCOMPOSITIONCHANGED) return on_dwm_composition_changed(uMsg, wParam, lParam);
-		}
-		return DefWindowProc(hWnd, uMsg, wParam, lParam);
-	}
-
-
-	LRESULT on_window_set_focus(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
-	{
-		const auto h = _host.lock();
-		if (h) h->focus_changed(true, nullptr);
-		_has_focus = true;
-		return 0;
-	}
-
-	LRESULT on_window_kill_focus(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
-	{
-		const auto h = _host.lock();
-		if (h) h->focus_changed(false, nullptr);
-		_has_focus = false;
-		return 0;
-	}
-
-	LRESULT on_window_create(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/);
-
-	LRESULT on_window_destroy(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
-	{
-		// The host's on_window_destroy releases its own reference to this frame, which can be the last.
-		// Holding one here keeps this object alive until the handler has finished with its members.
-		const auto keep_alive = weak_from_this().lock();
-
-		if (_timer_id) KillTimer(m_hWnd, _timer_id);
-		if (_is_app_frame) WTSUnRegisterSessionNotification(m_hWnd);
-		const auto h = _host.lock();
-		if (h) h->on_window_destroy();
-
-		// destroy_frame_base() nulls m_hWnd, so the handle has to be captured first or
-		// DefWindowProc is called with nullptr and the default WM_DESTROY handling is skipped.
-		auto* const hwnd = m_hWnd;
-		destroy_frame_base();
-		const auto result = DefWindowProc(hwnd, uMsg, wParam, lParam);
-		clear();
-
-		return result;
-	}
-
-	LRESULT on_window_close(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM lParam)
-	{
-		const auto app = _app.lock();
-
-		if (_is_app_frame && app)
-		{
-			if (app->can_exit())
-			{
-				df::is_closing = true;
-				platform::event_exit.set();
-
-				DestroyWindow(m_hWnd);
-				PostQuitMessage(0);
-			}
-		}
-		else
-		{
-			_modal_result = ui::close_result::cancel;
-			_close.set();
-		}
-
-		return 0;
-	}
-
-	LRESULT on_window_nc_hit_test(uint32_t /*uMsg*/, WPARAM wParam, LPARAM lParam) const;
-
-	LRESULT on_get_def_id(uint32_t /*uMsg*/, WPARAM wParam, LPARAM lParam) const
-	{
-		return MAKELONG(_def_id, DC_HASDEFID);
-	}
-
-	void on_render(const draw_context_device_ptr& ctx_in) override
-	{
-		const auto ctx = _draw_ctx;
-
-		if (ctx)
-		{
-			ctx->frame_has_focus = _has_focus;
-			ctx->colors = _colors;
-			ctx->clear(ui::color(_colors.background, 1.0f));
-
-			const auto h = _host.lock();
-
-			if (h)
-			{
-				h->on_window_paint(*ctx);
-			}
-		}
-	}
-
-	void on_resize(const sizei extent, const bool is_minimized) override
-	{
-		const auto ctx = _draw_ctx;
-
-		if (ctx)
-		{
-			update_region();
-			ctx->resize(_extent);
-
-			const auto h = _host.lock();
-
-			if (h)
-			{
-				h->on_window_layout(*ctx, _extent, is_minimized);
-			}
-		}
-	}
-
-	static LRESULT on_window_print_client(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
-	{
-		return 0;
-	}
-
-	LRESULT on_window_erase_background(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/) const
-	{
-		return 1;
-	}
-
-	ui::color_style calc_colors(const HWND child) const
-	{
-		const auto found = _children.find(GetDlgCtrlID(child));
-
-		if (found != _children.end())
-		{
-			const auto child_color = found->second->calc_colors();
-			if (child_color.background != 0) return child_color;
-		}
-
-		wchar_t class_name[100] = {0};
-		::GetClassName(child, class_name, 100);
-
-		if (is_edit_class(class_name))
-		{
-			return {ui::style::color::edit_background, ui::style::color::edit_text};
-		}
-
-		return _colors;
-	}
-
-	LRESULT on_window_color(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		const auto h = std::bit_cast<HWND>(lParam);
-		const auto colors = calc_colors(h);
-
-		if (wParam != 0)
-		{
-			const auto dc = std::bit_cast<HDC>(wParam);
-			SetBkColor(dc, colors.background);
-			SetTextColor(dc, colors.foreground);
-		}
-
-		return std::bit_cast<LRESULT>(_gdi_ctx->gdi_brush(colors.background));
-	}
-
-	LRESULT on_mouse_move(uint32_t /*uMsg*/, WPARAM wParam, const LPARAM lParam)
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-
-		if (!_hover)
-		{
-			track_mouse_leave(m_hWnd);
-			_hover = true;
-		}
-
-		const auto h = _host.lock();
-		if (h) h->on_mouse_move(loc, _tracking);
-		return 0;
-	}
-
-	LRESULT on_mouse_left_button_down(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-
-		if (!_tracking)
-		{
-			_tracking = true;
-			SetCapture(m_hWnd);
-		}
-
-		const auto h = _host.lock();
-		if (h) h->on_mouse_left_button_down(loc, to_key_state(wParam));
-		return 0;
-	}
-
-	LRESULT on_mouse_left_button_up(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-
-		if (_tracking)
-		{
-			_tracking = false;
-			ReleaseCapture();
-			InvalidateRect(m_hWnd, nullptr, TRUE);
-		}
-
-		const auto h = _host.lock();
-		if (h) h->on_mouse_left_button_up(loc, to_key_state(wParam));
-		return 0;
-	}
-
-	LRESULT on_mouse_left_button_double_click(uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam) const
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-		const auto h = _host.lock();
-		if (h) h->on_mouse_left_button_double_click(loc, to_key_state(wParam));
-		return 0;
-	}
-
-	LRESULT on_mouse_leave(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam)
-	{
-		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-		_hover = false;
-		const auto h = _host.lock();
-		if (h) h->on_mouse_leave(loc);
-		InvalidateRect(m_hWnd, nullptr, TRUE);
-		return 0;
-	}
-
-	LRESULT on_mouse_wheel(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
-	{
-		POINT loc = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-		ScreenToClient(m_hWnd, &loc);
-
-		bool was_handled = false;
-		const auto h = _host.lock();
-		if (h) h->on_mouse_wheel({loc.x, loc.y}, static_cast<short>(HIWORD(wParam)), wheel_key_state(uMsg, wParam), was_handled);
-		if (!was_handled && IsWindow(GetParent(m_hWnd)))
-			SendMessage(GetParent(m_hWnd), uMsg, wParam, lParam);
-		return 0;
-	}
-
 	LRESULT on_mouse_x_button_up(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
 	{
 		const pointi loc(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
@@ -2725,33 +2063,6 @@ public:
 		return 1;
 	}
 
-	static BOOL CALLBACK focus_first_callback(const HWND h, const LPARAM p)
-	{
-		const auto first_focused = std::bit_cast<bool*>(p);
-
-		wchar_t szClassName[100] = {0};
-		::GetClassName(h, szClassName, 100);
-
-		const auto is_edit_control = is_edit_class(szClassName);
-		const auto is_button_control = _wcsicmp(L"BUTTON", szClassName) == 0;
-
-		if (is_edit_control || is_button_control)
-		{
-			if (IsWindowEnabled(h)) // && ::IsWindowVisible(h))
-			{
-				*first_focused = true;
-				SetFocus(h);
-				if (is_edit_control)
-				{
-					::PostMessage(h, EM_SETSEL, 0, -1);
-				}
-				return false;
-			}
-		}
-
-		return true;
-	}
-
 	static BOOL CALLBACK focus_any_callback(const HWND h, LPARAM p)
 	{
 		if (IsWindowEnabled(h)) // && ::IsWindowVisible(h))
@@ -2768,16 +2079,19 @@ public:
 		return _gdi_ctx->scale_factor;
 	}
 
+	// The frame itself takes the keyboard, from any of its controls that held it: a window that has it
+	// already hears of no change from Windows, so the control lets it go here.
+	void focus() override
+	{
+		_controls->clear_focus();
+		SetFocus(m_hWnd);
+	}
+
+	// The first edit or button, as the native host chose; a frame of its own when it has neither.
 	void focus_first() override
 	{
-		bool first_focused = false;
-
-		EnumChildWindows(m_hWnd, focus_first_callback, std::bit_cast<LPARAM>(&first_focused));
-
-		if (!first_focused)
-		{
-			EnumChildWindows(m_hWnd, focus_any_callback, 0);
-		}
+		if (_controls->focus_first()) return;
+		EnumChildWindows(m_hWnd, focus_any_callback, 0);
 	}
 
 	void set_cursor(const ui::style::cursor cursor) override
@@ -2789,7 +2103,7 @@ public:
 	void set_cursor(const HICON cursor)
 	{
 		_cursor = cursor;
-		SetCursor(cursor);
+		if (!_over_controls) SetCursor(cursor);
 	}
 
 	ui::close_result wait_for_close(const uint32_t timeout_ms) override
@@ -2805,7 +2119,8 @@ public:
 
 	void close(const bool is_cancel) override
 	{
-		if (_is_app_frame)
+		// The application's window asks the application first, and a pane goes; a dialog answers its wait.
+		if (is_app_frame() || _kind == kind::pane)
 		{
 			::PostMessage(m_hWnd, WM_CLOSE, 0, 0);
 		}
@@ -2821,30 +2136,184 @@ public:
 		return _modal_result.load() == ui::close_result::cancel;
 	}
 
-	bool pre_translate_message(const LPMSG m) const
+	// A dialog's own loop: its keys go to the control that has the keyboard, as a dialog box gave them
+	// to the control with the focus, and Escape cancels it when no control takes it.
+	bool pre_translate_message(const LPMSG m)
 	{
 		if (!m_hWnd) return false;
 
-		return IsDialogMessage(m_hWnd, m) != 0;
+		const auto mm = m->message;
+		const auto focus = GetFocus();
+		const auto in_dialog = focus == m_hWnd || IsChild(m_hWnd, focus);
+
+		if (mm == WM_KEYDOWN || mm == WM_SYSKEYDOWN)
+		{
+			const auto key = static_cast<int>(m->wParam);
+			const auto ks = ui::current_key_state();
+			const auto controls = in_dialog ? keyboard_input() : nullptr;
+
+			if (controls)
+			{
+				const auto keep_alive = weak_from_this().lock();
+				if (controls->key_down(key, ks)) return true;
+				if (controls->is_typing() && !ks.alt) return false;
+			}
+
+			if (in_dialog && key == VK_ESCAPE && !ks.alt)
+			{
+				close(true);
+				return true;
+			}
+		}
+		else if (mm == WM_CHAR && in_dialog)
+		{
+			const auto controls = keyboard_input();
+
+			if (controls && controls->is_typing())
+			{
+				const auto c = static_cast<wchar_t>(m->wParam);
+				auto& pending = _pa->_pending_high_surrogate;
+				std::wstring text;
+
+				if (str::is_lead_surrogate(c))
+				{
+					pending = c;
+					return true;
+				}
+
+				if (str::is_trail_surrogate(c))
+				{
+					if (pending) text = {pending, c};
+					pending = 0;
+				}
+				else
+				{
+					pending = 0;
+					if (c >= L' ') text.push_back(c);
+				}
+
+				if (!text.empty()) controls->text_input(str::utf16_to_utf8(text));
+				return true;
+			}
+		}
+
+		return false;
 	}
 
-	void invalidate(const recti bounds, const bool erase) override
+	void redraw() override
 	{
-		df::bump(df::ui_perf.invalidates);
+		df::bump(df::ui_perf.redraws);
 
-		if (bounds.is_empty())
+		if (_draw_ctx && _draw_ctx->is_valid())
 		{
-			InvalidateRect(m_hWnd, nullptr, erase);
+			// A video frame nobody can see is not worth drawing; the standby repaints once it can be.
+			if (skip_hidden_frame()) return;
+
+			// No begin_draw runs here, so any damage limit from the last paint is stale - the
+			// textures this re-present exists to show changed outside it.
+			_draw_ctx->reset_damage();
+
+			const auto presented = _draw_ctx->render();
+
+			if (presented.failed)
+			{
+				handle_device_loss(presented.backend_code, "redraw");
+				return;
+			}
+
+			present();
 		}
 		else
 		{
-			InvalidateRect(m_hWnd, win_rect(bounds), erase);
+			InvalidateRect(m_hWnd, nullptr, 0);
 		}
 	}
 
-	void scroll(const int dx, const int dy, const recti bounds, const bool scroll_child_controls) override
+	void options_changed() override
 	{
-		scroll_impl(m_hWnd, dx, dy, bounds, scroll_child_controls);
+		if (_draw_ctx && _draw_ctx->is_valid())
+		{
+			_draw_ctx->update_font_size(_gdi_ctx->calc_base_font_size());
+		}
+
+		_controls->scale_changed();
+	}
+
+	// A layered frame fades in as it is shown and out as it is hidden, where animations run, and is
+	// hidden once it has faded out.
+	using ui_frame_window::window_bounds;
+
+	void window_bounds(const recti bounds, const bool visible) override
+	{
+		if (!_style.layered)
+		{
+			ui_frame_window::window_bounds(bounds, visible);
+			return;
+		}
+
+		SetWindowPos(m_hWnd, nullptr, bounds.left, bounds.top, bounds.width(), bounds.height(),
+		             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+		fade(visible);
+	}
+
+	void show(const bool show) override
+	{
+		if (_style.layered) fade(show);
+		else ui_frame_window::show(show);
+	}
+
+	void fade(const bool visible)
+	{
+		_alpha_target = visible ? 255 : 0;
+		if (visible && !IsWindowVisible(m_hWnd)) ShowWindow(m_hWnd, SW_SHOWNOACTIVATE);
+
+		if (!ui::animations_enabled)
+		{
+			if (_fade_timer)
+			{
+				KillTimer(m_hWnd, _fade_timer);
+				_fade_timer = 0;
+			}
+
+			_alpha = _alpha_target;
+			if (_alpha > 0) InvalidateRect(m_hWnd, nullptr, FALSE);
+			else ShowWindow(m_hWnd, SW_HIDE);
+		}
+		else if (_alpha != _alpha_target && !_fade_timer)
+		{
+			_fade_timer = SetTimer(m_hWnd, fade_timer_id, 1000 / 30, nullptr);
+		}
+	}
+
+	void step_fade()
+	{
+		if (_alpha != _alpha_target)
+		{
+			_alpha = ui::gated_fade_alpha_step(_alpha, _alpha_target);
+
+			// Presented again at the alpha it has faded to.
+			if (_alpha > 0)
+			{
+				before_paint();
+				handle_render();
+			}
+		}
+
+		if (_alpha == _alpha_target)
+		{
+			if (_fade_timer)
+			{
+				KillTimer(m_hWnd, _fade_timer);
+				_fade_timer = 0;
+			}
+
+			if (_alpha == 0) ShowWindow(m_hWnd, SW_HIDE);
+		}
+	}
+
+	void scroll(const int dx, const int dy, const recti bounds) override
+	{
+		scroll_impl(m_hWnd, dx, dy, bounds);
 	}
 
 	struct pending_move
@@ -2911,18 +2380,17 @@ public:
 		}
 	};
 
-	void apply_layout(const ui::control_layouts& controls, const pointi scroll_offset) override
+	// Places the frames the host's frame elements hold, as its input manager found them after a layout.
+	void place_frames(const std::vector<ui::input_manager::frame_placement>& frames)
 	{
-		// A layout pass runs for many state changes, so most controls are already where they belong.
+		// A layout pass runs for many state changes, so most frames are already where they belong.
 		// Moving an unchanged window still repaints it, so only changed windows are touched here.
 		std::vector<pending_move> moves;
-		moves.reserve(controls.size());
+		moves.reserve(frames.size());
 
-		for (const auto& c : controls)
+		for (const auto& c : frames)
 		{
-			if (!c.control) continue;
-
-			const auto handle = c.control->handle();
+			const auto handle = c.frame->handle();
 			const auto* hwnd = std::any_cast<HWND>(&handle);
 			if (!hwnd || !IsWindow(*hwnd)) continue;
 			const auto h = *hwnd;
@@ -2933,9 +2401,7 @@ public:
 			const auto was_visible = (style & WS_VISIBLE) != 0;
 			if (!c.visible && !was_visible) continue;
 
-			auto bounds = c.bounds;
-			if (c.offset) bounds = bounds.offset(scroll_offset);
-
+			const auto bounds = c.bounds;
 			auto changed = true;
 			auto size_changed = true;
 			auto current_bounds = bounds;
@@ -2957,8 +2423,8 @@ public:
 			if (!changed) continue;
 
 			moves.push_back({
-				h, bounds, was_visible ? current_bounds : recti{}, c.visible, size_changed,
-				std::dynamic_pointer_cast<frame>(c.control) != nullptr, c.visible && !was_visible
+				h, bounds, was_visible ? current_bounds : recti{}, c.visible, size_changed, true,
+				c.visible && !was_visible
 			});
 		}
 
@@ -3011,9 +2477,25 @@ public:
 		flush_moves();
 	}
 
-	LRESULT on_window_context_menu(uint32_t /*uMsg*/, WPARAM wParam, const LPARAM lParam)
+	LRESULT on_window_context_menu(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
 	{
+		const auto keep_alive = weak_from_this().lock();
+
+		// From the keyboard: a control that holds the focus opened its own menu as the key went down.
+		if (lParam == -1 && _controls->focused()) return 0;
+
 		const pointi loc = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+		if (lParam != -1)
+		{
+			POINT client{loc.x, loc.y};
+			ScreenToClient(m_hWnd, &client);
+			if (_controls->context_menu({client.x, client.y})) return 0;
+		}
+
+		// A pane's menu is the one its parent shows at that point, as a child window's was.
+		if (_kind == kind::pane) return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
+
 		const auto h = _host.lock();
 
 		if (h)
@@ -3022,7 +2504,7 @@ public:
 
 			if (!commands.empty())
 			{
-				show_menu(recti(loc, sizei()), commands);
+				show_app_menu(recti(loc, sizei()), commands);
 			}
 		}
 
@@ -3031,10 +2513,11 @@ public:
 
 	LRESULT on_window_min_max_info(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/) const;
 
-	LRESULT on_window_activate(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+	LRESULT on_window_activate(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
 	{
 		const LPARAM r = DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 		const auto is_active = wParam == WA_ACTIVE || wParam == WA_CLICKACTIVE;
+		if (!is_active) cancel_menu();
 		const auto h = _host.lock();
 		if (h) h->activate(is_active);
 		return r;
@@ -3044,31 +2527,6 @@ public:
 
 	LRESULT on_system_device_change(uint32_t /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/) const;
 	LRESULT on_window_erase_background(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/);
-	LRESULT on_window_command(uint32_t uMsg, WPARAM wParam, LPARAM lParam);
-	LRESULT on_window_hscroll(uint32_t uMsg, WPARAM wParam, LPARAM lParam);
-
-	static LRESULT on_window_menu_popup(uint32_t /*uMsg*/, const WPARAM wParam, LPARAM lParam)
-	{
-		const auto hMenu = std::bit_cast<HMENU>(wParam);
-
-		if (hMenu)
-		{
-		}
-
-		return 0;
-	}
-
-	LRESULT on_window_draw_item(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam) const
-	{
-		draw_item(std::bit_cast<LPDRAWITEMSTRUCT>(lParam));
-		return TRUE;
-	}
-
-	LRESULT on_window_measure_item(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam) const
-	{
-		measure_item(std::bit_cast<LPMEASUREITEMSTRUCT>(lParam));
-		return 1;
-	}
 
 	LRESULT on_dwm_composition_changed(uint32_t /*uMsg*/, WPARAM wParam, LPARAM lParam);
 	LRESULT on_window_nc_activate(uint32_t, WPARAM, LPARAM) const;
@@ -3077,58 +2535,6 @@ public:
 
 	void update_region();
 	void handle_composition_changed();
-
-	void draw_item(const LPDRAWITEMSTRUCT lpDrawItemStruct) const
-	{
-		if (lpDrawItemStruct->CtlType == ODT_MENU)
-		{
-			const auto found = _menu_commands.find(lpDrawItemStruct->itemID);
-			draw_menu_item(found != _menu_commands.end() ? found->second : nullptr, lpDrawItemStruct, _gdi_ctx);
-		}
-	}
-
-	void measure_item(const LPMEASUREITEMSTRUCT lpMeasureItemStruct) const
-	{
-		if (lpMeasureItemStruct->CtlType == ODT_MENU)
-		{
-			const auto scale = scale_factor();
-			const auto found = _menu_commands.find(lpMeasureItemStruct->itemID);
-
-			if (found == _menu_commands.end())
-			{
-				lpMeasureItemStruct->itemWidth = 0;
-				lpMeasureItemStruct->itemHeight = df::round(8 * scale);
-			}
-			else
-			{
-				const auto c = found->second;
-				auto* const dc = GetDC(m_hWnd);
-
-				if (dc)
-				{
-					auto* const old_font = SelectObject(dc, _gdi_ctx->dialog);
-					const auto text_w = str::utf8_to_utf16(c->text);
-					const auto keyboard_accelerator_w = str::utf8_to_utf16(c->keyboard_accelerator_text);
-
-					win_rect text_bounds;
-					win_rect keyboard_accelerator_bounds;
-					DrawText(dc, text_w.data(), static_cast<int>(text_w.size()), &text_bounds,
-					         DT_SINGLELINE | DT_LEFT | DT_CALCRECT);
-					DrawText(dc, keyboard_accelerator_w.data(), static_cast<int>(keyboard_accelerator_w.size()),
-					         &keyboard_accelerator_bounds, DT_SINGLELINE | DT_LEFT | DT_CALCRECT);
-					SelectObject(dc, old_font);
-
-
-					lpMeasureItemStruct->itemWidth = text_bounds.width() + keyboard_accelerator_bounds.width() +
-						df::round(64 * scale);
-					lpMeasureItemStruct->itemHeight = std::max(text_bounds.height() + df::round(8 * scale),
-					                                           df::round(20 * scale));
-
-					ReleaseDC(m_hWnd, dc);
-				}
-			}
-		}
-	}
 
 	void full_screen(const bool full)
 	{
@@ -3251,6 +2657,26 @@ public:
 		return 0;
 	}
 
+	// Every frame made in this one; the expired are pruned as one is added, since a host that rebuilds its
+	// frames - the media view does on every layout change - would otherwise grow the list for the session.
+	template <typename F>
+	void for_each_child(F&& f) const
+	{
+		for (const auto& c : _children)
+		{
+			if (const auto child = c.lock()) f(*child);
+		}
+	}
+
+	void add_child(const std::shared_ptr<frame_impl>& child)
+	{
+		std::erase_if(_children, [](const std::weak_ptr<frame_impl>& c) { return c.expired(); });
+		_children.push_back(child);
+	}
+
+	// After this window's owner context took a new scale: its draw context, its controls and every frame
+	// in it. A frame in another never receives WM_DPICHANGED of its own, so without this its draw
+	// context and controls keep the scale they were created with.
 	void update_font_sizes() const
 	{
 		if (_draw_ctx)
@@ -3259,82 +2685,20 @@ public:
 		}
 
 		update_dpi_metrics();
-
-		if (_gdi_ctx)
-		{
-			// Refresh the shared GDI fonts so native child controls (edit boxes etc.)
-			// pick up the new base size - update_scale_factor only rebuilds them on a
-			// DPI change, not on a large-font toggle.
-			_gdi_ctx->update_fonts();
-			_gdi_ctx->set_window_font(m_hWnd, ui::style::font_face::dialog);
-		}
-
-		for (const auto& c : _children)
-		{
-			c.second->dpi_changed();
-		}
-
-		for (const auto& f : _child_frames)
-		{
-			auto ff = f.lock();
-
-			if (ff)
-			{
-				ff->dpi_changed();
-			}
-		}
-
-		// A child control host is not a control and not a frame, so it is in neither list above
-		// and, being a child window, never receives WM_DPICHANGED of its own. Without this its
-		// draw context keeps the scale it was created with while the controls inside it are
-		// re-fonted from the shared context.
-		for (const auto& h : _child_hosts)
-		{
-			auto hh = h.lock();
-
-			if (hh)
-			{
-				hh->dpi_changed();
-			}
-		}
+		_controls->scale_changed();
+		for_each_child([](const frame_impl& c) { c.dpi_changed(); });
 	}
 
-	// A child host shares its parent's owner context, so the GDI fonts have already been rebuilt
-	// by the parent; only this host's own draw context and contents still need the new scale.
+	// A frame in another shares its owner context, whose scale the window has already updated; only this
+	// frame's own draw context and contents still need it. A pane's host hears of it from the
+	// application, which lays the views out again.
 	void dpi_changed() const
 	{
-		if (_draw_ctx)
+		update_font_sizes();
+
+		if (_kind != kind::pane)
 		{
-			_draw_ctx->update_font_size(_gdi_ctx->calc_base_font_size());
-		}
-
-		update_dpi_metrics();
-
-		if (_gdi_ctx)
-		{
-			_gdi_ctx->set_window_font(m_hWnd, ui::style::font_face::dialog);
-		}
-
-		for (const auto& c : _children)
-		{
-			c.second->dpi_changed();
-		}
-
-		for (const auto& f : _child_frames)
-		{
-			auto ff = f.lock();
-
-			if (ff)
-			{
-				ff->dpi_changed();
-			}
-		}
-
-		const auto host = _host.lock();
-
-		if (host)
-		{
-			host->dpi_changed();
+			if (const auto host = _host.lock()) host->dpi_changed();
 		}
 	}
 
@@ -3378,16 +2742,22 @@ public:
 		return 0;
 	}
 
+	// Lays the host out, then places the frames its frame elements hold.
+	void layout_host(const bool is_minimized)
+	{
+		const auto h = _host.lock();
+		if (!h || !_draw_ctx) return;
+
+		h->on_window_layout(*_draw_ctx, _extent, is_minimized);
+		if (!is_minimized) place_frames(_controls->layout());
+	}
+
 	void layout() override
 	{
-		if (_draw_ctx && IsWindow(m_hWnd))
+		// A pane is laid out once it has a size; a window lays its host out from its first message.
+		if (_draw_ctx && IsWindow(m_hWnd) && (_kind != kind::pane || !_extent.is_empty()))
 		{
-			const auto h = _host.lock();
-
-			if (h)
-			{
-				h->on_window_layout(*_draw_ctx, _extent, IsIconic(m_hWnd));
-			}
+			layout_host(IsIconic(m_hWnd) != 0);
 		}
 	}
 
@@ -3396,224 +2766,26 @@ public:
 	void reset_graphics() override
 	{
 		recreate_draw_context();
+		for_each_child([](frame_impl& c) { c.reset_graphics(); });
 
-		for (const auto& f : _child_frames)
+		if (_draw_ctx && !_extent.is_empty())
 		{
-			const auto ff = f.lock();
-
-			if (ff)
-			{
-				ff->reset_graphics();
-			}
-		}
-
-		const auto h = _host.lock();
-
-		if (h && _draw_ctx && !_extent.is_empty())
-		{
-			h->on_window_layout(*_draw_ctx, _extent, IsIconic(m_hWnd));
+			layout_host(IsIconic(m_hWnd) != 0);
 		}
 
 		InvalidateRect(m_hWnd, nullptr, FALSE);
 	}
 
-	ui::edit_ptr create_edit(const ui::edit_styles& styles, std::string_view text,
-	                         std::function<void(const std::string&)> changed) override;
-	ui::trackbar_ptr create_slider(int min, int max, std::function<void(int, bool)> changed) override;
-	ui::button_ptr create_button(std::string_view text, std::function<void()> invoke,
-	                             bool default_button = false) override;
-	ui::button_ptr create_button(icon_index icon, std::string_view title, std::string_view details,
-	                             std::function<void()> invoke, bool default_button = false) override;
-	ui::button_ptr create_check_button(bool val, std::string_view text, bool is_radio,
-	                                   std::function<void(bool)> changed,
-	                                   int radio_group = ui::radio_group_default) override;
-	ui::date_time_control_ptr create_date_time_control(df::date_t text, std::function<void(df::date_t)> changed,
-	                                                   bool include_time) override;
-	ui::toolbar_ptr
-	create_toolbar(const ui::toolbar_styles& styles, const std::vector<ui::command_ptr>& buttons) override;
-	ui::control_frame_ptr create_dlg(ui::frame_host_weak_ptr host, bool is_popup) override;
+	ui::control_ptr focused_control() const override
+	{
+		return _controls->has_keyboard_focus() ? _controls->focused() : nullptr;
+	}
+
+	ui::frame_ptr create_dlg(ui::frame_host_weak_ptr host) override;
 	ui::bubble_window_ptr create_bubble() override;
 
-	HHOOK _hMenuHook = nullptr;
-	static this_class* _current;
-	win_rect m_rcButton;
-
-
-	LRESULT on_menu_nc_calc_size(HWND hwnd, uint32_t /*uMsg*/, const WPARAM /*wParam*/, const LPARAM lParam) const
-	{
-		const auto pr = std::bit_cast<LPRECT>(lParam);
-
-		if (pr)
-		{
-			// Menu subclass messages can arrive while the frame is tearing down and _draw_ctx is gone.
-			const auto padding = menu_size_border * (_draw_ctx ? _draw_ctx->scale_factor : 1.0);
-			pr->left += padding.cx;
-			pr->right -= padding.cx;
-			pr->top += padding.cy;
-			pr->bottom -= padding.cy;
-		}
-
-		return 0;
-	}
-
-	LRESULT on_menu_nc_paint(const HWND hwnd, uint32_t /*uMsg*/, const WPARAM wParam, LPARAM /*lParam*/)
-	{
-		auto dc = GetDCEx(hwnd, std::bit_cast<HRGN>(wParam), DCX_WINDOW | DCX_INTERSECTRGN | 0x10000);
-		if (!dc) dc = GetWindowDC(hwnd);
-
-		if (dc)
-		{
-			win_rect rcWin;
-			GetWindowRect(hwnd, &rcWin);
-			OffsetRect(&rcWin, -rcWin.left, -rcWin.top);
-			draw_menu(dc, rcWin);
-			ReleaseDC(hwnd, dc);
-		}
-
-		return 1;
-	}
-
-	void draw_menu(const HDC dc, const win_rect& rcWin) const
-	{
-		const auto padding = menu_size_border * (_draw_ctx ? _draw_ctx->scale_factor : 1.0);
-
-		fill_solid_rect(dc, rcWin, ui::lighten(ui::style::color::menu_background, 0.22f));
-		fill_solid_rect(dc, rcWin.inflate(-padding.cx, -padding.cy),
-		                ui::style::color::menu_background);
-	}
-
-	LRESULT on_menu_print(const HWND hwnd, uint32_t /*uMsg*/, const WPARAM wParam, const LPARAM lParam)
-	{
-		const HDC dc = std::bit_cast<HDC>(wParam);
-		win_rect rcWin;
-		GetWindowRect(hwnd, rcWin);
-		OffsetRect(rcWin, -rcWin.left, -rcWin.top);
-
-		// Do the same as in on_window_nc_paint, but draw to provided DC.
-		// Should there be a common method?
-		if ((lParam & PRF_NONCLIENT) != 0)
-		{
-			draw_menu(dc, rcWin);
-		}
-
-		// Get the system to draw all the items to a memory DC and then whack it
-		// on top of the background we just drew above
-		if ((lParam & PRF_CLIENT) != 0)
-		{
-			const auto client_rect = get_client_rect(hwnd);
-			const auto cx_client = client_rect.width();
-			const auto cy_client = client_rect.height();
-			const auto offset_x = (rcWin.right - rcWin.left - cx_client) / 2;
-			const auto offset_y = (rcWin.bottom - rcWin.top - cy_client) / 2;
-
-			auto* mem_dc = CreateCompatibleDC(dc);
-			if (mem_dc)
-			{
-				auto* mem_bm = CreateCompatibleBitmap(dc, cx_client, cy_client);
-
-				if (mem_bm)
-				{
-					auto* const old_bm = SelectObject(mem_dc, mem_bm);
-					DefSubclassProc(hwnd, WM_PRINTCLIENT, std::bit_cast<WPARAM>(mem_dc), PRF_CLIENT);
-					BitBlt(dc, offset_x, offset_y, cx_client, cy_client, mem_dc, 0, 0, SRCCOPY);
-					SelectObject(mem_dc, old_bm);
-					DeleteObject(mem_bm);
-				}
-
-				DeleteDC(mem_dc);
-			}
-		}
-
-		return 0;
-	}
-
-	static LRESULT CALLBACK MenuSuperProc(const HWND hWnd, const UINT uMsg, const WPARAM wParam,
-	                                      const LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/)
-	{
-		// USER32 caches menu windows per thread, so this subclass can outlive the host that
-		// installed it and a host captured in the reference data would be a dangling pointer.
-		// The host running the current menu session is _current, which is null outside one.
-		auto* const pt = _current;
-
-		if (pt)
-		{
-			if (uMsg == WM_NCPAINT) return pt->on_menu_nc_paint(hWnd, uMsg, wParam, lParam);
-			if (uMsg == WM_PRINT) return pt->on_menu_print(hWnd, uMsg, wParam, lParam);
-			if (uMsg == WM_NCCALCSIZE) return pt->on_menu_nc_calc_size(hWnd, uMsg, wParam, lParam);
-		}
-
-		return DefSubclassProc(hWnd, uMsg, wParam, lParam);
-	}
-
-	static LRESULT CALLBACK menu_create_hook_proc(const int nCode, const WPARAM wParam, const LPARAM lParam)
-	{
-		wchar_t szClassName[7] = {0};
-
-		const auto current = _current;
-
-		if (nCode == HCBT_CREATEWND)
-		{
-			const auto hWndMenu = std::bit_cast<HWND>(wParam);
-			::GetClassName(hWndMenu, szClassName, 7);
-
-			if (::lstrcmp(L"#32768", szClassName) == 0)
-			{
-				// Subclass to a flat-looking menu
-				// No reference data: the subclass resolves the active host through _current, so
-				// nothing here can outlive the host it was installed for.
-				SetWindowSubclass(hWndMenu, MenuSuperProc, 0, 0);
-				SetWindowPos(hWndMenu, HWND_TOP, 0, 0, 0, 0,
-				             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED |
-				             SWP_DRAWFRAME);
-			}
-		}
-		else if (nCode == HCBT_DESTROYWND)
-		{
-			const auto hWndMenu = std::bit_cast<HWND>(wParam);
-			::GetClassName(hWndMenu, szClassName, 7);
-
-			if (::lstrcmp(L"#32768", szClassName) == 0)
-			{
-				RemoveWindowSubclass(hWndMenu, MenuSuperProc, 0);
-			}
-		}
-		else if (nCode < 0)
-		{
-			// Per the CBT hook contract, when nCode < 0 the hook must pass the
-			// message to CallNextHookEx and return its result without processing.
-			return CallNextHookEx(current ? current->_hMenuHook : nullptr, nCode, wParam, lParam);
-		}
-		return CallNextHookEx(current ? current->_hMenuHook : nullptr, nCode, wParam, lParam);
-	}
-
-	int show_menu(const HMENU hMenu, const uint32_t menu_style, const int x, const int y,
-	              const LPCRECT pr = nullptr) override
-	{
-		df::scope_locked_inc sl2(df::command_active);
-
-		const auto prev_current = _current;
-		const auto prev_hook = _hMenuHook;
-		_current = this;
-		_hMenuHook = ::SetWindowsHookEx(WH_CBT, menu_create_hook_proc, get_resource_instance, GetCurrentThreadId());
-
-		const auto result = TrackPopupMenu(hMenu, menu_style, x, y, 0, m_hWnd, pr);
-
-		// UnhookWindowsHookEx(nullptr) is an error; the hook can legitimately fail to install.
-		if (_hMenuHook) UnhookWindowsHookEx(_hMenuHook);
-		// The handle is restored, not cleared: a nested menu on this same host would otherwise
-		// drop the outer session's hook handle and leak it.
-		_hMenuHook = prev_hook;
-		_current = prev_current;
-
-		return result;
-	}
-
-	void hover_command_bounds(const recti bounds) override
-	{
-		_hover_command_bounds = bounds;
-	}
-
-	void show_menu(const recti button_bounds, const std::vector<ui::command_ptr>& commands) override
+	// A menu the application asks for at a point, which it tracks through its own track_menu.
+	void show_app_menu(const recti button_bounds, const std::vector<ui::command_ptr>& commands)
 	{
 		const auto a = _app.lock();
 
@@ -3625,112 +2797,102 @@ public:
 
 	void track_menu(const recti button_bounds, const std::vector<ui::command_ptr>& commands) override
 	{
-		df::scope_locked_inc sl2(df::command_active);
+		const auto keep_alive = weak_from_this().lock();
 
-		auto cmd_id = 50000;
-		win32_menu menu;
-
-		if (menu.CreatePopupMenu())
+		// A pane's menu is drawn by the frame it is in, whose context is the menus' kind - never a
+		// Direct3D pane's.
+		if (_kind == kind::pane)
 		{
-			// Submenus nest to a bounded depth; the depth cap stops a command whose menu reaches
-			// itself from recursing forever.
-			constexpr auto max_menu_depth = 4;
-
-			const std::function<void(const win32_menu&, const std::vector<ui::command_ptr>&, int)> build_items =
-				[&](const win32_menu& parent, const std::vector<ui::command_ptr>& items, const int depth)
+			if (const auto parent = _parent.lock())
 			{
-				for (const auto& c : items)
-				{
-					if (!c)
-					{
-						parent.AppendMenu(MF_OWNERDRAW | MF_SEPARATOR);
-						continue;
-					}
-
-					// A command the platform cannot perform is absent, not dimmed. `visible` is where that is answered, and the toolbar has
-					// always honoured it - a menu that ignored it left the same command hidden in
-					// one surface and permanently greyed in another.
-					if (!c->visible) continue;
-
-					auto text = str::utf8_to_utf16(c->text);
-					const auto id = ++cmd_id;
-					_menu_commands[id] = c;
-
-					win32_menu sub_menu;
-
-					if (c->menu && depth < max_menu_depth && sub_menu.CreatePopupMenu())
-					{
-						build_items(sub_menu, c->menu(), depth + 1);
-
-						MENUITEMINFO mii = {};
-						mii.cbSize = sizeof(MENUITEMINFO);
-						mii.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_TYPE | MIIM_DATA | MIIM_STATE;
-						mii.fType = MFT_OWNERDRAW;
-						mii.fState = c->enable ? MFS_ENABLED : (MFS_DISABLED | MFS_GRAYED);
-						mii.dwTypeData = const_cast<LPWSTR>(text.c_str());
-						mii.cch = 0;
-						mii.hSubMenu = sub_menu.Detach();
-						mii.dwItemData = id;
-						mii.wID = id;
-						parent.InsertMenuItem(parent.GetMenuItemCount(), TRUE, &mii);
-					}
-					else
-					{
-						auto style = MF_OWNERDRAW;
-						if (!c->enable) style |= MF_DISABLED;
-						if (c->checked) style |= MF_CHECKED;
-
-						parent.AppendMenu(style, id, text.c_str());
-					}
-				}
-			};
-
-			build_items(menu, commands, 0);
-
-			const auto win_bounds_center = window_bounds().center();
-			auto style = TPM_RETURNCMD | TPM_RIGHTBUTTON;
-			int x = button_bounds.left;
-			int y = button_bounds.top;
-
-			if (button_bounds.width() > 1)
-			{
-				if (win_bounds_center.x < button_bounds.left)
-				{
-					style |= TPM_RIGHTALIGN;
-					x = button_bounds.right;
-				}
-				else
-				{
-				}
-
-				if (win_bounds_center.y > button_bounds.top)
-				{
-					style |= TPM_TOPALIGN;
-					y = button_bounds.bottom;
-				}
-				else
-				{
-					style |= TPM_BOTTOMALIGN;
-				}
-			}
-
-			const auto rc = win_rect(button_bounds);
-			const auto result = show_menu(menu, style, x, y, rc);
-			const auto found = _menu_commands.find(result);
-
-			if (found != _menu_commands.end())
-			{
-				const auto c = found->second;
-
-				if (c && c->invoke)
-				{
-					df::scope_locked_inc sl2(df::command_active);
-					c->invoke();
-				}
+				parent->track_menu(button_bounds, commands);
+				return;
 			}
 		}
 
-		_menu_commands.clear();
+		ui::track_drawn_menu(_services, button_bounds, window_bounds(), commands);
+	}
+
+	// The drawn menu's own loop, as TrackPopupMenu ran one: keys go to the menu, and a press on any
+	// window but its popups dismisses it and goes no further.
+	void run_menu_loop(ui::menu_session& session)
+	{
+		auto* const outer = s_open_menu;
+		s_open_menu = &session;
+
+		const auto is_menu_window = [&session](const HWND hwnd)
+		{
+			for (const auto& popup : session.popups())
+			{
+				const auto handle = popup->handle();
+				const auto* const h = std::any_cast<HWND>(&handle);
+				if (h && *h == hwnd) return true;
+			}
+
+			return false;
+		};
+
+		MSG m;
+
+		while (!session.done() && !df::is_closing)
+		{
+			const auto got = GetMessage(&m, nullptr, 0, 0);
+
+			if (got <= 0)
+			{
+				if (got == 0) PostQuitMessage(static_cast<int>(m.wParam));
+				session.cancel();
+				break;
+			}
+
+			switch (m.message)
+			{
+			case WM_KEYDOWN:
+			case WM_SYSKEYDOWN:
+				session.key_down(static_cast<int>(m.wParam), ui::current_key_state());
+				continue;
+
+			case WM_KEYUP:
+			case WM_SYSKEYUP:
+			case WM_CHAR:
+			case WM_SYSCHAR:
+			case WM_DEADCHAR:
+			case WM_SYSDEADCHAR:
+				continue;
+
+			case WM_LBUTTONDOWN:
+			case WM_RBUTTONDOWN:
+			case WM_MBUTTONDOWN:
+			case WM_XBUTTONDOWN:
+			case WM_LBUTTONDBLCLK:
+			case WM_RBUTTONDBLCLK:
+			case WM_MBUTTONDBLCLK:
+			case WM_NCLBUTTONDOWN:
+			case WM_NCRBUTTONDOWN:
+			case WM_NCMBUTTONDOWN:
+			case WM_NCLBUTTONDBLCLK:
+				if (!is_menu_window(m.hwnd))
+				{
+					session.cancel();
+					continue;
+				}
+				break;
+
+			// A right release chooses as a left one does, as in a native menu tracked with the right
+			// button; the popup hears only the left.
+			case WM_RBUTTONUP:
+				if (is_menu_window(m.hwnd)) m.message = WM_LBUTTONUP;
+				break;
+
+			default:
+				break;
+			}
+
+			TranslateMessage(&m);
+			DispatchMessage(&m);
+		}
+
+		s_open_menu = outer;
 	}
 
 	ui::frame_ptr create_frame(ui::frame_host_weak_ptr host, const ui::frame_style& style) override;
@@ -3744,10 +2906,107 @@ public:
 			store->write({}, s_window_rect, {(const uint8_t*)&wp, wp.length});
 		}
 	}
+
+	// What is dragged over a frame that takes drops, offered to its host.
+	pointi to_client(const POINTL& pt) const
+	{
+		POINT point = {pt.x, pt.y};
+		ScreenToClient(m_hWnd, &point);
+		return {point.x, point.y};
+	}
+
+	STDMETHOD(QueryInterface)(_In_ REFIID iid, _Deref_out_ void** ppvObject) noexcept override
+	{
+		if (ppvObject == nullptr) return E_POINTER;
+
+		if (IsEqualGUID(iid, IID_IDropTarget) || IsEqualGUID(iid, IID_IUnknown))
+		{
+			*ppvObject = static_cast<IDropTarget*>(this);
+			return S_OK;
+		}
+
+		*ppvObject = nullptr;
+		return E_NOINTERFACE;
+	}
+
+	// The frame's lifetime is its owner's, and the registration is revoked with its window.
+	STDMETHOD_(ULONG, AddRef)() noexcept override
+	{
+		return 1;
+	}
+
+	STDMETHOD_(ULONG, Release)() noexcept override
+	{
+		return 1;
+	}
+
+	static void set_drop_effect(const platform::drop_effect e, DWORD* pdwEffect)
+	{
+		if (!pdwEffect) return;
+
+		switch (e)
+		{
+		case platform::drop_effect::copy:
+			*pdwEffect = DROPEFFECT_COPY;
+			break;
+		case platform::drop_effect::move:
+			*pdwEffect = DROPEFFECT_MOVE;
+			break;
+		case platform::drop_effect::link:
+			*pdwEffect = DROPEFFECT_LINK;
+			break;
+		case platform::drop_effect::none:
+		default:
+			*pdwEffect = DROPEFFECT_NONE;
+		}
+	}
+
+	STDMETHODIMP DragEnter(IDataObject* pDataObj, const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
+	{
+		_drag_data = pDataObj;
+		return DragOver(grfKeyState, pt, pdwEffect);
+	}
+
+	STDMETHODIMP DragLeave() override
+	{
+		_drag_data = nullptr;
+		const auto h = _host.lock();
+		if (h) h->drag_leave();
+		return S_OK;
+	}
+
+	STDMETHODIMP DragOver(const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
+	{
+		const auto h = _host.lock();
+
+		if (h)
+		{
+			const data_object_client data(_drag_data.Get());
+			set_drop_effect(h->drag_over(data, to_key_state(grfKeyState), to_client(pt)), pdwEffect);
+		}
+
+		return S_OK;
+	}
+
+	STDMETHODIMP Drop(IDataObject* pDataObj, const DWORD grfKeyState, const POINTL pt, DWORD* pdwEffect) override
+	{
+		// Drop ends the drag, so the source data object must not be held past this call.
+		_drag_data = nullptr;
+
+		const auto h = _host.lock();
+
+		if (h)
+		{
+			data_object_client data(pDataObj);
+			set_drop_effect(h->drag_drop(data, to_key_state(grfKeyState), to_client(pt)), pdwEffect);
+		}
+
+		return S_OK;
+	}
 };
 
 
-LRESULT control_host_impl::on_system_device_change(uint32_t /*uMsg*/, const WPARAM wParam, LPARAM /*lParam*/) const
+LRESULT frame_impl::on_system_device_change(uint32_t /*uMsg*/, const WPARAM wParam, LPARAM /*lParam*/) const
 {
 	if (wParam == DBT_DEVNODES_CHANGED)
 	{
@@ -3762,67 +3021,12 @@ LRESULT control_host_impl::on_system_device_change(uint32_t /*uMsg*/, const WPAR
 	return 1;
 }
 
-LRESULT control_host_impl::on_window_erase_background(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
+LRESULT frame_impl::on_window_erase_background(uint32_t /*uMsg*/, WPARAM wParam, LPARAM /*lParam*/)
 {
 	return 1;
 }
 
-
-LRESULT control_host_impl::on_window_command(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
-{
-	const auto id = LOWORD(wParam);
-	const auto code = HIWORD(wParam);
-
-	if (!_is_app_frame && id == IDCANCEL)
-	{
-		close(id == IDCANCEL);
-	}
-	else
-	{
-		const auto child = _children.find(id);
-
-		if (child != _children.end())
-		{
-			if (child->second->is_radio)
-			{
-				// Windows clears the other auto-radio buttons in the same group; mirror that to the
-				// bound values by notifying only the members of the clicked button's radio group.
-				const auto group = child->second->radio_group;
-
-				for (const auto& c : _children)
-				{
-					if (c.second->is_radio && c.second->radio_group == group)
-					{
-						c.second->on_command(_host, id, code);
-					}
-				}
-			}
-			else
-			{
-				child->second->on_command(_host, id, code);
-			}
-		}
-	}
-
-	return 0;
-}
-
-LRESULT control_host_impl::on_window_hscroll(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
-{
-	const auto code = LOWORD(wParam);
-	const auto pos = HIWORD(wParam);
-	const auto id = GetDlgCtrlID((HWND)lParam);
-	const auto child = _children.find(id);
-
-	if (child != _children.end())
-	{
-		child->second->on_scroll(_host, code, pos);
-	}
-
-	return 0;
-}
-
-LRESULT control_host_impl::on_window_min_max_info(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam) const
+LRESULT frame_impl::on_window_min_max_info(uint32_t /*uMsg*/, WPARAM /*wParam*/, const LPARAM lParam) const
 {
 	const LPMINMAXINFO lpMMI = std::bit_cast<LPMINMAXINFO>(lParam);
 
@@ -3848,7 +3052,7 @@ LRESULT control_host_impl::on_window_min_max_info(uint32_t /*uMsg*/, WPARAM /*wP
 // https://stackoverflow.com/questions/39731497/create-window-without-titlebar-with-resizable-border-and-without-bogus-6px-whit
 // https://github.com/rossy/borderless-window/blob/master/borderless-window.c
 // 
-void control_host_impl::update_region()
+void frame_impl::update_region()
 {
 	win_rect rgn;
 
@@ -3900,7 +3104,7 @@ void control_host_impl::update_region()
 }
 
 
-void control_host_impl::handle_composition_changed()
+void frame_impl::handle_composition_changed()
 {
 	BOOL enabled = FALSE;
 	DwmIsCompositionEnabled(&enabled);
@@ -3928,19 +3132,33 @@ void control_host_impl::handle_composition_changed()
 	update_region();
 }
 
-LRESULT control_host_impl::on_dwm_composition_changed(uint32_t, WPARAM wParam, LPARAM lParam)
+LRESULT frame_impl::on_dwm_composition_changed(uint32_t, WPARAM wParam, LPARAM lParam)
 {
 	df::log(__FUNCTION__, "WM_DWMCOMPOSITIONCHANGED");
 	handle_composition_changed();
 	return 0;
 }
 
-LRESULT control_host_impl::on_window_nc_hit_test(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+LRESULT frame_impl::on_window_nc_hit_test(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
 {
-	if (_is_app_frame)
+	// A bubble shows what is under the pointer; the pointer is for what it points at.
+	if (_style.layered) return HTTRANSPARENT;
+
+	POINT client = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+	ScreenToClient(m_hWnd, &client);
+	const auto is_region = (GetWindowLong(m_hWnd, GWL_STYLE) & WS_CHILD) != 0;
+
+	// The window a region is in answers for the caption button the region draws, which Windows offers snap
+	// layouts over only as the window's own.
+	if (is_region && _controls->caption_button_at({client.x, client.y}) != 0) return HTTRANSPARENT;
+
+	// A drawn control answers for its own pixels before the frame's edges and caption, as the child
+	// window it replaced did.
+	if (_controls->hit({client.x, client.y})) return HTCLIENT;
+
+	if (is_app_frame())
 	{
-		POINT loc = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-		ScreenToClient(m_hWnd, &loc);
+		const auto loc = client;
 
 		RECT rc;
 		GetClientRect(m_hWnd, &rc);
@@ -3994,42 +3212,63 @@ LRESULT control_host_impl::on_window_nc_hit_test(const uint32_t uMsg, const WPAR
 		}
 
 		const auto h = _host.lock();
-		return h && h->is_caption_area({loc.x, loc.y}) ? HTCAPTION : HTCLIENT;
+		if (h && h->is_caption_area({loc.x, loc.y})) return HTCAPTION;
+
+		// The frames it holds say what is caption in them: a region passes its caption through to here.
+		const POINT screen{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+		const auto inner = const_cast<frame_impl*>(this)->frame_at(screen);
+
+		if (inner.get() != this)
+		{
+			POINT inner_loc = screen;
+			ScreenToClient(inner->m_hWnd, &inner_loc);
+			const auto ih = inner->_host.lock();
+			if (ih && ih->is_caption_area({inner_loc.x, inner_loc.y})) return HTCAPTION;
+		}
+
+		return HTCLIENT;
+	}
+
+	const auto point = client;
+	const auto h = _host.lock();
+
+	// A region at an edge of the window it is in leaves that window's resize grab there, where it has one:
+	// full screen strips WS_THICKFRAME and a maximized window cannot be edge resized.
+	if (_kind == kind::pane && is_region)
+	{
+		const auto root = GetAncestor(m_hWnd, GA_ROOT);
+		win_rect rc;
+		GetWindowRect(root, &rc);
+		const auto root_can_resize = (GetWindowLong(root, GWL_STYLE) & WS_THICKFRAME) != 0 && IsZoomed(root) == 0;
+		const auto scale_factor = _draw_ctx ? _draw_ctx->scale_factor : 1.0;
+		const auto side = df::round(ui_resize_side_thickness * scale_factor);
+		const auto bottom = df::round(ui_resize_bottom_thickness * scale_factor);
+		const auto x = GET_X_LPARAM(lParam);
+		const auto y = GET_Y_LPARAM(lParam);
+		const auto at_edge = x < rc.left + side || x >= rc.right - side || y < rc.top + side || y >= rc.bottom - bottom;
+
+		if (root_can_resize && at_edge) return HTTRANSPARENT;
 	}
 
 	auto ht = DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 
-	if (ht == HTCLIENT)
+	// What the host calls its caption moves the window it is in: a popup pane's own, or - through
+	// the frame under it - the window a region is in.
+	if (ht == HTCLIENT && h && h->is_caption_area({point.x, point.y}))
 	{
-		const auto h = _host.lock();
-		if (h)
-		{
-			POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-			ScreenToClient(m_hWnd, &point);
-			if (h->is_caption_area({point.x, point.y})) return _is_app_frame ? HTCAPTION : HTTRANSPARENT;
-		}
+		return _kind == kind::pane && !is_region ? HTCAPTION : HTTRANSPARENT;
 	}
 
-	if (_is_popup && ht == HTCLIENT)
+	// A dialog moves by any part of it that is not a control.
+	if (_kind == kind::dialog && ht == HTCLIENT && h && !h->is_control_area({point.x, point.y}))
 	{
-		const auto h = _host.lock();
-
-		if (h)
-		{
-			POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-			ScreenToClient(m_hWnd, &point);
-
-			if (!h->is_control_area({point.x, point.y}))
-			{
-				ht = HTCAPTION;
-			}
-		}
+		ht = HTCAPTION;
 	}
 
 	return ht;
 }
 
-LRESULT control_host_impl::on_window_nc_activate(uint32_t, const WPARAM wParam, LPARAM) const
+LRESULT frame_impl::on_window_nc_activate(uint32_t, const WPARAM wParam, LPARAM) const
 {
 	// DefWindowProc won't repaint the window border if lParam (normally a HRGN) is -1.
 	// This is recommended in: https://blogs.msdn.microsoft.com/wpfsdk/2008/09/08/custom-window-chrome-in-wpf/ 
@@ -4259,7 +3498,7 @@ static bool monitor_has_autohide_taskbar_cached(const UINT edge, const HMONITOR 
 	return entry.value;
 }
 
-LRESULT control_host_impl::on_window_nc_calc_size(uint32_t, const WPARAM wParam, const LPARAM lParam)
+LRESULT frame_impl::on_window_nc_calc_size(uint32_t, const WPARAM wParam, const LPARAM lParam)
 {
 	// Some of this code came from the chromium code base
 
@@ -4371,7 +3610,7 @@ LRESULT control_host_impl::on_window_nc_calc_size(uint32_t, const WPARAM wParam,
 	return size_changed ? WVR_REDRAW : 0;
 }
 
-LRESULT control_host_impl::on_window_nc_paint(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
+LRESULT frame_impl::on_window_nc_paint(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam) const
 {
 	if (!_composition_enabled)
 		return 0;
@@ -4380,137 +3619,287 @@ LRESULT control_host_impl::on_window_nc_paint(const uint32_t uMsg, const WPARAM 
 }
 
 
-LRESULT control_host_impl::on_window_create(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
+LRESULT frame_impl::on_window_create(const uint32_t uMsg, const WPARAM wParam, const LPARAM lParam)
 {
-	if (_is_app_frame)
+	if (is_app_frame())
 	{
 		handle_composition_changed();
 	}
-	_timer_id = SetTimer(m_hWnd, 0, 1000 / ui::default_ticks_per_second, nullptr);
+
+	// A window ticks five times a second - the idle count the application reads to hide its chrome, and
+	// its host's tick; a pane only as often as its style asks.
+	const auto interval = _kind == kind::pane ? _style.timer_milliseconds : 1000 / ui::default_ticks_per_second;
+	if (interval > 0) _timer_id = SetTimer(m_hWnd, 0, interval, nullptr);
 	return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
 
-ui::edit_ptr control_host_impl::create_edit(const ui::edit_styles& styles, const std::string_view text,
-                                            std::function<void(const std::string&)> changed)
+ui::frame_ptr frame_impl::create_dlg(ui::frame_host_weak_ptr host)
 {
-	const auto id = alloc_ids();
-	auto edit = create_native_edit(*this, m_hWnd, id, _gdi_ctx, styles, text, std::move(changed));
-	_children[id] = std::move(edit.child);
-	return edit.control;
-}
+	ui::frame_style style;
+	style.child = false;
 
-ui::trackbar_ptr control_host_impl::create_slider(const int min, const int max, std::function<void(int, bool)> changed)
-{
-	const auto slider_id = alloc_ids();
-	auto slider = create_native_slider(m_hWnd, slider_id, _gdi_ctx, min, max, std::move(changed));
-	_children[slider_id] = std::move(slider.child);
-	return slider.control;
-}
+	// A dialog's window owns its context and gets its own WM_DPICHANGED.
+	auto ctx = std::make_shared<owner_context>(_gdi_ctx->scale_factor);
+	auto result = std::make_shared<frame_impl>(ctx, host, _app, _pa, kind::dialog, style);
+	constexpr auto dw_style = WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_POPUP;
 
-ui::toolbar_ptr control_host_impl::create_toolbar(const ui::toolbar_styles& styles,
-                                                  const std::vector<ui::command_ptr>& buttons)
-{
-	const auto toolbar_id = alloc_ids(static_cast<int>(buttons.size()) + 1);
-	const auto toolbar = create_native_toolbar(*this, m_hWnd, toolbar_id, _gdi_ctx, styles, buttons);
-
-	int id = toolbar_id + 1;
-	for (const auto& b : buttons)
-	{
-		if (b)
-		{
-			_children[id] = toolbar.child;
-			id += 1;
-		}
-	}
-
-	_children[toolbar_id] = toolbar.child;
-
-	return toolbar.control;
-}
-
-ui::control_frame_ptr control_host_impl::create_dlg(ui::frame_host_weak_ptr host, const bool is_popup)
-{
-	ui::color_style colors = {
-		ui::style::color::dialog_background, ui::style::color::dialog_text, ui::style::color::dialog_selected_background
-	};
-	auto ctx = is_popup ? std::make_shared<owner_context>(_gdi_ctx->scale_factor) : _gdi_ctx;
-	auto result = std::make_shared<control_host_impl>(ctx, host, _app, _pa, false, colors);
-	const auto dw_style = WS_CLIPCHILDREN | WS_CLIPSIBLINGS | (is_popup ? WS_POPUP : WS_CHILD);
-	constexpr auto dw_ex_style = WS_EX_CONTROLPARENT;
-
-	if (result->Create(m_hWnd, {}, dw_style, dw_ex_style) == nullptr)
+	if (result->Create(m_hWnd, {}, dw_style, 0) == nullptr)
 	{
 		return nullptr;
 	}
 
-	result->_is_popup = is_popup;
-
-	if (!is_popup)
-	{
-		// A popup host owns its context and gets its own WM_DPICHANGED; a child host has neither,
-		// so the parent has to hand it every scale change. Pruned like _child_frames, since a view
-		// that rebuilds its control panel would otherwise grow this list for the session.
-		std::erase_if(_child_hosts, [](const std::weak_ptr<control_host_impl>& h) { return h.expired(); });
-		_child_hosts.push_back(result);
-	}
-
-	// The popup host owns its own context, so it must be fonted from that one - fonting it from
-	// the parent's leaves it holding a handle the parent deletes on its next font refresh.
-	ctx->set_window_font(result->m_hWnd, ui::style::font_face::dialog);
+	result->_parent = weak_from_this();
 	return result;
 }
 
-
-ui::button_ptr control_host_impl::create_button(const std::string_view text, std::function<void()> invoke,
-                                                const bool default_button)
+static ui::input_manager_ptr keyboard_input()
 {
-	return create_button(icon_index{}, text, {}, std::move(invoke), default_button);
+	const auto focus = GetFocus();
+	if (!focus) return nullptr;
+
+	auto* const impl = dynamic_cast<frame_impl*>(reinterpret_cast<win_impl*>(GetWindowLongPtr(focus, GWLP_USERDATA)));
+	if (!impl || !impl->_controls->has_keyboard_focus()) return nullptr;
+	return impl->_controls;
 }
 
-ui::button_ptr control_host_impl::create_button(const icon_index icon, const std::string_view title,
-                                                const std::string_view details, std::function<void()> invoke,
-                                                const bool default_button)
+ui::focus_snapshot ui::save_focus()
 {
-	const auto id = alloc_ids();
-	auto button = create_native_button(m_hWnd, id, _gdi_ctx, icon, title, details, std::move(invoke), default_button);
-	_children[id] = std::move(button.child);
+	focus_snapshot result;
+	const auto focus = GetFocus();
+	auto* const impl = focus
+		                   ? dynamic_cast<frame_impl*>(reinterpret_cast<win_impl*>(GetWindowLongPtr(focus, GWLP_USERDATA)))
+		                   : nullptr;
 
-	if (default_button)
+	if (impl)
 	{
-		_def_id = id;
+		result.window = impl->weak_from_this();
+		if (impl->_controls->has_keyboard_focus()) result.focused = impl->_controls->focused();
 	}
 
-	return button.control;
+	return result;
 }
 
-ui::button_ptr control_host_impl::create_check_button(const bool val, const std::string_view text,
-                                                      const bool is_radio,
-                                                      std::function<void(bool)> changed,
-                                                      const int radio_group)
+void ui::restore_focus(const focus_snapshot& snapshot)
 {
-	const auto starts_group = is_radio && (!_last_radio_group.has_value() || *_last_radio_group != radio_group);
-	const auto id = alloc_ids();
-	auto button = create_native_check_button(m_hWnd, id, _gdi_ctx, val, text, is_radio, starts_group, radio_group,
-	                                         std::move(changed));
-
-	if (is_radio)
+	if (const auto c = snapshot.focused.lock())
 	{
-		_last_radio_group = radio_group;
+		c->focus();
+	}
+	else if (const auto w = snapshot.window.lock())
+	{
+		w->focus();
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// What a control host gives its drawn controls and menus
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+ui::measure_context* win_host_services::measure()
+{
+	return owner ? owner->_draw_ctx.get() : nullptr;
+}
+
+void win_host_services::invalidate(const recti bounds)
+{
+	if (owner && owner->m_hWnd) owner->invalidate(bounds, false);
+}
+
+bool win_host_services::has_keyboard_focus() const
+{
+	return owner && owner->m_hWnd && GetFocus() == owner->m_hWnd;
+}
+
+void win_host_services::take_keyboard_focus()
+{
+	if (owner && owner->m_hWnd && GetFocus() != owner->m_hWnd) SetFocus(owner->m_hWnd);
+}
+
+void win_host_services::capture_pointer(const bool capture)
+{
+	if (!owner || !owner->m_hWnd) return;
+	owner->_controls_captured = capture;
+
+	if (capture) SetCapture(owner->m_hWnd);
+	else if (!owner->_tracking && GetCapture() == owner->m_hWnd) ReleaseCapture();
+}
+
+void win_host_services::set_cursor(const ui::style::cursor cursor)
+{
+	HICON icon = nullptr;
+	if (cursor_icon(cursor, icon)) SetCursor(icon);
+}
+
+pointi win_host_services::client_to_screen(const pointi loc) const
+{
+	if (!owner || !owner->m_hWnd) return loc;
+	POINT p{loc.x, loc.y};
+	ClientToScreen(owner->m_hWnd, &p);
+	return {p.x, p.y};
+}
+
+void win_host_services::track_menu(const recti screen_bounds, const std::vector<ui::command_ptr>& commands)
+{
+	if (owner) owner->track_menu(screen_bounds, commands);
+}
+
+ui::frame_ptr win_host_services::create_popup(const ui::frame_host_weak_ptr& content, const ui::color_style& colors)
+{
+	if (!owner) return nullptr;
+
+	ui::frame_style style;
+	style.child = false;
+	style.no_focus = true;
+	style.colors = colors;
+	return owner->create_frame(content, style);
+}
+
+std::shared_ptr<ui::frame_host> win_host_services::listener() const
+{
+	return owner ? owner->_host.lock() : nullptr;
+}
+
+void win_host_services::keyboard_to_frame()
+{
+	if (owner && owner->m_hWnd) owner->report_focus(true);
+}
+
+// An input method opens its window at the system caret, so a hidden one follows the drawn caret.
+void win_host_services::text_input(const bool active, const recti caret)
+{
+	if (!owner || !owner->m_hWnd) return;
+
+	if (!active || caret.is_empty())
+	{
+		end_ime_caret();
+		return;
 	}
 
-	_children[id] = std::move(button.child);
-	return button.control;
+	const auto hwnd = owner->m_hWnd;
+
+	if (!ime_caret && GetFocus() == hwnd)
+	{
+		ime_caret = CreateCaret(hwnd, nullptr, std::max(1, caret.width()), std::max(1, caret.height())) != FALSE;
+	}
+
+	if (ime_caret) SetCaretPos(caret.left, caret.top);
+
+	if (const auto imc = ImmGetContext(hwnd))
+	{
+		COMPOSITIONFORM composition = {};
+		composition.dwStyle = CFS_POINT;
+		composition.ptCurrentPos = {caret.left, caret.top};
+		ImmSetCompositionWindow(imc, &composition);
+
+		CANDIDATEFORM candidate = {};
+		candidate.dwIndex = 0;
+		candidate.dwStyle = CFS_CANDIDATEPOS;
+		candidate.ptCurrentPos = {caret.left, caret.bottom};
+		ImmSetCandidateWindow(imc, &candidate);
+
+		ImmReleaseContext(hwnd, imc);
+	}
 }
 
-ui::date_time_control_ptr control_host_impl::create_date_time_control(const df::date_t val,
-                                                                      std::function<void(df::date_t)> changed,
-                                                                      const bool include_time)
+void win_host_services::end_ime_caret()
 {
-	const auto id = alloc_ids();
-	auto picker = create_native_date_time(m_hWnd, id, _gdi_ctx, val, std::move(changed), _colors, include_time);
-	_children[id] = std::move(picker.child);
-	return picker.control;
+	if (!ime_caret) return;
+	DestroyCaret();
+	ime_caret = false;
+}
+
+void win_host_services::caret_timer(const bool on, const uint32_t interval_ms)
+{
+	if (!owner || !owner->m_hWnd) return;
+	if (on) SetTimer(owner->m_hWnd, frame_impl::caret_timer_id, std::max(1u, interval_ms), nullptr);
+	else KillTimer(owner->m_hWnd, frame_impl::caret_timer_id);
+}
+
+bool win_host_services::is_dialog() const
+{
+	return owner && owner->_kind == frame_impl::kind::dialog;
+}
+
+void win_host_services::close(const bool cancel)
+{
+	if (owner) owner->close(cancel);
+}
+
+bool win_host_services::presents_caption_button() const
+{
+	return owner && root_presents_caption_button(owner->m_hWnd);
+}
+
+ui::measure_context* win_host_services::menu_measure()
+{
+	return measure();
+}
+
+ui::frame_ptr win_host_services::create_menu_popup(const ui::frame_host_weak_ptr& content, const ui::frame_ptr&)
+{
+	if (!owner) return nullptr;
+
+	// The pointer resting on an item opens its submenu, so the menu ticks while it is open.
+	ui::frame_style style;
+	style.child = false;
+	style.no_focus = true;
+	style.timer_milliseconds = 50;
+	style.colors = {
+		ui::style::colors.menu_background, ui::style::colors.menu_text,
+		ui::style::colors.dialog_selected_background
+	};
+	return owner->create_frame(content, style);
+}
+
+recti win_host_services::menu_work_area(const recti bounds)
+{
+	const RECT r{bounds.left, bounds.top, bounds.right, bounds.bottom};
+	MONITORINFO info = {};
+	info.cbSize = sizeof(info);
+
+	if (const auto monitor = MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST); monitor && GetMonitorInfo(monitor, &info))
+	{
+		return win_rect(info.rcWork);
+	}
+
+	return ui::desktop_bounds(true);
+}
+
+void win_host_services::run_menu_loop(ui::menu_session& session)
+{
+	if (owner) owner->run_menu_loop(session);
+}
+
+ui::frame_ptr win_host_services::create_bubble_popup(const ui::frame_host_weak_ptr& content)
+{
+	if (!owner) return nullptr;
+
+	ui::frame_style style;
+	style.child = false;
+	style.no_focus = true;
+	style.layered = true;
+	style.colors = {
+		ui::style::colors.bubble_background, ui::style::colors.view_text, ui::style::colors.view_selected_background
+	};
+	return owner->create_frame(content, style);
+}
+
+// A bubble shares its owner's context and never sees a WM_DPICHANGED of its own, so being shown is when it
+// takes the scale its owner draws at. Before measuring: measure builds and caches the content's text
+// layouts, so a stale size would lay the bubble out - and cache glyph rasters - at the previous one.
+ui::measure_context* win_host_services::bubble_measure(const ui::frame_ptr& popup)
+{
+	auto* const impl = dynamic_cast<frame_impl*>(popup.get());
+	if (!impl || !impl->_draw_ctx) return nullptr;
+	impl->_draw_ctx->update_font_size(impl->_gdi_ctx->calc_base_font_size());
+	impl->update_dpi_metrics();
+	return impl->_draw_ctx.get();
+}
+
+recti win_host_services::bubble_work_area(const recti)
+{
+	return owner && owner->m_hWnd ? desktop_bounds_impl(owner->m_hWnd, true) : ui::desktop_bounds(true);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -4616,7 +4005,7 @@ int WINAPI wWinMain(const HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, cons
 
 		// Does not improve performance but worth testing later
 
-		ui::style::color::install({
+		ui::style::install({
 			GetSysColor(COLOR_WINDOW), GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_DESKTOP)
 		});
 
@@ -4698,14 +4087,6 @@ int WINAPI wWinMain(const HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, cons
 			return 0;
 		}
 
-		constexpr INITCOMMONCONTROLSEX iccx = {sizeof(INITCOMMONCONTROLSEX), ICC_BAR_CLASSES};
-
-		if (!InitCommonControlsEx(&iccx))
-		{
-			show_fatal_error(platform::text().error_windows_common_controls_failed);
-			return 0;
-		}
-
 		app_impl->_f = std::make_shared<factories>();
 
 		// Load persisted settings before creating the graphics factories so the
@@ -4756,58 +4137,55 @@ int WINAPI wWinMain(const HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, cons
 	return result;
 }
 
-control_host_impl* control_host_impl::_current = nullptr;
-
-LRESULT control_host_impl::on_window_timer(uint32_t, WPARAM, LPARAM)
+LRESULT frame_impl::on_window_timer(uint32_t, const WPARAM wParam, LPARAM)
 {
-	ui::ticks_since_last_user_action += 1;
+	const auto keep_alive = weak_from_this().lock();
 
-	if (!_hover_command_bounds.is_empty())
+	if (wParam == caret_timer_id)
 	{
-		POINT pos{};
-		if (GetCursorPos(&pos) && !_hover_command_bounds.contains({pos.x, pos.y}))
-		{
-			const auto h = _host.lock();
-			if (h) h->command_hover(nullptr, {});
-			_hover_command_bounds.clear();
-		}
+		_controls->blink();
+		return 0;
 	}
+
+	if (wParam == fade_timer_id && _style.layered)
+	{
+		step_fade();
+		return 0;
+	}
+
+	if (_kind != kind::pane) ui::ticks_since_last_user_action += 1;
+	_controls->tick();
 
 	const auto h = _host.lock();
 	if (h) h->tick();
-	_pa->tick();
+	if (_kind != kind::pane) _pa->tick();
 
 	return 0;
 }
 
-ui::bubble_window_ptr control_host_impl::create_bubble()
+ui::bubble_window_ptr frame_impl::create_bubble()
 {
-	auto result = std::make_shared<bubble_impl>(_gdi_ctx);
-
-	if (result->create(m_hWnd, _pa->_f))
-	{
-		return result;
-	}
-
-	return nullptr;
+	return ui::create_drawn_bubble(std::shared_ptr<ui::bubble_host>(shared_from_this(), &_services));
 }
 
-ui::frame_ptr control_host_impl::create_frame(ui::frame_host_weak_ptr host, const ui::frame_style& style)
+ui::frame_ptr frame_impl::create_frame(ui::frame_host_weak_ptr host, const ui::frame_style& style)
 {
-	auto result = std::make_shared<frame_impl>(_gdi_ctx, weak_from_this(), _host, host, style);
+	auto result = std::make_shared<frame_impl>(_gdi_ctx, host, _app, _pa, kind::pane, style, _host);
+	auto dw_style = style.child && !style.layered ? WS_CHILD : WS_POPUP;
+	DWORD dw_ex_style = 0;
+	if (style.no_focus || style.layered) dw_ex_style |= WS_EX_NOACTIVATE;
+	if (style.layered) dw_ex_style |= WS_EX_LAYERED;
+	if (style.can_focus) dw_style |= WS_TABSTOP;
 
-	if (result->create(m_hWnd, style, _pa->_f))
+	if (result->Create(m_hWnd, {}, dw_style, dw_ex_style) == nullptr)
 	{
-		// Expired entries are never removed anywhere else, so a host that recreates its frames -
-		// the media view rebuilds them on every layout change - would grow this list without bound
-		// and make every broadcast walk more dead weak_ptrs than live frames.
-		std::erase_if(_child_frames, [](const std::weak_ptr<frame_impl>& f) { return f.expired(); });
-		_child_frames.push_back(result);
-		return result;
+		df::log(__FUNCTION__, "failed to create child frame");
+		return nullptr;
 	}
 
-	df::log(__FUNCTION__, "failed to create child frame");
-	return nullptr;
+	result->_parent = weak_from_this();
+	add_child(result);
+	return result;
 }
 
 void win32_app::update_event_handles()
@@ -4898,41 +4276,26 @@ bool win32_app::pre_translate_message(MSG& m)
 		if (mm == WM_KEYDOWN || mm == WM_SYSKEYDOWN)
 		{
 			const auto c = static_cast<char32_t>(m.wParam);
-			auto* const focus_wnd = GetFocus();
 			const auto ks = ui::current_key_state();
+			const auto controls = keyboard_input();
 
-			if (!ks.alt && is_edit(focus_wnd))
+			if (controls && controls->is_typing() && !ks.alt)
 			{
-				// A multi-line edit that takes Enter as a new line keeps it: offered to the application
-				// first, Enter would run the task the text is being typed for.
-				if (c == VK_ESCAPE ||
-					c == VK_UP ||
-					c == VK_DOWN ||
-					c == VK_TAB ||
-					/*c == VK_LEFT ||
-						c == VK_RIGHT ||*/
-					(c == VK_RETURN && !wants_return(focus_wnd)))
-				{
-					if (_app->key_down(c, ks))
-					{
-						return true;
-					}
-				}
-				// standard edit shortcuts - don't translate
-				if (is_edit_char(focus_wnd, c, ks))
-				{
-					return false;
-				}
+				// A control taking typing keeps its keys from the application's shortcuts, as an edit
+				// did. The application is offered only the keys that leave or confirm it - and not
+				// Return in a multi-line edit that takes it as a new line.
+				const auto leaves = c == VK_ESCAPE || c == VK_UP || c == VK_DOWN || c == VK_TAB ||
+					(c == VK_RETURN && !(controls->wants_return() && !ks.control));
+				if (leaves && _app->key_down(c, ks)) return true;
+
+				// A key the control does not take goes on to be translated into the characters it types.
+				return controls->key_down(static_cast<int>(c), ks);
 			}
-			else
-			{
-				if (_app->key_down(c, ks))
-				{
-					return true;
-				}
-			}
+
+			if (_app->key_down(c, ks)) return true;
+			if (controls && controls->key_down(static_cast<int>(c), ks)) return true;
 		}
-		else if (mm == WM_CHAR && !is_edit(GetFocus()) && _app->focus_mode() == ui::focus_mode::text_edit)
+		else if (mm == WM_CHAR)
 		{
 			const auto c = static_cast<wchar_t>(m.wParam);
 			std::wstring text;
@@ -4958,13 +4321,19 @@ bool win32_app::pre_translate_message(MSG& m)
 				if (c >= L' ') text.push_back(c);
 			}
 
-			if (!text.empty() && _app->text_input(str::utf16_to_utf8(text))) return true;
-		}
+			const auto controls = keyboard_input();
 
-		if (_frame)
-		{
-			if (IsDialogMessage(_frame->m_hWnd, &m))
+			if (controls && controls->is_typing())
+			{
+				if (!text.empty()) controls->text_input(str::utf16_to_utf8(text));
 				return true;
+			}
+
+			if (_app->focus_mode() == ui::focus_mode::text_edit && !text.empty() &&
+				_app->text_input(str::utf16_to_utf8(text)))
+			{
+				return true;
+			}
 		}
 	}
 
@@ -5414,8 +4783,8 @@ bool platform::window_needs_refit(const recti saved, const recti work_area, cons
 	return overlap_cx < min_visible_cx || overlap_cy < min_visible_cy;
 }
 
-ui::control_frame_ptr win32_app::create_app_frame(const platform::setting_file_ptr& store,
-                                                  const ui::frame_host_weak_ptr& host)
+ui::frame_ptr win32_app::create_app_frame(const platform::setting_file_ptr& store,
+                                                  const ui::frame_host_weak_ptr& host, const ui::frame_style& style)
 {
 	WINDOWPLACEMENT wp = {};
 	wp.length = sizeof(WINDOWPLACEMENT);
@@ -5465,14 +4834,13 @@ ui::control_frame_ptr win32_app::create_app_frame(const platform::setting_file_p
 		}
 	}
 
-	ui::color_style colors = {
-		ui::style::color::toolbar_background, ui::style::color::view_text, ui::style::color::view_selected_background
-	};
+	auto window_frame_style = style;
+	window_frame_style.child = false;
 
 	const auto monitor = MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST);
 	const auto default_scale_fac = GetScalingFactorFromDPI(GetPerMonitorDPI(monitor));
 	auto ctx = std::make_shared<owner_context>(default_scale_fac);
-	auto result = std::make_shared<control_host_impl>(ctx, host, _app, this, true, colors);
+	auto result = std::make_shared<frame_impl>(ctx, host, _app, this, frame_impl::kind::app, window_frame_style);
 	constexpr auto window_style = WS_CAPTION | WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_SYSMENU |
 		WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 	constexpr auto window_ex_style = WS_EX_WINDOWEDGE | WS_EX_APPWINDOW; // | WS_EX_LAYERED | WS_EX_COMPOSITED;
@@ -5499,7 +4867,6 @@ ui::control_frame_ptr win32_app::create_app_frame(const platform::setting_file_p
 	SendMessage(result->m_hWnd, WM_SETICON, ICON_BIG, std::bit_cast<LPARAM>(resources.app_icon_64));
 	SendMessage(result->m_hWnd, WM_SETICON, ICON_SMALL, std::bit_cast<LPARAM>(resources.app_icon_32));
 
-	ctx->set_window_font(result->m_hWnd, ui::style::font_face::dialog);
 	WTSRegisterSessionNotification(result->m_hWnd, NOTIFY_FOR_THIS_SESSION);
 	result->cmd_show = wp.showCmd;
 
@@ -5513,119 +4880,195 @@ static void sync_frame_enabled()
 	if (!IsWindow(app_wnd())) return;
 
 	auto* const impl = reinterpret_cast<win_impl*>(GetWindowLongPtr(app_wnd(), GWLP_USERDATA));
-	auto* const frame = dynamic_cast<control_host_impl*>(impl);
+	auto* const frame = dynamic_cast<frame_impl*>(impl);
 	if (frame) frame->sync_enabled();
 }
 
 // The services ask the window layer to bring its frames' enabled state back after a modal system dialog.
 [[maybe_unused]] static const bool s_frame_enabled_sync_installed = (set_app_window_enabled_sync(sync_frame_enabled), true);
 
+bool platform::can_present_maximize_caption_button(const df::os_release release, const uint32_t root_style)
+{
+	const auto has_snap_layouts = release == df::os_release::windows_11 || release == df::os_release::windows_later;
+	constexpr uint32_t resizable_with_maximize = WS_THICKFRAME | WS_MAXIMIZEBOX;
+	return has_snap_layouts && (root_style & resizable_with_maximize) == resizable_with_maximize;
+}
+
+bool platform::presents_maximize_caption_button(const df::os_release release, const uint32_t root_style)
+{
+	return can_present_maximize_caption_button(release, root_style) && (root_style & WS_MAXIMIZE) == 0;
+}
+
 namespace
 {
-	// Renders one off-screen control into a pre-filled top-down DIB and reports what it drew.
-	// This is the exact request buffered_control_paint makes of a control during WM_PAINT.
-	void probe_control_render(const HWND control, const sizei extent, int& painted_pixels, int& colors)
+	// The probe's toolbar has buttons of a fixed size, so nothing it measures is text.
+	class caption_probe_measure final : public ui::measure_context
 	{
-		constexpr uint32_t fill = 0x00ff00ff; // magenta - no control theme draws it
-
-		BITMAPINFO bi = {};
-		bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-		bi.bmiHeader.biWidth = extent.cx;
-		bi.bmiHeader.biHeight = -extent.cy;
-		bi.bmiHeader.biPlanes = 1;
-		bi.bmiHeader.biBitCount = 32;
-		bi.bmiHeader.biCompression = BI_RGB;
-
-		void* bits = nullptr;
-		const auto screen_dc = GetDC(nullptr);
-		const auto dc = CreateCompatibleDC(screen_dc);
-		const auto bitmap = CreateDIBSection(screen_dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-		ReleaseDC(nullptr, screen_dc);
-
-		if (dc && bitmap && bits)
+	public:
+		sizei measure_text(std::string_view, ui::style::font_face, ui::style::text_style, int, int) override
 		{
-			const auto old_bitmap = SelectObject(dc, bitmap);
-			auto* const pixels = static_cast<uint32_t*>(bits);
-			const auto count = static_cast<size_t>(extent.cx) * extent.cy;
-			std::fill_n(pixels, count, fill);
-
-			SendMessage(control, WM_PRINTCLIENT, std::bit_cast<WPARAM>(dc), PRF_CLIENT);
-			GdiFlush();
-
-			df::hash_set<uint32_t> distinct;
-
-			for (auto i = 0u; i < count; ++i)
-			{
-				const auto pixel = pixels[i] & 0x00ffffff;
-				distinct.emplace(pixel);
-				if (pixel != fill) painted_pixels += 1;
-			}
-
-			colors = static_cast<int>(distinct.size());
-			SelectObject(dc, old_bitmap);
+			return {};
 		}
 
-		if (bitmap) DeleteObject(bitmap);
-		if (dc) DeleteDC(dc);
+		int text_line_height(ui::style::font_face) override { return 0; }
+		ui::text_layout_ptr create_text_layout(ui::style::font_face) override { return nullptr; }
+	};
+
+	// The probe's tree: the toolbar is the whole of it.
+	class caption_probe_tree final : public ui::frame_host
+	{
+	public:
+		ui::element_ptr content;
+
+		void on_window_layout(ui::measure_context&, sizei, bool) override {}
+		void on_window_paint(ui::draw_context&) override {}
+
+		void visit_elements(const std::function<void(const ui::element_ptr&, pointi)>& visit) override
+		{
+			visit(content, {});
+		}
+	};
+
+	// A host with only what a toolbar asks of it, in a frame whose style decides whether it reports its
+	// maximize button as the caption button.
+	class caption_probe_host final : public ui::control_host
+	{
+	public:
+		HWND hwnd = nullptr;
+		bool leave_tracked = false;
+		ui::input_manager_ptr controls;
+		ui::input_manager_ptr tracked;
+		std::shared_ptr<caption_probe_tree> tree = std::make_shared<caption_probe_tree>();
+
+		ui::measure_context* measure() override { return nullptr; }
+		void invalidate(recti) override {}
+		bool has_keyboard_focus() const override { return false; }
+		void take_keyboard_focus() override {}
+		void capture_pointer(bool) override {}
+		void set_cursor(ui::style::cursor) override {}
+
+		pointi client_to_screen(const pointi loc) const override
+		{
+			POINT p{loc.x, loc.y};
+			ClientToScreen(hwnd, &p);
+			return {p.x, p.y};
+		}
+
+		void track_menu(recti, const std::vector<ui::command_ptr>&) override {}
+		ui::frame_ptr create_popup(const ui::frame_host_weak_ptr&, const ui::color_style&) override { return nullptr; }
+		std::shared_ptr<ui::frame_host> listener() const override { return tree; }
+		void text_input(bool, recti) override {}
+		void caret_timer(bool, uint32_t) override {}
+		bool is_dialog() const override { return false; }
+		void close(bool) override {}
+		bool presents_caption_button() const override { return root_presents_caption_button(hwnd); }
+	};
+
+	LRESULT CALLBACK caption_probe_proc(const HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam)
+	{
+		if (auto* const host = std::bit_cast<caption_probe_host*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+			host && host->controls)
+		{
+			LRESULT result = 0;
+			const auto hit_at = [host](const LPARAM lp)
+			{
+				POINT loc{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+				ScreenToClient(host->hwnd, &loc);
+				const auto id = host->controls->caption_button_at({loc.x, loc.y});
+				return id ? caption_hit{host->controls, id} : caption_hit{};
+			};
+
+			if (caption_button_message(hit_at, host->tracked, hwnd, msg, wparam, lparam, result, host->leave_tracked))
+			{
+				return result;
+			}
+		}
+
+		return DefWindowProc(hwnd, msg, wparam, lparam);
 	}
 }
 
-platform::control_paint_probe platform::probe_buffered_control_paint()
+platform::caption_button_probe platform::probe_toolbar_caption_button()
 {
-	control_paint_probe result;
+	caption_button_probe result;
 
-	constexpr sizei extent{200, 32};
-
-	const auto parent = CreateWindowEx(0, L"STATIC", nullptr, WS_POPUP, 0, 0, extent.cx, extent.cy * 2,
-	                                   nullptr, nullptr, get_resource_instance, nullptr);
-	if (!parent) return result;
-
-	const df::scope_exit destroy_parent([parent] { DestroyWindow(parent); });
-
-	const auto trackbar = CreateWindowEx(0, TRACKBAR_CLASS, nullptr, WS_CHILD | WS_VISIBLE,
-	                                     0, 0, extent.cx, extent.cy, parent, nullptr, get_resource_instance, nullptr);
-
-	if (trackbar)
+	static const auto class_name = L"LIBDESKTOP_CAPTION_PROBE";
+	static const auto registered = []
 	{
-		SendMessage(trackbar, TBM_SETRANGE, FALSE, MAKELPARAM(0, 100));
-		SendMessage(trackbar, TBM_SETPOS, TRUE, 50);
-		probe_control_render(trackbar, extent, result.trackbar_painted_pixels, result.trackbar_colors);
+		WNDCLASSEX wc = {};
+		wc.cbSize = sizeof(wc);
+		wc.lpfnWndProc = caption_probe_proc;
+		wc.hInstance = get_resource_instance;
+		wc.lpszClassName = class_name;
+		return RegisterClassEx(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+	}();
+
+	if (!registered) return result;
+
+	const auto frame = CreateWindowEx(0, class_name, nullptr, WS_OVERLAPPEDWINDOW, 0, 0, 400, 200, nullptr, nullptr,
+	                                  get_resource_instance, nullptr);
+	if (!frame) return result;
+
+	const df::scope_exit destroy_frame([frame] { DestroyWindow(frame); });
+	result.offered = presents_maximize_caption_button(windows_release(),
+	                                                  static_cast<uint32_t>(GetWindowLong(frame, GWL_STYLE)));
+
+	const auto other = std::make_shared<ui::command>();
+	const auto maximize = std::make_shared<ui::command>();
+	maximize->caption_maximize = true;
+	maximize->invoke = [&result] { ++result.invocations; };
+
+	caption_probe_host host;
+	host.hwnd = frame;
+	const auto controls = std::make_shared<ui::input_manager>(&host);
+	host.controls = controls;
+	const df::scope_exit detach([&controls] { controls->detach(); });
+	SetWindowLongPtr(frame, GWLP_USERDATA, std::bit_cast<LONG_PTR>(&host));
+	const df::scope_exit unhook([frame] { SetWindowLongPtr(frame, GWLP_USERDATA, 0); });
+
+	ui::toolbar_styles styles;
+	styles.button_extent = {40, 40};
+
+	const auto toolbar = ui::make_toolbar(styles, {other, maximize});
+	host.tree->content = toolbar;
+	caption_probe_measure mc;
+	toolbar->layout(mc, {0, 0, 200, 40});
+	controls->layout();
+
+	// The toolbar reports button bounds in screen pixels, as Windows reports the pointer.
+	const auto screen_center = [&toolbar](const ui::command_ptr& c)
+	{
+		const auto bounds = toolbar->button_bounds(c);
+		return MAKELPARAM((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
+	};
+
+	const auto on_maximize = screen_center(maximize);
+	result.maximize_hit = static_cast<int>(::SendMessage(frame, WM_NCHITTEST, 0, on_maximize));
+	result.other_hit = static_cast<int>(::SendMessage(frame, WM_NCHITTEST, 0, screen_center(other)));
+
+	if (result.maximize_hit == HTMAXBUTTON)
+	{
+		POINT client{GET_X_LPARAM(on_maximize), GET_Y_LPARAM(on_maximize)};
+		ScreenToClient(frame, &client);
+		result.maximize_id = controls->caption_button_at({client.x, client.y});
+
+		::SendMessage(frame, WM_NCMOUSEMOVE, HTMAXBUTTON, on_maximize);
+		result.hovered_id = controls->caption().hover_id;
+		::SendMessage(frame, WM_NCLBUTTONDOWN, HTMAXBUTTON, on_maximize);
+		::SendMessage(frame, WM_NCLBUTTONUP, HTMAXBUTTON, on_maximize);
+		::SendMessage(frame, WM_NCMOUSEMOVE, HTMAXBUTTON, on_maximize);
+		::SendMessage(frame, WM_NCMOUSELEAVE, 0, 0);
+		result.hover_after_leave = controls->caption().hover_id;
 	}
 
-	const auto toolbar = CreateWindowEx(0, TOOLBARCLASSNAME, nullptr,
-	                                    WS_CHILD | WS_VISIBLE | TBSTYLE_LIST | TBSTYLE_CUSTOMERASE | CCS_NODIVIDER |
-	                                    CCS_NOPARENTALIGN | CCS_NORESIZE,
-	                                    0, 0, extent.cx, extent.cy, parent, nullptr, get_resource_instance, nullptr);
+	// What maximizing does to the frame's style.
+	const auto style = GetWindowLong(frame, GWL_STYLE);
+	SetWindowLong(frame, GWL_STYLE, style | WS_MAXIMIZE);
+	result.maximized_hit = static_cast<int>(::SendMessage(frame, WM_NCHITTEST, 0, screen_center(maximize)));
 
-	if (toolbar)
-	{
-		SendMessage(toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-		SendMessage(toolbar, TB_SETMAXTEXTROWS, 1, 0);
-
-		TBBUTTON buttons[2] = {};
-		const auto first_text = L"Ab";
-		const auto second_text = L"Cd";
-		buttons[0] = {
-			I_IMAGENONE, 1, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_AUTOSIZE, {}, 0,
-			std::bit_cast<INT_PTR>(first_text)
-		};
-		buttons[1] = {
-			I_IMAGENONE, 2, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_AUTOSIZE, {}, 0,
-			std::bit_cast<INT_PTR>(second_text)
-		};
-		SendMessage(toolbar, TB_ADDBUTTONS, 2, std::bit_cast<LPARAM>(&buttons[0]));
-
-		probe_control_render(toolbar, extent, result.toolbar_painted_pixels, result.toolbar_colors);
-	}
-
-	const auto button = CreateWindowEx(0, L"BUTTON", L"Check", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-	                                   0, 0, extent.cx, extent.cy, parent, nullptr, get_resource_instance, nullptr);
-
-	if (button)
-	{
-		SendMessage(button, BM_SETCHECK, BST_CHECKED, 0);
-		probe_control_render(button, extent, result.button_painted_pixels, result.button_colors);
-	}
+	// What Fullscreen does to it.
+	SetWindowLong(frame, GWL_STYLE, style & ~(WS_CAPTION | WS_THICKFRAME));
+	result.frameless_hit = static_cast<int>(::SendMessage(frame, WM_NCHITTEST, 0, screen_center(maximize)));
 
 	return result;
 }

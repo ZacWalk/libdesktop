@@ -50,7 +50,6 @@ namespace platform
 	struct messages
 	{
 		text_t error_ole_failed = "OleInitialize Failed";
-		text_t error_windows_common_controls_failed = "Failed to register windows common control classes.";
 		text_t error_atl_direct3d = "Failed to Initialize Direct3d";
 		text_t error_winsock_failed = "Failed to initialize Winsock";
 		text_t error_sse2_needed = "This program requires a processor with SSE2.";
@@ -827,6 +826,13 @@ namespace platform
 	                   clipboard_image_ptr image, bool is_move);
 	bool set_clipboard(std::string_view text);
 	std::optional<std::string> clipboard_text();
+
+#ifndef _WIN32
+	// Where clipboard text goes when the clipboard belongs to the window layer, which holds the display
+	// connection: libdesktop-render's installs its own when it starts. Until then there is none.
+	void install_text_clipboard(std::function<std::optional<std::string>()> read,
+	                            std::function<bool(std::string_view)> write);
+#endif
 
 	class setting_file
 	{

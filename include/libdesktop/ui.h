@@ -1,4 +1,4 @@
-﻿// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 // 
 // This program is free software; you can redistribute it and / or modify it
@@ -13,12 +13,20 @@
 
 enum class icon_index;
 
-static constexpr int normal_font_size = 16;
-static constexpr int large_font_size = 21;
+namespace ui
+{
+	// The text size the scale factor is reckoned from: an application that sets a larger base size scales
+	// its whole interface up with it.
+	constexpr int default_font_size = 16;
+}
 
 // The application's grouping of its commands, which a command carries for it. The type is the UI's,
 // its values the application's, as icon_index's are; value-initialized it is the application's none.
 enum class command_group;
+
+// The application's commands, by which an element asks its host to run one. The type is the UI's, its
+// values the application's, as icon_index's are; value-initialized it is the application's none.
+enum class commands;
 
 namespace keys
 {
@@ -103,33 +111,32 @@ namespace ui
 	class app;
 	class bubble_frame;
 	class button;
+	class control;
+	class element;
 	class edit;
 	class command;
-	class control_frame;
 	class toolbar;
 	class trackbar;
 	class date_time_control;
 	class frame_host;
 	class frame;
 	class measure_context;
-	class control_base;
 	class platform_app;
 
 	using app_ptr = std::shared_ptr<app>;
 	using weak_app_ptr = std::weak_ptr<app>;
 	using bubble_window_ptr = std::shared_ptr<bubble_frame>;
 	using button_ptr = std::shared_ptr<button>;
+	using control_ptr = std::shared_ptr<control>;
+	using element_ptr = std::shared_ptr<element>;
 	using edit_ptr = std::shared_ptr<edit>;
 	using command_ptr = std::shared_ptr<command>;
-	using control_frame_ptr = std::shared_ptr<control_frame>;
-	using control_frame_weak_ptr = std::weak_ptr<control_frame>;
 	using toolbar_ptr = std::shared_ptr<toolbar>;
 	using trackbar_ptr = std::shared_ptr<trackbar>;
 	using date_time_control_ptr = std::shared_ptr<date_time_control>;
 	using frame_host_weak_ptr = std::weak_ptr<frame_host>;
 	using frame_ptr = std::shared_ptr<frame>;
 	using frame_weak_ptr = std::weak_ptr<frame>;
-	using control_base_ptr = std::shared_ptr<control_base>;
 	using plat_app_ptr = std::shared_ptr<platform_app>;
 
 	using surface_ptr = std::shared_ptr<surface>;
@@ -149,7 +156,9 @@ namespace ui
 		}
 	};
 
-	struct coll_widths
+	// The widths a form's columns of labels and values align to, shared by its rows as they are measured
+	// and drawn.
+	struct column_widths
 	{
 		int c1 = 0;
 		int c2 = 0;
@@ -1007,49 +1016,53 @@ namespace ui
 			hand_down
 		};
 
-		namespace color
+		// The colours everything is drawn in, as one palette: the product's own, with the few the running
+		// system theme decides.
+		struct theme
 		{
-			extern color32 menu_background;
-			extern color32 menu_text;
-			extern color32 menu_shortcut_text;
+			color32 menu_background = 0;
+			color32 menu_text = 0;
+			color32 menu_shortcut_text = 0;
 
-			extern color32 toolbar_background;
-			extern color32 sidebar_background;
-			extern color32 bubble_background;
-			extern color32 group_background;
+			color32 toolbar_background = 0;
+			color32 sidebar_background = 0;
+			color32 bubble_background = 0;
+			color32 group_background = 0;
 
-			extern color32 view_selected_background;
-			extern color32 view_background;
-			extern color32 view_text;
+			color32 view_selected_background = 0;
+			color32 view_background = 0;
+			color32 view_text = 0;
 
-			extern color32 dialog_background;
-			extern color32 dialog_text;
-			extern color32 dialog_selected_text;
-			extern color32 dialog_selected_background;
+			color32 dialog_background = 0;
+			color32 dialog_text = 0;
+			color32 dialog_selected_text = 0;
+			color32 dialog_selected_background = 0;
 
-			extern color32 button_background;
-			extern color32 edit_background;
-			extern color32 edit_text;
+			color32 button_background = 0;
+			color32 edit_background = 0;
+			color32 edit_text = 0;
 
-			extern color32 desktop_background;
-			extern color32 important_background;
-			extern color32 warning_background;
-			extern color32 success_background;
-			extern color32 info_background;
-
-
-			// The colours a platform takes from the running theme. The rest of the palette is the
-			// product's own and identical on every platform.
-			struct system_colors
-			{
-				color32 edit_background = 0x00ffffff;
-				color32 edit_text = 0x00000000;
-				color32 desktop_background = 0x00000000;
-			};
-
-			// Installs the palette. The platform layer calls this once at startup, before anything draws.
-			void install(const system_colors& system);
+			color32 desktop_background = 0;
+			color32 important_background = 0;
+			color32 warning_background = 0;
+			color32 success_background = 0;
+			color32 info_background = 0;
 		};
+
+		// The colours a platform takes from the running theme. The rest of the palette is the product's own
+		// and identical on every platform.
+		struct system_colors
+		{
+			color32 edit_background = 0x00ffffff;
+			color32 edit_text = 0x00000000;
+			color32 desktop_background = 0x00000000;
+		};
+
+		// The installed palette, which everything that draws reads.
+		extern const theme& colors;
+
+		// Installs the palette. The platform layer calls this once at startup, before anything draws.
+		void install(const system_colors& system);
 
 		enum class font_face
 		{
@@ -1483,7 +1496,7 @@ namespace ui
 		return result;
 	}
 
-	// A rectangle vertices::update_rects fills with one colour.
+	// A rectangle vertices fill with one colour, flat or raised.
 	struct vertex_rect
 	{
 		recti bounds;
@@ -1496,9 +1509,9 @@ namespace ui
 	{
 	public:
 		virtual ~vertices() = default;
-		// The audio visualizer's 64 bars, each over a drop shadow and emphasized at its centre. The
-		// hardware backend draws no other count.
-		virtual void update(recti rects[], color colors[], int num_bars) = 0;
+		// Raised bars, drawn in order: each over a drop shadow, its fill brightening toward its centre. The
+		// hardware backend draws up to 1,024 of them.
+		virtual void update_bars(std::span<const vertex_rect> bars) = 0;
 		// Flat rectangles, drawn in order. The hardware backend draws up to 16,384 of them.
 		virtual void update_rects(std::span<const vertex_rect> rects) = 0;
 	};
@@ -1677,7 +1690,7 @@ namespace ui
 		int padding1 = 4;
 		int handle_cxy = 12;
 		int scroll_width = 20;
-		coll_widths col_widths;
+		column_widths col_widths;
 	};
 
 	class draw_context : public measure_context
@@ -1740,6 +1753,11 @@ namespace ui
 		int32_t backend_code = 0;
 	};
 
+	// Colour every render target is cleared to before the scene is drawn. Every backend must use
+	// this, otherwise anything the scene does not explicitly paint shows through as black on one
+	// backend and as this grey on another.
+	constexpr float scene_clear_shade = 0.222f;
+
 	// A draw context backed by a graphics device and a window, rather than the drawing interface
 	// alone. Every backend implements this - the Direct3D one, the CPU rasterizer, and whatever a
 	// port adds - so it names no graphics API and no window type.
@@ -1801,26 +1819,6 @@ namespace ui
 		}
 	};
 
-
-	class control_base
-	{
-	public:
-		virtual ~control_base() = default;
-		virtual std::any handle() const = 0;
-		virtual void destroy() = 0;
-		virtual void enable(bool enable) = 0;
-		virtual std::string window_text() const = 0;
-		virtual void window_text(std::string_view val) = 0;
-		virtual void focus() = 0;
-		virtual sizei measure(int cx) const = 0;
-		virtual bool is_visible() const = 0;
-		virtual bool has_focus() const = 0;
-		virtual recti window_bounds() const = 0;
-		virtual void window_bounds(recti bounds, bool visible) = 0;
-		virtual void show(bool show) = 0;
-		virtual void options_changed() = 0;
-	};
-
 	struct key_state
 	{
 		bool control = false;
@@ -1861,42 +1859,6 @@ namespace ui
 		bool is_horizontal() const noexcept { return axis == wheel_axis::horizontal; }
 	};
 
-	class toolbar : public control_base
-	{
-	public:
-		virtual sizei measure_toolbar(int cx) = 0;
-		virtual void update_button_state(bool resize, bool text_changed) = 0;
-		virtual recti button_bounds(const command_ptr& command) const = 0;
-	};
-
-	class edit : public control_base
-	{
-	public:
-		virtual void replace_sel(std::string_view new_text, bool add_space_if_append) = 0;
-		virtual void select(int start, int end) = 0;
-		virtual void select_all() = 0;
-		virtual void set_icon(icon_index icon) = 0;
-		virtual void set_background(color32 bg) = 0;
-		virtual void auto_completes(const std::vector<std::string>& texts) = 0;
-	};
-
-	class trackbar : public control_base
-	{
-	public:
-		virtual int get_pos() const = 0;
-		virtual void SetPos(int val) = 0;
-	};
-
-	class button : public control_base
-	{
-	public:
-		virtual void set_checked(bool checked) = 0;
-	};
-
-	class date_time_control : public control_base
-	{
-	};
-
 	// The dictionary an edit control checks its words against. The application supplies it, so the
 	// control knows nothing of which spell checker that is.
 	class spelling_dictionary
@@ -1912,20 +1874,18 @@ namespace ui
 
 	struct edit_styles
 	{
-		bool horizontal_scroll = false;
 		bool align_center = false;
 		bool number = false;
 		bool password = false;
-		bool vertical_scroll = false;
 		bool multi_line = false;
 		// Words are checked against this while it is set; it outlives the control.
 		spelling_dictionary* spelling = nullptr;
+		// A multi-line edit takes Return as a line break, rather than leaving it to the dialog.
 		bool want_return = false;
 		bool file_system_auto_complete = false;
 		bool rounded_corners = false;
 		bool select_all_on_focus = false;
 		style::font_face font = style::font_face::dialog;
-		color32 bg_clr = style::color::dialog_background;
 		std::function<bool(int c, key_state keys)> capture_key_down;
 		std::vector<std::string> auto_complete_list;
 		std::string cue;
@@ -1933,8 +1893,8 @@ namespace ui
 
 	struct toolbar_styles
 	{
-		bool xTBSTYLE_WRAPABLE = false;
-		bool xTBSTYLE_LIST = false;
+		// Buttons that do not fit the width go on to another row.
+		bool wrap = false;
 		sizei button_extent = {0, 0};
 	};
 
@@ -1983,6 +1943,14 @@ namespace ui
 		std::any opaque;
 		std::function<void()> invoke;
 		std::function<std::vector<command_ptr>()> menu;
+
+		// In a menu, the commands shown side by side, each name under its icon, as one row of buttons in
+		// place of this one - as cut, copy and paste are along the top of a context menu - each chosen like
+		// an item.
+		std::vector<command_ptr> buttons;
+		// In a menu, an element shown in place of this command's row - a heading, a preview, more about
+		// what the menu acts on - which is shown, not chosen.
+		element_ptr content;
 	};
 
 	// The glyphs the platform's own chrome draws - a menu's check mark, check boxes, radio buttons and
@@ -2003,81 +1971,29 @@ namespace ui
 
 	extern const chrome_icon_set chrome_icons;
 
+	// The text that draws an icon: its code point in the icon font, as UTF-8, repeated where asked.
+	inline std::string icon_to_utf8(const icon_index i)
+	{
+		std::string result;
+		str::char32_to_utf8(std::back_inserter(result), static_cast<uint32_t>(i));
+		return result;
+	}
+
+	inline std::string icon_to_utf8(const icon_index i, const size_t repeat)
+	{
+		const auto single = icon_to_utf8(i);
+		std::string text;
+		text.reserve(single.size() * repeat);
+		for (size_t n = 0; n < repeat; ++n) text += single;
+		return text;
+	}
+
 
 	enum class close_result
 	{
 		ok,
 		cancel
 	};
-
-	class frame : public control_base
-	{
-	public:
-		~frame() override = default;
-
-		virtual void invalidate(recti bounds = {}, bool erase = false) = 0;
-		virtual void layout() = 0;
-		virtual void redraw() = 0;
-		virtual void redraw_now() = 0;
-		virtual void scroll(int dx, int dy, recti bounds, bool scroll_child_controls) = 0;
-		virtual void track_menu(recti button_bounds, const std::vector<command_ptr>& buttons) = 0;
-		virtual void close(bool is_cancel = false) = 0;
-
-		virtual bool is_enabled() const = 0;
-		virtual bool is_maximized() const = 0;
-		void enable(bool e) override = 0;
-		void focus() override = 0;
-		virtual bool is_occluded() const = 0;
-		virtual void set_cursor(style::cursor cursor) = 0;
-		virtual void reset_graphics() = 0;
-		virtual pointi cursor_location() = 0;
-	};
-
-	// A host's window does not exist before it is attached or after it is destroyed, yet the host is
-	// still populated, laid out, counted and invalidated across both windows. Standing in for the
-	// absent window here keeps that contract in one place instead of asking every caller - including
-	// view_host and view_scroller, which cannot know - to test for null first.
-	class null_frame final : public frame
-	{
-	public:
-		std::any handle() const override { return {}; }
-		void destroy() override {}
-		void enable(bool) override {}
-		std::string window_text() const override { return {}; }
-		void window_text(std::string_view) override {}
-		void focus() override {}
-		sizei measure(int) const override { return {}; }
-		bool is_visible() const override { return false; }
-		bool has_focus() const override { return false; }
-		recti window_bounds() const override { return {}; }
-		void window_bounds(recti, bool) override {}
-		void show(bool) override {}
-		void options_changed() override {}
-
-		void invalidate(recti = {}, bool = false) override {}
-		void layout() override {}
-		void redraw() override {}
-		void redraw_now() override {}
-		void scroll(int, int, recti, bool) override {}
-		void track_menu(recti, const std::vector<command_ptr>&) override {}
-		void close(bool = false) override {}
-
-		bool is_enabled() const override { return false; }
-		bool is_maximized() const override { return false; }
-		// Callers use this to skip drawing, and nothing drawn into an absent window can be seen.
-		bool is_occluded() const override { return true; }
-		void set_cursor(style::cursor) override {}
-		void reset_graphics() override {}
-		// Outside every client rect, so hit testing against it resolves to no controller.
-		pointi cursor_location() override { return {-1, -1}; }
-	};
-
-	// Stateless, so one instance serves every host that has no window.
-	inline const frame_ptr& no_frame()
-	{
-		static const frame_ptr instance = std::make_shared<null_frame>();
-		return instance;
-	}
 
 	enum class other_mouse_button
 	{
@@ -2163,8 +2079,16 @@ namespace ui
 			return false;
 		}
 
-		virtual void focus_changed(const bool has_focus, const control_base_ptr& child)
+		// Told of the keyboard coming to or leaving one of its controls.
+		virtual void focus_changed(const bool has_focus, const control_ptr& child)
 		{
+		}
+
+		// Told of the keyboard coming to or leaving a pane, a frame of its own; as any other change of
+		// focus unless the host needs to know which.
+		virtual void pane_focus_changed(const bool has_focus, const frame_ptr& pane)
+		{
+			focus_changed(has_focus, nullptr);
 		}
 
 		virtual void tick()
@@ -2214,20 +2138,26 @@ namespace ui
 			return false;
 		}
 
+		// Whether a press at loc on the frame's own ground - not on a control - gives the frame itself the
+		// keyboard, where its style says a press does: a region of controls drawn beside the frame's content
+		// answers false, so a press between its controls leaves the keyboard with them.
+		virtual bool takes_keyboard_at(const pointi loc) const
+		{
+			return true;
+		}
+
 		virtual void dpi_changed()
 		{
 		}
-	};
 
-	struct control_layout
-	{
-		control_base_ptr control;
-		recti bounds;
-		bool visible = true;
-		bool offset = true;
+		// The elements this host draws, each with where its content coordinates sit in the frame - a
+		// scrolled region's offset included. The frame finds what it serves among them, and their
+		// descendants: the drawn controls, which take the pointer under them, the keyboard when focused
+		// and Tab in this order, and the frame elements, whose frames it places after each layout.
+		virtual void visit_elements(const std::function<void(const element_ptr&, pointi offset)>& visit)
+		{
+		}
 	};
-
-	using control_layouts = std::vector<control_layout>;
 
 	enum class sys_command_type
 	{
@@ -2241,132 +2171,111 @@ namespace ui
 		bool hardware_accelerated = false;
 		bool child = true;
 		bool no_focus = false;
+		// Takes the keyboard with a press on its own ground, as a view does; otherwise only its controls do.
 		bool can_focus = false;
 		bool can_drop = false;
+		// A popup drawn with per-pixel alpha that the pointer passes through, faded in and out where
+		// animations run: a bubble.
+		bool layered = false;
+		// Holds frames and draws nothing of its own, so no surface is made for it: where its frames leave
+		// it uncovered it shows its background colour, as a window's border.
+		bool container = false;
 
 		int timer_milliseconds = 0;
 
 		color_style colors = {
-			style::color::dialog_background, style::color::dialog_text, style::color::dialog_selected_background
+			style::colors.dialog_background, style::colors.dialog_text, style::colors.dialog_selected_background
 		};
 	};
 
 
-	// Independent sets of radio buttons hosted by one control frame must declare distinct groups.
-	// Platforms scope radio exclusivity by sibling order, so without a group id a collision-policy
-	// choice would clear the scope or format choice in the same host (and the reverse).
+	// The radio buttons a frame shows check one per group. An application with more than one set in a
+	// frame gives each its own id.
 	constexpr int radio_group_default = 0;
-	constexpr int radio_group_scope = 1;
-	constexpr int radio_group_format = 2;
-	constexpr int radio_group_collision = 3;
 
-	class control_frame : public frame
+	// A window, or a region of one, that draws what its host draws: the host's elements, the drawn controls
+	// among them, and the frames the frame elements among them place. The application's window, a dialog,
+	// a view's pane, a menu's popup and a bubble are all frames, the same on every platform, and any of them
+	// can make frames of its own.
+	class frame
 	{
 	public:
-		virtual edit_ptr create_edit(const edit_styles& styles, std::string_view text,
-		                             std::function<void(const std::string&)> changed) = 0;
-		virtual trackbar_ptr create_slider(int min, int max, std::function<void(int, bool)> changed) = 0;
-		virtual toolbar_ptr create_toolbar(const toolbar_styles& styles, const std::vector<command_ptr>& buttons) = 0;
-		virtual button_ptr create_button(std::string_view text, std::function<void()> invoke,
-		                                 bool default_button = false) = 0;
-		virtual button_ptr create_button(icon_index icon, std::string_view title, std::string_view details,
-		                                 std::function<void()> invoke, bool default_button = false) = 0;
-		virtual button_ptr create_check_button(bool val, std::string_view text, bool is_radio,
-		                                       std::function<void(bool)> changed,
-		                                       int radio_group = radio_group_default) = 0;
-		virtual date_time_control_ptr create_date_time_control(df::date_t text, std::function<void(df::date_t)> changed,
-		                                                       bool include_time) = 0;
-		virtual control_frame_ptr create_dlg(frame_host_weak_ptr host, bool is_popup) = 0;
+		virtual ~frame() = default;
+
+		// The platform's window, where there is one.
+		virtual std::any handle() const = 0;
+		virtual void destroy() = 0;
+		virtual void enable(bool enable) = 0;
+		virtual std::string window_text() const = 0;
+		virtual void window_text(std::string_view val) = 0;
+		virtual void focus() = 0;
+		virtual bool is_visible() const = 0;
+		virtual bool has_focus() const = 0;
+		virtual recti window_bounds() const = 0;
+		virtual void window_bounds(recti bounds, bool visible) = 0;
+		virtual void show(bool show) = 0;
+		virtual void options_changed() = 0;
+
+		virtual void invalidate(recti bounds = {}, bool erase = false) = 0;
+		virtual void layout() = 0;
+		virtual void redraw() = 0;
+		virtual void redraw_now() = 0;
+		virtual void scroll(int dx, int dy, recti bounds) = 0;
+		virtual void track_menu(recti button_bounds, const std::vector<command_ptr>& buttons) = 0;
+		virtual void close(bool is_cancel = false) = 0;
+
+		virtual bool is_enabled() const = 0;
+		virtual bool is_maximized() const = 0;
+		virtual bool is_occluded() const = 0;
+		virtual void set_cursor(style::cursor cursor) = 0;
+		virtual void reset_graphics() = 0;
+		virtual pointi cursor_location() = 0;
+		virtual double scale_factor() const = 0;
+
+		// Gives the keyboard to the first edit or button among the host's controls.
+		virtual void focus_first() = 0;
+		// The drawn control that holds this frame's keyboard focus, or null.
+		virtual control_ptr focused_control() const = 0;
+
+		// Frames of its own: a dialog, a window of its own over this one; a frame of any style; and a bubble.
+		virtual frame_ptr create_dlg(frame_host_weak_ptr host) = 0;
 		virtual frame_ptr create_frame(frame_host_weak_ptr host, const frame_style& ft) = 0;
 		virtual bubble_window_ptr create_bubble() = 0;
 
-		virtual void apply_layout(const control_layouts& controls, pointi scroll_offset) = 0;
+		// A dialog's window: its modal wait, its answer and its place.
 		virtual close_result wait_for_close(uint32_t timeout_ms) = 0;
-		virtual void focus_first() = 0;
+		virtual bool is_canceled() const = 0;
 		virtual void position(recti bounds) = 0;
 		virtual void save_window_position(platform::setting_file_ptr& store) = 0;
-		virtual bool is_canceled() const = 0;
-		virtual double scale_factor() const = 0;
 	};
-
-	// What a bubble shows: measured, laid out and drawn by its owner, as the application's view elements
-	// are.
-	class bubble_content
-	{
-	public:
-		virtual ~bubble_content() = default;
-		virtual sizei measure(measure_context& mc, int width_limit) const = 0;
-		virtual void layout(measure_context& mc, recti bounds_in, control_layouts& positions) = 0;
-		virtual void render(draw_context& dc, pointi element_offset) const = 0;
-	};
-
-	using bubble_content_ptr = std::shared_ptr<bubble_content>;
 
 	class bubble_frame
 	{
 	public:
 		virtual ~bubble_frame() = default;
-		virtual void show(const bubble_content_ptr& content, recti bounds, int x_center, int preferred_size,
+		// Shows content, an element of the tree in ui_elements.h, beside bounds.
+		virtual void show(const element_ptr& content, recti bounds, int x_center, int preferred_size,
 		                  bool horizontal) = 0;
 		virtual void hide() = 0;
 		virtual bool is_visible() const = 0;
 	};
 
-	// The same contract null_frame keeps for an absent window, extended to the controls a dialog
-	// asks its frame to make. Creating a native dialog can fail - desktop heap exhaustion, or a
-	// request made while the session is ending - and the dozens of call sites that open a dialog
-	// cannot each be asked to test for that. A dialog built on this one reports itself cancelled and
-	// does nothing, which is what a dialog that never appeared means.
-	class null_control_frame final : public control_frame
+	// A frame that does not exist: a host's before it is attached or after it is destroyed, or one whose
+	// creation failed - desktop heap exhaustion, or a request made while the session is ending. Its host
+	// is still populated, laid out, counted and invalidated, and the dozens of call sites that open a dialog
+	// cannot each be asked to test for that, so this stands in for the absent window in one place. The
+	// controls its host lays out belong to no window, so they hold what they are given and show nothing,
+	// and a dialog on it reports itself cancelled, which is what a dialog that never appeared means. A test
+	// overrides what it records.
+	class null_frame : public frame
 	{
-		// Stands in for any control the absent frame was asked to make.
-		class null_control : public toolbar, public edit, public trackbar, public button, public date_time_control
-		{
-		public:
-			std::any handle() const override { return {}; }
-			void destroy() override {}
-			void enable(bool) override {}
-			std::string window_text() const override { return {}; }
-			void window_text(std::string_view) override {}
-			void focus() override {}
-			sizei measure(int) const override { return {}; }
-			bool is_visible() const override { return false; }
-			bool has_focus() const override { return false; }
-			recti window_bounds() const override { return {}; }
-			void window_bounds(recti, bool) override {}
-			void show(bool) override {}
-			void options_changed() override {}
-
-			sizei measure_toolbar(int) override { return {}; }
-			void update_button_state(bool, bool) override {}
-			recti button_bounds(const command_ptr&) const override { return {}; }
-
-			void replace_sel(std::string_view, bool) override {}
-			void select(int, int) override {}
-			void select_all() override {}
-			void set_icon(icon_index) override {}
-			void set_background(color32) override {}
-			void auto_completes(const std::vector<std::string>&) override {}
-
-			int get_pos() const override { return 0; }
-			void SetPos(int) override {}
-
-			void set_checked(bool) override {}
-		};
-
 		class null_bubble final : public bubble_frame
 		{
 		public:
-			void show(const bubble_content_ptr&, recti, int, int, bool) override {}
+			void show(const element_ptr&, recti, int, int, bool) override {}
 			void hide() override {}
 			bool is_visible() const override { return false; }
 		};
-
-		static std::shared_ptr<null_control> control()
-		{
-			static const auto instance = std::make_shared<null_control>();
-			return instance;
-		}
 
 	public:
 		std::any handle() const override { return {}; }
@@ -2375,7 +2284,6 @@ namespace ui
 		std::string window_text() const override { return {}; }
 		void window_text(std::string_view) override {}
 		void focus() override {}
-		sizei measure(int) const override { return {}; }
 		bool is_visible() const override { return false; }
 		bool has_focus() const override { return false; }
 		recti window_bounds() const override { return {}; }
@@ -2387,70 +2295,49 @@ namespace ui
 		void layout() override {}
 		void redraw() override {}
 		void redraw_now() override {}
-		void scroll(int, int, recti, bool) override {}
+		void scroll(int, int, recti) override {}
 		void track_menu(recti, const std::vector<command_ptr>&) override {}
 		void close(bool = false) override {}
 
 		bool is_enabled() const override { return false; }
 		bool is_maximized() const override { return false; }
+		// Callers use this to skip drawing, and nothing drawn into an absent window can be seen.
 		bool is_occluded() const override { return true; }
 		void set_cursor(style::cursor) override {}
 		void reset_graphics() override {}
+		// Outside every client rect, so hit testing against it resolves to no controller.
 		pointi cursor_location() override { return {-1, -1}; }
+		double scale_factor() const override { return 1.0; }
 
-		edit_ptr create_edit(const edit_styles&, std::string_view, std::function<void(const std::string&)>) override
-		{
-			return control();
-		}
+		void focus_first() override {}
+		control_ptr focused_control() const override { return nullptr; }
 
-		trackbar_ptr create_slider(int, int, std::function<void(int, bool)>) override { return control(); }
-
-		toolbar_ptr create_toolbar(const toolbar_styles&, const std::vector<command_ptr>&) override
-		{
-			return control();
-		}
-
-		button_ptr create_button(std::string_view, std::function<void()>, bool) override { return control(); }
-
-		button_ptr create_button(icon_index, std::string_view, std::string_view, std::function<void()>, bool) override
-		{
-			return control();
-		}
-
-		button_ptr create_check_button(bool, std::string_view, bool, std::function<void(bool)>, int) override
-		{
-			return control();
-		}
-
-		date_time_control_ptr create_date_time_control(df::date_t, std::function<void(df::date_t)>, bool) override
-		{
-			return control();
-		}
-
-		control_frame_ptr create_dlg(frame_host_weak_ptr, bool) override;
-		frame_ptr create_frame(frame_host_weak_ptr, const frame_style&) override { return no_frame(); }
+		frame_ptr create_dlg(frame_host_weak_ptr) override;
+		frame_ptr create_frame(frame_host_weak_ptr, const frame_style&) override;
 		bubble_window_ptr create_bubble() override { return std::make_shared<null_bubble>(); }
 
-		void apply_layout(const control_layouts&, pointi) override {}
 		// A dialog that could not be shown is one the user did not agree to.
 		close_result wait_for_close(uint32_t) override { return close_result::cancel; }
-		void focus_first() override {}
+		bool is_canceled() const override { return true; }
 		void position(recti) override {}
 		void save_window_position(platform::setting_file_ptr&) override {}
-		bool is_canceled() const override { return true; }
-		double scale_factor() const override { return 1.0; }
 	};
 
-	// Stateless, so one instance serves every dialog that has no window.
-	inline const control_frame_ptr& no_control_frame()
+	// Stateless, so one instance serves every host that has no window.
+	inline const frame_ptr& no_frame()
 	{
-		static const control_frame_ptr instance = std::make_shared<null_control_frame>();
+		static const frame_ptr instance = std::make_shared<null_frame>();
 		return instance;
 	}
 
-	inline control_frame_ptr null_control_frame::create_dlg(frame_host_weak_ptr, bool)
+	inline frame_ptr null_frame::create_dlg(frame_host_weak_ptr)
 	{
-		return no_control_frame();
+		return no_frame();
+	}
+
+	inline frame_ptr null_frame::create_frame(frame_host_weak_ptr, const frame_style&)
+	{
+		return no_frame();
 	}
 
 	enum class os_event_type
@@ -2524,8 +2411,8 @@ namespace ui
 		virtual void full_screen(bool full) = 0;
 		virtual void frame_delay(int animate_delay) = 0;
 		virtual void queue_idle() = 0;
-		virtual control_frame_ptr create_app_frame(const platform::setting_file_ptr& store,
-		                                           const frame_host_weak_ptr& host) = 0;
+		virtual frame_ptr create_app_frame(const platform::setting_file_ptr& store, const frame_host_weak_ptr& host,
+		                                   const frame_style& style) = 0;
 		virtual void monitor_folders(const std::vector<df::folder_path>& vector) = 0;
 		virtual void enable_screen_saver(bool cond) = 0;
 		virtual void set_font_base_size(int i) = 0;
@@ -2551,6 +2438,11 @@ namespace ui
 	// Makes a texture's scaler, the application's. The application sets it at startup; a renderer
 	// without one converts with its own plain code where it has some, and refuses what it cannot.
 	extern std::function<std::unique_ptr<surface_scaler>()> make_surface_scaler;
+
+	// The bytes of the icon font the application bundles, whose code points icon_index names. Windows
+	// reads them from the IDF_ICONS resource; another platform's text stack reads them from here, so
+	// the application sets it before the first window. Empty draws no icons.
+	extern df::cspan icon_font_data;
 
 	// Whether a decoder may hand this backend a planar YUV surface. False for the CPU renderer,
 	// which presents BGRA and would only convert it straight back, and false on a device whose
@@ -2668,13 +2560,17 @@ namespace ui
 	recti desktop_bounds(bool work_area);
 	bool is_ui_thread();
 	key_state current_key_state();
-	std::any focus();
-	void focus(const std::any&);
+
+	// Where the keyboard is, kept to give it back once a dialog closes: the drawn control that holds it,
+	// or the frame that does when no control does.
+	struct focus_snapshot
+	{
+		std::weak_ptr<control> focused;
+		frame_weak_ptr window;
+	};
+
+	focus_snapshot save_focus();
+	void restore_focus(const focus_snapshot& snapshot);
 }
 
 ui::app_ptr create_app(const ui::plat_app_ptr& pa);
-
-using command_info_ptr = std::shared_ptr<ui::command>;
-
-enum class commands;
-using commands_map = df::hash_map<commands, command_info_ptr>;

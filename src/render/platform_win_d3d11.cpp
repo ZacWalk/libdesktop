@@ -1254,7 +1254,7 @@ public:
 	{
 	}
 
-	void update(recti rects[], ui::color colors[], int num_bars) override;
+	void update_bars(std::span<const ui::vertex_rect> bars) override;
 	void update_rects(std::span<const ui::vertex_rect> rects) override;
 
 private:
@@ -2686,27 +2686,28 @@ static void build_shadow_vertices(vertex_2d* vertices, WORD* indexes, const text
 	         static_cast<uint32_t>(v - vertices));
 }
 
-void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bars)
+void d3d11_vertices::update_bars(const std::span<const ui::vertex_rect> bars)
 {
 	df::scope_rendering_func rf(__FUNCTION__);
 	df::assert_true(ui::is_ui_thread());
 
-	constexpr auto expected_num_bars = 64;
 	constexpr auto shadow_vertex_count = 4 * 8;
 	constexpr auto shadow_index_count = 6 * 8;
 	constexpr auto rect_verex_count = 5;
 	constexpr auto rect_index_count = 12;
 
-	constexpr auto visualizer_vertex_count = (shadow_vertex_count + rect_verex_count) * expected_num_bars;
-	constexpr auto visualizer_index_count = (shadow_index_count + rect_index_count) * expected_num_bars;
+	// The indexes are 16-bit: 1,024 bars take 37,888 vertices.
+	constexpr size_t max_bars = 1024;
+	const auto num_bars = std::min(bars.size(), max_bars);
 
-	if (num_bars != expected_num_bars)
-		return;
+	// The scene goes on drawing these buffers, so whatever the last update left must not survive one
+	// that cannot be built.
+	_scene_atoms.clear();
 
 	// The canvas is released by destroy(), and the shadow texture is only loaded once the device is ready.
 	// The device is checked explicitly because the buffer builds below dereference it directly, and after a
 	// downgrade to software the canvas can still be present with no device behind it.
-	if (!_canvas || !_canvas->_shadow || !_canvas->_shadow->is_valid() || !_canvas->_f ||
+	if (num_bars == 0 || !_canvas || !_canvas->_shadow || !_canvas->_shadow->is_valid() || !_canvas->_f ||
 		!_canvas->_f->d3d_device || !_canvas->_f->d3d_context)
 		return;
 
@@ -2714,24 +2715,24 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 	const auto& shadow_binding = _canvas->_shadow->binding();
 	if (!shadow_binding) return;
 
-	// ~118KB of the UI thread's 1MB stack (vertex_2d is 48 bytes). Safe while this stays a leaf
-	// call; move to a member buffer if a deeper call chain ever lands underneath it.
-	vertex_2d vertices[visualizer_vertex_count];
-	WORD indexes[visualizer_index_count];
+	auto& vertices = _rect_vertices;
+	auto& indexes = _rect_indexes;
+	vertices.resize((shadow_vertex_count + rect_verex_count) * num_bars);
+	indexes.resize((shadow_index_count + rect_index_count) * num_bars);
 	auto vertex_count = 0;
 	auto index_count = 0;
 
-	for (auto i = 0; i < num_bars; i++)
+	for (size_t i = 0; i < num_bars; i++)
 	{
-		auto r = rects[i];
-		auto a = r.height() > 1 ? colors[i].a / 2.0f : 0.0f;
+		const auto r = bars[i].bounds;
+		const auto a = r.height() > 1 ? bars[i].fill.a / 2.0f : 0.0f;
 
-		build_shadow_vertices(vertices + vertex_count, indexes + index_count, _canvas->_shadow, r,
+		build_shadow_vertices(vertices.data() + vertex_count, indexes.data() + index_count, _canvas->_shadow, r,
 		                      _canvas->_client_extent, 8, a);
 
-		for (int i = 0; i < shadow_index_count; i++)
+		for (int j = 0; j < shadow_index_count; j++)
 		{
-			indexes[index_count + i] += vertex_count;
+			indexes[index_count + j] += static_cast<WORD>(vertex_count);
 		}
 
 		vertex_count += shadow_vertex_count;
@@ -2741,11 +2742,11 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 	const auto bar_vert_start = vertex_count;
 	const auto bar_ind_start = index_count;
 
-	for (auto i = 0; i < num_bars; i++)
+	for (size_t i = 0; i < num_bars; i++)
 	{
-		rectd dst = rects[i];
-		auto clr2 = colors[i];
-		auto clr1 = clr2.emphasize();
+		const rectd dst = bars[i].bounds;
+		const auto clr2 = bars[i].fill;
+		const auto clr1 = clr2.emphasize();
 
 		const auto r = rectd(dst).scale(_canvas->_client_extent);
 
@@ -2757,7 +2758,7 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 		const auto cx = static_cast<float>(center.X);
 		const auto cy = static_cast<float>(center.Y);
 
-		const auto vi = vertex_count - bar_vert_start;
+		const auto vi = static_cast<WORD>(vertex_count - bar_vert_start);
 
 		vertices[vertex_count + 0] = vertex_2d(dl, dt, clr2);
 		vertices[vertex_count + 1] = vertex_2d(dr, dt, clr2);
@@ -2765,28 +2766,16 @@ void d3d11_vertices::update(recti rects[], ui::color colors[], const int num_bar
 		vertices[vertex_count + 3] = vertex_2d(dr, db, clr2);
 		vertices[vertex_count + 4] = vertex_2d(dl, db, clr2);
 
-		indexes[index_count++] = vi + 0;
-		indexes[index_count++] = vi + 1;
-		indexes[index_count++] = vi + 2;
-
-		indexes[index_count++] = vi + 1;
-		indexes[index_count++] = vi + 3;
-		indexes[index_count++] = vi + 2;
-
-		indexes[index_count++] = vi + 3;
-		indexes[index_count++] = vi + 4;
-		indexes[index_count++] = vi + 2;
-
-		indexes[index_count++] = vi + 4;
-		indexes[index_count++] = vi + 0;
-		indexes[index_count++] = vi + 2;
+		// Four triangles fan from the centre, one along each edge.
+		constexpr WORD fan[] = {0, 1, 2, 1, 3, 2, 3, 4, 2, 4, 0, 2};
+		for (const auto f : fan) indexes[index_count++] = static_cast<WORD>(vi + f);
 
 		vertex_count += rect_verex_count;
 	}
 
-	if (!upload(vertices, static_cast<uint32_t>(vertex_count), indexes, static_cast<uint32_t>(index_count)))
+	if (!upload(vertices.data(), static_cast<uint32_t>(vertex_count), indexes.data(),
+	            static_cast<uint32_t>(index_count)))
 	{
-		_scene_atoms.clear();
 		return;
 	}
 

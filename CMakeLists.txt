@@ -95,7 +95,8 @@ if(LIBDESKTOP_RENDER)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/render.cmake")
 
     if(PROJECT_IS_TOP_LEVEL)
-        add_executable(libdesktop_render_tests tests/render_tests.cpp tests/system_test.h)
+        add_executable(libdesktop_render_tests tests/render_tests.cpp tests/render_controls_tests.cpp
+            tests/render_elements_tests.cpp tests/system_test.h)
         if(WIN32)
             target_compile_definitions(libdesktop_render_tests PRIVATE UNICODE _UNICODE)
             target_sources(libdesktop_render_tests PRIVATE tests/render_win_tests.cpp tests/render_tests.rc

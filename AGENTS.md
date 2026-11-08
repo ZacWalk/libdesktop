@@ -1,28 +1,17 @@
 # AGENTS.md
 
-libdesktop is the platform layer shared by twelve applications. `dde`,
-`libdos`, `potato`, `stuntcarracer`, `lib8bit`'s host, `fast-draw`, `low-ban`
-and `zpilot` build on libdesktop-core; `sys-mate` also uses libdesktop-ui.
-ImageWalker 3.0 and `ergo-active` use core, ui and system, while ImageWalker's
-shared imaging adapters use core and system. Diffractor builds on system,
-render and text. It is a library with no application of its own.
-
-It ships six static libraries: `libdesktop-core` (`pf::`), `libdesktop-ui`
-(`pf::ui`), `libdesktop-text` (the part of `pf::ui` that is standard C++ alone:
-`ui/text_types.h` and `ui/syntax.h`), opt-in `libdesktop-system` (`df::`,
-`str::` and `platform::`) and `libdesktop-render` (`ui::`), and `libdesktop-os`
-(`os::`), the services libdesktop-core and libdesktop-system share;
-[README.md](README.md#libdesktop) is the canonical overview of their contents
-and aliases.
-
-libdesktop-core and libdesktop-ui's C++ API is the `pf::` namespace,
-`platform.h`, the `ui/` headers and `platform_add_app()`; apps link the CMake
-targets `libdesktop::core` and `libdesktop::ui`.
-
-libdesktop-ui's ownership boundary is described in
-[README.md](README.md#srcui--the-presentation-layer).
+libdesktop is the platform layer the workspace's applications share, in six
+static libraries, and has no application of its own.
+[README.md](README.md#libdesktop) is the map of the libraries - what each
+holds, its namespace and CMake alias, and which applications link it - and the
+workspace's root AGENTS.md has who consumes what, at which pin. Read them
+rather than a copy kept here.
 
 ## Non-negotiables
+
+These hold for libdesktop-core, libdesktop-ui and libdesktop-text, which the
+`pf::` applications link; the opt-in libraries have sections of their own
+below.
 
 1. **`src/core/platform.h` includes no OS headers.** Not `windows.h`, not
    transitively. The Windows SDK stays in `src/core/platform_win*.cpp`;
@@ -140,24 +129,39 @@ The desktop UI that began as Diffractor's, written in libdesktop-system and
 described in [docs/render.md](docs/render.md). Opt-in like libdesktop-system, and
 reaching only the applications that set `LIBDESKTOP_RENDER`.
 
-1. **The API headers include no OS header.** `ui.h`, `platform_render.h`,
-   `render_software.h` and `render.h` are portable; the Windows SDK appears only
-   in `src/render/platform_win*.cpp` and the backend's semi-public
-   `platform_win_*.h`, meant for an application's own window layer.
+1. **The API headers include no OS header.** `ui.h`, `ui_elements.h`,
+   `render_controls.h`, `platform_render.h`, `render_software.h` and `render.h`
+   are portable; the Windows SDK appears only in `src/render/platform_win*.cpp`
+   and the backend's semi-public `platform_win_*.h`, meant for an application's
+   own window layer.
 2. **It names no application.** What it needs of one - the chrome's glyphs
    (`ui::chrome_icons`), the application it hosts (`create_app`), the window icon
    and icon font in the application's resource script, its decoders and scaler
    as hooks - the application supplies. It sees no decoder's types: video comes as
-   `ui::video_frame`s, sound goes to a `platform::audio_output`.
+   `ui::video_frame`s, sound goes to a `platform::audio_output`. Where it carries
+   an application's values - `icon_index`, `command_group`, `commands` - the type
+   is the module's and the values the application's, and a value-initialized one
+   is none; module code never names a value.
 3. **Its resources travel as a script the application's includes**
    (`src/render/res/platform_win_render.rc`). A new resource goes there, with its
    ID in `platform_win_render_res.h`.
 4. **Check Debug as well as Release, and Linux as well as Windows,** as for
    libdesktop-system. The tests mark their thread the UI thread, as an
    application's entry point does, because the layer asserts it.
-5. **Tests move with the code.** `tests/render_tests.cpp` and
+5. **Tests move with the code.** `tests/render_tests.cpp`,
+   `tests/render_elements_tests.cpp`, `tests/render_controls_tests.cpp` and
    `tests/render_win_tests.cpp` use Diffractor's assertions, so a test moves
-   between Diffractor's suites and these unchanged.
+   between Diffractor's suites and these unchanged but for the module's names.
+6. **One tree.** A frame finds what it serves - the drawn controls it gives the
+   pointer and the keyboard, in Tab order, and the frame elements whose frames
+   it places - by walking the elements its host offers
+   (`frame_host::visit_elements`) and what each names in `visit_children`. So an
+   element names everything it holds there, and one that draws anything of its
+   own draws what it holds with `render_children`: a control left out is
+   neither drawn nor reached. Controls belong to no frame (`ui::make_*`), and a
+   control measures with the context its layout is given, never through a
+   frame, because it is laid out before one finds it.
+   [docs/render.md](docs/render.md#the-element-tree) describes the model.
 
 ## libdesktop-os
 
@@ -199,7 +203,9 @@ Which services remain to merge, and why each waits, is in [docs/todo.md](docs/to
 
 1. It goes in `src/ui/`, in `pf::ui`, reached as `#include "ui/<file>.h"`.
 2. It may use `pf::`. It may not name an application, open a file, know a path,
-   or speak a protocol — those belong to the app.
+   or speak a protocol — those belong to the app; the README's
+   [presentation layer](README.md#srcui--the-presentation-layer) section draws
+   the boundary.
 3. Anything pure gets a case in `tests/ui_tests.cpp`. Layout and hit testing are
    testable without a window because `pf::measure_context` is an interface.
 4. An app opts in with `platform_add_app(<target> UI ...)`.
@@ -239,9 +245,11 @@ possible; `test_support.h` has implemented one without a window all along.
 
 ## Conventions
 
-- Modern C++20 in `snake_case`; `pf::` for everything public.
+- Modern C++20 in `snake_case`, each library's public names in its own
+  namespace ([README](README.md#libdesktop)).
 - Comments explain *why*, in one line. Do not narrate the next line.
-- Diagnose failures with `pf::debug_trace` and the real error code rather than
-  failing silently.
+- Diagnose failures with the real error code rather than failing silently:
+  `pf::debug_trace` in core and ui, `df::log` in system and render. os writes
+  no log; it returns the failure for its wrapper to report.
 - `dd.ps1` is duplicated in each repo by design — it has to run before CMake, so
   it cannot come from this package.

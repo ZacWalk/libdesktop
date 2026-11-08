@@ -47,8 +47,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # Pango, fontconfig and FreeType set libdesktop-render's text; SDL3, built from the pin, drives
+      # X11 and Wayland through the system libraries whose headers these are.
+      - name: Install Ninja and the window layer's development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libpango1.0-dev libfontconfig-dev libfreetype-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgl-dev libgles-dev libdrm-dev \
+            libgbm-dev libdecor-0-dev libdbus-1-dev libudev-dev
 
       - name: Configure
         run: cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}

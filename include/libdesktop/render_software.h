@@ -924,6 +924,52 @@ namespace ui
 	software_present_target_ptr create_memory_present_target();
 
 	//////////////////////////////////////////////////////////////////////////////////////////////
+	// The text seam - what the software draw context asks of the platform's text stack. The
+	// context records draws and replays them a tile at a time, so an engine rasterises into the
+	// canvas it is handed and treats the canvas clip as a write mask, as every primitive does.
+	// DirectWrite answers on Windows and Pango on Linux.
+	//////////////////////////////////////////////////////////////////////////////////////////////
+
+	class software_text_engine
+	{
+	public:
+		virtual ~software_text_engine() = default;
+
+		// Every font is sized relative to this; a change drops whatever was made for the old size.
+		virtual void base_font_size(int size) = 0;
+
+		virtual sizei measure_text(std::string_view text, style::font_face font, style::text_style style, int cx,
+		                           int cy) = 0;
+		virtual int text_line_height(style::font_face font) = 0;
+		virtual text_layout_ptr create_text_layout(style::font_face font) = 0;
+
+		// dc is the context the draw came through, for a background the engine paints with the
+		// context's own primitives; the glyphs go straight into canvas.
+		virtual void draw_text(draw_context& dc, software_canvas& canvas, std::string_view text, recti bounds,
+		                       style::font_face font, style::text_style style, color c, color bg) = 0;
+		virtual void draw_text(draw_context& dc, software_canvas& canvas, std::string_view text,
+		                       const std::vector<text_highlight_t>& highlights, recti bounds,
+		                       style::font_face font, style::text_style style, color c, color bg) = 0;
+		virtual void draw_text(draw_context& dc, software_canvas& canvas, const text_layout_ptr& layout, recti bounds,
+		                       color c, color bg) = 0;
+	};
+
+	using software_text_engine_ptr = std::shared_ptr<software_text_engine>;
+
+	// The platform's own text engine at a base font size, standing alone: what the window layer gives
+	// each software context, and what a test measures text with. Null when there is no text stack.
+	software_text_engine_ptr create_text_engine(int base_font_size);
+
+	// The CPU draw context: records the scene, then replays it a scratch tile at a time into the
+	// target's buffer. Text goes through the engine, which may be null where nothing draws text.
+	draw_context_device_ptr create_software_draw_context(software_text_engine_ptr text,
+	                                                     software_present_target_ptr target, int base_font_size);
+
+	// The drop shadow the CPU backend stretches behind bubbles and bars: a centred radial blob in
+	// straight-alpha BGRA. Each platform supplies the artwork; null draws no shadow.
+	surface_ptr load_shadow_art();
+
+	//////////////////////////////////////////////////////////////////////////////////////////////
 	// The rasterizer probe. Tiling is sound only while every primitive derives its colour, coverage
 	// and source mapping from its own bounds and treats the clip purely as a write mask, so this
 	// draws one representative scene whole and again tile by tile and compares the two. It is also

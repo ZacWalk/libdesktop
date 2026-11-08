@@ -13,6 +13,7 @@
 // loop that have no counterpart here yet. The application's own Linux glue is platform_linux_app.cpp.
 
 #include "libdesktop/render.h"
+#include "libdesktop/render_software.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Style palette
@@ -27,7 +28,7 @@ namespace
 	{
 		color_style_initialiser()
 		{
-			ui::style::color::install({0x00ffffff, 0x00000000, 0x00000000});
+			ui::style::install({0x00ffffff, 0x00000000, 0x00000000});
 		}
 	};
 
@@ -97,33 +98,14 @@ bool ui::is_ui_thread()
 	return platform::is_ui_thread();
 }
 
-// No display connection yet, so report a conventional desktop rather than an empty rectangle a
-// layout would divide by.
-recti ui::desktop_bounds(bool)
-{
-	return {0, 0, 1920, 1080};
-}
+extern const unsigned char libdesktop_shadow_png[];
+extern const size_t libdesktop_shadow_png_size;
 
-std::any ui::focus()
+// The same art Windows reads from the module's resources, compiled in here, and decoded with the
+// application's own decoder as on Windows.
+ui::surface_ptr ui::load_shadow_art()
 {
-	return {};
-}
-
-void ui::focus(const std::any&)
-{
-}
-
-// Rasterising a glyph needs the text stack, which is Stage 3 of the port. The icon font itself is
-// bundled and platform-neutral, so this is the only part that is still owed.
-ui::const_surface_ptr platform::create_icon_surface(char32_t)
-{
-	return {};
-}
-
-// Owed with the rest of the text stack; a caller draws no subtitle rather than a wrong one.
-ui::surface_ptr platform::render_styled_text(const styled_text&)
-{
-	return {};
+	return decode_embedded({libdesktop_shadow_png, libdesktop_shadow_png_size});
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -148,11 +130,6 @@ platform::movie_writer_ptr platform::create_movie_writer(const movie_writer_requ
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 int ui::ticks_since_last_user_action = 0;
-
-ui::key_state ui::current_key_state()
-{
-	return {};
-}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Audio output. Needs PipeWire or PulseAudio.

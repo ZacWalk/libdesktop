@@ -560,9 +560,33 @@ platform::clipboard_data_ptr platform::clipboard()
 	return {};
 }
 
+namespace
+{
+	struct text_clipboard
+	{
+		std::function<std::optional<std::string>()> read;
+		std::function<bool(std::string_view)> write;
+	};
+
+	text_clipboard& installed_text_clipboard()
+	{
+		static text_clipboard clipboard;
+		return clipboard;
+	}
+}
+
+void platform::install_text_clipboard(std::function<std::optional<std::string>()> read,
+                                      std::function<bool(std::string_view)> write)
+{
+	auto& clipboard = installed_text_clipboard();
+	clipboard.read = std::move(read);
+	clipboard.write = std::move(write);
+}
+
 std::optional<std::string> platform::clipboard_text()
 {
-	return std::nullopt;
+	const auto& read = installed_text_clipboard().read;
+	return read ? read() : std::nullopt;
 }
 
 bool platform::set_clipboard(const std::vector<df::file_path>&, const std::vector<df::folder_path>&,
@@ -571,9 +595,10 @@ bool platform::set_clipboard(const std::vector<df::file_path>&, const std::vecto
 	return false;
 }
 
-bool platform::set_clipboard(std::string_view)
+bool platform::set_clipboard(const std::string_view text)
 {
-	return false;
+	const auto& write = installed_text_clipboard().write;
+	return write && write(text);
 }
 
 platform::drop_effect platform::perform_drag(const std::any&, const std::vector<df::file_path>&,

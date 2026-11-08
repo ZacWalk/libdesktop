@@ -30,15 +30,51 @@ spell checker and Hunspell, WIC and libfiles.
       from glibc on damaged text. Done when those reads use portable parsers
       and the Linux shim is deleted.
 
+## One UI stack
+
+Decided 2026-11-08: libdesktop converges on libdesktop-render. Its element tree
+(`ui_elements.h`, moved from Diffractor) is the one retained UI model, and
+libdesktop-ui's views are rebuilt on it. Each step ships alone, the code moved
+before its behaviour changes. The drawn controls are elements of the tree,
+painted, hit and focused through it, and render names no application
+([render.md](render.md#the-element-tree)).
+
+- [ ] **A small application on render.** ergo-active moves, as decided on
+      2026-11-08: a drawn caption - its title, a menu button for Hide to tray and
+      Exit, and window buttons drawn from the system's Segoe icon font when the
+      application bundles no icon font; drawn dialogs for its close prompt and
+      reminders; and render's slider and edit in its element tree. Three steps,
+      each shipping alone:
+      1. Its services where a render application reaches them. A render
+         application cannot link libdesktop-core beside render: core's `WinMain`
+         shares a translation unit with the services, and core's window procedure
+         delivers named-instance signals. The tray - icon, urgency, balloons, its
+         menu, re-adding after Explorer restarts - and the single-instance lock and
+         show-window signal move into libdesktop-os, held to core's tests; core
+         keeps its `pf::` wrappers, libdesktop-system gains `platform::` ones, and
+         render's application window delivers the signal.
+      2. `platform_add_app(... RENDER)` links render and its entry point and writes
+         the resource script: `platform_win_render.rc`, the window icon, and the
+         application's icon font when it has one.
+      3. The dashboard (`ui-frame.h`) on the element tree, its tests moved with it.
+      Done when ergo-active ships on render.
+- [ ] **libdesktop-ui's views on elements.** One virtualized list serving
+      Diffractor's task rows and `pf::ui::list_view`'s panel, then sys-mate; the
+      text, read-only, Markdown, CSV and hex views, with Diffractor's selection
+      panel in place of `document_control` as their second consumer, then dde and
+      ImageWalker 3.0; libdesktop-ui building on Linux. The open decision on
+      `pane_host` and `composer` (workspace AGENTS.md) is settled then: a tree in
+      one frame does what `pane_host` emulated.
+
 ## Second adopters
 
 Each module was extracted from one application. A second adopter is where its
 design is tested; read the adopter's tests before replacing its code.
 
 - [ ] **A second libdesktop-render consumer.** Its window model still serves
-      Diffractor alone. zpilot uses core windowing and audio while retaining
-      its specialized HDR/bloom/CRT renderer; do not replace that renderer
-      merely to adopt another target.
+      Diffractor alone; ergo-active is the first planned (above). zpilot uses core
+      windowing and audio while retaining its specialized HDR/bloom/CRT renderer;
+      do not replace that renderer merely to adopt another target.
 - [ ] **More of `src/ui` in libdesktop-text.** Diffractor's read-only document
       view draws text and dumps itself, coloured by libdesktop-text. Rendered
       Markdown or CSV tables there would want `ui/markdown.h` (standard C++ but
@@ -47,7 +83,7 @@ design is tested; read the adopter's tests before replacing its code.
       either.
 
 The two window models - libdesktop-core's reactor and libdesktop-render's
-`ui::` - stay side by side until one application needs both. What depends on
-neither is shared instead: libdesktop-text, the text vocabulary and syntax
-highlighters that libdesktop-ui and Diffractor's document view both use. ddc
-stays independent of libdesktop.
+`ui::` - converge on render ([One UI stack](#one-ui-stack)); until each consumer
+has moved, what depends on neither is shared instead: libdesktop-text, the text
+vocabulary and syntax highlighters that libdesktop-ui and Diffractor's document
+view both use. ddc stays independent of libdesktop.

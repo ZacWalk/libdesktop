@@ -551,7 +551,7 @@ static void should_present_a_video_frame_in_software_through_its_interface()
 	const df::scope_exit restore([restore_scaler] { ui::make_surface_scaler = restore_scaler; });
 	ui::make_surface_scaler = make_fake_frame_scaler(frames_converted);
 
-	const auto renderer = create_software_draw_context(nullptr, nullptr, false, normal_font_size);
+	const auto renderer = create_software_draw_context(nullptr, nullptr, false, ui::default_font_size);
 	const auto texture = renderer->create_texture();
 	assert_equal(true, texture->update(make_prepared_video_frame({64, 48})) == ui::texture_update_result::tex_created,
 	             "a prepared picture is copied");
@@ -577,48 +577,6 @@ static void should_present_a_video_frame_in_software_through_its_interface()
 	assert_equal(true,
 	             renderer->create_texture()->update(unprepared) == ui::texture_update_result::failed,
 	             "with no scaler a picture in system memory cannot be presented");
-}
-
-// A scene draws its vertices by reference, so rectangles updated after it was recorded are what the
-// next present shows - each update in place of the last - with nothing recorded again.
-static void should_present_vertex_rectangles_updated_after_the_scene()
-{
-	constexpr sizei extent{48, 32};
-	const auto target = ui::create_memory_present_target();
-	const auto renderer = create_software_draw_context(nullptr, target, normal_font_size);
-
-	const auto shade = [&](const int x, const int y)
-	{
-		const auto buffer = target->acquire_buffer(extent);
-		const auto* const p = buffer.bits + y * buffer.stride + x * 4;
-		return ui::rgb(p[2], p[1], p[0]);
-	};
-
-	const auto verts = renderer->create_vertices();
-	const ui::vertex_rect red[] = {{recti(4, 4, 20, 12), ui::color(1.0f, 0.0f, 0.0f, 1.0f)}};
-	const ui::vertex_rect blue[] = {{recti(28, 16, 40, 28), ui::color(0.0f, 0.0f, 1.0f, 1.0f)}};
-
-	renderer->begin_draw(extent, normal_font_size, {});
-	renderer->clear(ui::color(0.0f, 0.0f, 0.0f, 1.0f));
-	verts->update_rects(red);
-	renderer->draw_vertices(verts);
-	renderer->render();
-
-	assert_equal(ui::rgb(255, 0, 0), shade(10, 8), "the rectangle is drawn");
-	assert_equal(ui::rgb(0, 0, 0), shade(30, 20), "and nothing beside it");
-
-	verts->update_rects(blue);
-	renderer->reset_damage();
-	renderer->render();
-
-	assert_equal(ui::rgb(0, 0, 255), shade(30, 20), "a re-present shows the rectangle updated since");
-	assert_equal(ui::rgb(0, 0, 0), shade(10, 8), "in place of the one before");
-
-	verts->update_rects({});
-	renderer->reset_damage();
-	renderer->render();
-
-	assert_equal(ui::rgb(0, 0, 0), shade(30, 20), "and an empty update draws nothing");
 }
 
 static void should_suppress_gpu_for_recovery_session()
@@ -730,79 +688,6 @@ static void should_preserve_clipboard_format_contracts()
 	assert_equal(true, result.rejects_wrong_medium, "query and retrieval reject incompatible media consistently");
 }
 
-static void should_render_common_controls_into_a_buffer()
-{
-	const auto probe = platform::probe_buffered_control_paint();
-
-	assert_equal(true, probe.trackbar_painted_pixels > 0, "trackbar draws into a supplied dc");
-	assert_equal(true, probe.trackbar_colors > 1, "trackbar draws more than a flat fill");
-	assert_equal(true, probe.toolbar_painted_pixels > 0, "toolbar draws into a supplied dc");
-	assert_equal(true, probe.toolbar_colors > 1, "toolbar draws more than a flat fill");
-	assert_equal(true, probe.button_painted_pixels > 0, "button draws into a supplied dc");
-	assert_equal(true, probe.button_colors > 1, "button draws more than a flat fill");
-}
-
-static void should_replace_the_full_trailing_spelling_word()
-{
-	const auto invalid = [](const std::string_view word)
-	{
-		return word != "teh" && word != "x";
-	};
-
-	const auto replace_first = [](std::wstring text, const std::vector<platform::edit_spelling_range>& ranges)
-	{
-		assert_equal(1_z, ranges.size(), "one misspelling is found");
-		text.replace(static_cast<size_t>(ranges.front().pos_start),
-		             static_cast<size_t>(ranges.front().pos_end - ranges.front().pos_start), L"the");
-		return text;
-	};
-
-	assert_equal(L"the"s, replace_first(L"teh", platform::probe_edit_spelling_ranges(L"teh", invalid)),
-	             "a final word includes its last character");
-	assert_equal(L"prefix the"s, replace_first(L"prefix teh", platform::probe_edit_spelling_ranges(L"prefix teh", invalid)),
-	             "surrounding prefix text is untouched");
-	assert_equal(L"the "s, replace_first(L"teh ", platform::probe_edit_spelling_ranges(L"teh ", invalid)),
-	             "a word followed by whitespace keeps the separator");
-
-	const auto one = platform::probe_edit_spelling_ranges(L"x", invalid);
-	assert_equal(1_z, one.size(), "a one-character final word is found");
-	assert_equal(0, one.front().pos_start, "one-character start");
-	assert_equal(1, one.front().pos_end, "one-character end remains exclusive");
-}
-
-// The control checks words against the dictionary it is given and knows of no other: the application
-// supplies spell checking, and without it nothing is underlined.
-static void should_check_edit_words_against_the_supplied_dictionary()
-{
-	class listed_dictionary final : public ui::spelling_dictionary
-	{
-	public:
-		mutable std::vector<std::string> asked;
-
-		void queue_load() override {}
-
-		bool is_word_valid(const std::string_view word) const override
-		{
-			asked.emplace_back(word);
-			return word != "teh";
-		}
-
-		std::vector<std::string> suggest(std::string_view) const override { return {}; }
-		void add_word(std::string_view, std::function<void()> done) override { if (done) done(); }
-	};
-
-	listed_dictionary dictionary;
-	const auto unknown = platform::probe_edit_unknown_words(L"the teh cat", &dictionary);
-
-	assert_equal(1_z, unknown.size(), "the word the dictionary rejects is underlined");
-	assert_equal("teh"s, unknown.front().word, "which word");
-	assert_equal(4, unknown.front().pos_start, "where it starts");
-	assert_equal(7, unknown.front().pos_end, "where it ends");
-	assert_equal(3_z, dictionary.asked.size(), "every word is asked of the dictionary");
-	assert_equal(true, platform::probe_edit_unknown_words(L"the teh cat", nullptr).empty(),
-	             "without a dictionary nothing is underlined");
-}
-
 // The chrome's embedded PNG - the drop shadow - travels in the module's resource script, and decodes
 // with whatever decoder the application installs before any backend loads one, so both backends draw
 // the same shadow with or without WIC. Diffractor's suite checks that it installs its own.
@@ -831,47 +716,6 @@ static void should_decode_embedded_chrome_images()
 
 	ui::decode_embedded_image = nullptr;
 	assert_equal(true, ui::decode_embedded(shadow_png) == nullptr, "and with none installed nothing decodes it");
-}
-
-static void should_hit_test_the_last_trailing_spelling_character()
-{
-	const auto point_x = [](const DWORD p) { return static_cast<int>(static_cast<short>(LOWORD(p))); };
-	const auto point_y = [](const DWORD p) { return static_cast<int>(static_cast<short>(HIWORD(p))); };
-
-	const auto parent = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 240, 60, nullptr, nullptr,
-	                                   get_resource_instance, nullptr);
-	assert_equal(true, parent != nullptr, "parent window created");
-	const df::scope_exit destroy_parent([parent] { if (parent) DestroyWindow(parent); });
-
-	const auto edit = CreateWindowExW(0, L"EDIT", L"prefix teh", WS_CHILD | WS_VISIBLE, 0, 0, 220, 30, parent,
-	                                 nullptr, get_resource_instance, nullptr);
-	assert_equal(true, edit != nullptr, "edit control created");
-	const df::scope_exit destroy_edit([edit] { if (edit) DestroyWindow(edit); });
-
-	const auto last_char = static_cast<DWORD>(SendMessageW(edit, EM_POSFROMCHAR, 9, 0));
-	const auto end_pos = static_cast<DWORD>(SendMessageW(edit, EM_POSFROMCHAR, 10, 0));
-	assert_equal(true, point_x(last_char) >= 0, "last character has a native edit position");
-	assert_equal(-1, point_x(end_pos), "exclusive end is past the last native edit character");
-
-	const auto bounds = platform::probe_edit_spelling_bounds(edit, 7, 10);
-	assert_equal(true, !bounds.is_empty(), "the spelling bounds include a trailing word whose end is exclusive");
-	assert_equal(true, bounds.contains({point_x(last_char) + 1, point_y(last_char) + 1}),
-	             "the spelling hit-test reaches the final character");
-}
-
-static void should_delegate_ordinary_edit_context_menus()
-{
-	using route = platform::edit_context_menu_route;
-
-	assert_equal(static_cast<int>(route::native_edit_procedure),
-	             static_cast<int>(platform::probe_edit_context_menu_route(false, false)),
-	             "spelling-disabled or correctly-spelled text is delegated");
-	assert_equal(static_cast<int>(route::native_edit_procedure),
-	             static_cast<int>(platform::probe_edit_context_menu_route(true, false)),
-	             "a failed custom menu creation is delegated");
-	assert_equal(static_cast<int>(route::custom_spelling_menu),
-	             static_cast<int>(platform::probe_edit_context_menu_route(true, true)),
-	             "a real misspelling shows exactly the custom spelling menu");
 }
 
 static void should_offer_the_maximize_caption_button_only_on_a_resizable_frame()
@@ -903,31 +747,6 @@ static void should_offer_the_maximize_caption_button_only_on_a_resizable_frame()
 	             "Windows 10 frames keep their frame as it was");
 }
 
-static void should_invoke_the_maximize_caption_button_only_on_a_release_over_its_press()
-{
-	platform::caption_button_tracker t;
-
-	assert_equal(true, t.hover(7), "resting on the button lights it");
-	assert_equal(false, t.hover(7), "moving within it changes nothing");
-	assert_equal(0, t.release(7), "a release without a press invokes nothing");
-
-	assert_equal(true, t.press(7), "pressing shows it pressed");
-	assert_equal(7, t.release(7), "a release over the pressed button invokes it");
-	assert_equal(0, t.pressed_id, "the press ends with the release");
-	assert_equal(0, t.hover_id, "invoking forgets the hover, because the frame moves under the pointer");
-
-	t.press(7);
-	assert_equal(true, t.leave(), "leaving puts the light out");
-	assert_equal(0, t.release(7), "a press abandoned by leaving invokes nothing");
-
-	t.press(7);
-	assert_equal(true, t.hover(0), "resting off the button redraws it");
-	assert_equal(0, t.release(7), "a press abandoned by resting elsewhere invokes nothing");
-
-	t.press(7);
-	assert_equal(0, t.release(8), "a release over another button invokes nothing");
-}
-
 static void should_answer_hit_tests_on_the_maximize_toolbar_button_as_the_caption_button()
 {
 	const auto probe = platform::probe_toolbar_caption_button();
@@ -948,18 +767,6 @@ static void should_answer_hit_tests_on_the_maximize_toolbar_button_as_the_captio
 		assert_equal(HTCLIENT, probe.maximize_hit, "without snap layouts it stays a toolbar button");
 		assert_equal(0, probe.invocations, "a hit test invokes nothing");
 	}
-}
-
-static void should_bound_the_software_buffer_as_the_client_grows()
-{
-	const auto probe = platform::probe_software_tiling();
-
-	// Without this the assertion below would still pass if the buffer went back to tracking the
-	// window, which is the thing tiling exists to stop.
-	assert_equal(true, probe.grown_buffer_pixels < probe.grown_client_pixels / 4,
-	             "the buffer stayed bounded while the client grew");
-	assert_equal(probe.grown_client_pixels, probe.grown_writable_pixels,
-	             "a grown client is writable to its new edges without reallocating the tile");
 }
 
 static void should_translate_highlight_spans_to_utf16_clusters()
@@ -1058,92 +865,6 @@ static void should_snap_gpu_text_in_pixel_coordinates()
 	             "text callbacks report enabled snapping, identity transform and one pixel per DIP");
 }
 
-// A subtitle's text: its runs in their own colours over one outline, in straight alpha, so it draws over any
-// picture at any scale.
-static void should_render_styled_text_with_its_outline()
-{
-	platform::styled_text text;
-	text.runs = {{"Red ", false, false, 0xFF0000FFu}, {"white", true, true, 0xFFFFFFFFu}};
-	text.font_px = 40.0f;
-	text.outline_px = 3.0f;
-	text.outline_color = 0xFF000000u;
-
-	const auto surface = platform::render_styled_text(text);
-	assert_equal(true, surface != nullptr, "the text is drawn");
-	if (!surface) return;
-
-	assert_equal(true, surface->width() > 80u && surface->height() >= 40u, "into a block that holds it");
-
-	auto red = 0;
-	auto white = 0;
-	auto outline = 0;
-	auto clear = 0;
-
-	for (auto y = 0; y < static_cast<int>(surface->height()); ++y)
-	{
-		const auto* const line = surface->pixels_line(y);
-
-		for (auto x = 0; x < static_cast<int>(surface->width()); ++x)
-		{
-			const auto* const p = line + x * 4;
-			const auto b = p[0];
-			const auto g = p[1];
-			const auto r = p[2];
-			const auto a = p[3];
-
-			if (a == 0) ++clear;
-			else if (a == 255 && r > 200 && g < 60 && b < 60) ++red;
-			else if (a == 255 && r > 200 && g > 200 && b > 200) ++white;
-			else if (a == 255 && r < 40 && g < 40 && b < 40) ++outline;
-		}
-	}
-
-	assert_equal(true, red > 20, "the first run in its colour");
-	assert_equal(true, white > 20, "the second in its own");
-	assert_equal(true, outline > 20, "around them, the outline");
-	assert_equal(true, clear > 0, "and clear around that");
-
-	// Straight alpha: a faint edge keeps its colour rather than darkening towards black.
-	auto faint_bright = 0;
-
-	for (auto y = 0; y < static_cast<int>(surface->height()); ++y)
-	{
-		const auto* const line = surface->pixels_line(y);
-
-		for (auto x = 0; x < static_cast<int>(surface->width()); ++x)
-		{
-			const auto* const p = line + x * 4;
-			if (p[3] > 0 && p[3] < 128 && (p[0] > 128 || p[1] > 128 || p[2] > 128)) ++faint_bright;
-		}
-	}
-
-	text.outline_px = 0.0f;
-	const auto unoutlined = platform::render_styled_text(text);
-	assert_equal(true, unoutlined != nullptr, "text with no outline");
-
-	if (unoutlined)
-	{
-		for (auto y = 0; y < static_cast<int>(unoutlined->height()); ++y)
-		{
-			const auto* const line = unoutlined->pixels_line(y);
-
-			for (auto x = 0; x < static_cast<int>(unoutlined->width()); ++x)
-			{
-				const auto* const p = line + x * 4;
-				if (p[3] > 0 && p[3] < 128 && (p[0] > 128 || p[1] > 128 || p[2] > 128)) ++faint_bright;
-			}
-		}
-	}
-
-	assert_equal(true, faint_bright > 0, "a glyph's soft edge keeps its colour: the alpha is straight");
-
-	text.runs = {{"  \n ", false, false, 0xFFFFFFFFu}};
-	assert_equal(true, platform::render_styled_text(text) == nullptr, "blank text draws nothing");
-
-	text.runs = {{"Text", false, false, 0xFFFFFFFFu}};
-	text.font_px = 0.5f;
-	assert_equal(true, platform::render_styled_text(text) == nullptr, "nor does text too small to see");
-}
 
 static void should_refuse_an_impossible_movie()
 {
@@ -1174,7 +895,6 @@ void register_render_win_tests(test_registry& tests)
 	tests.add("Should use screen coordinates for saved window placement"s, should_use_screen_coordinates_for_saved_window_placement);
 	tests.add("Should not treat pointer wheel IDs as modifiers"s, should_not_treat_pointer_wheel_ids_as_modifiers);
 	tests.add("Should snap GPU text in pixel coordinates"s, should_snap_gpu_text_in_pixel_coordinates);
-	tests.add("Should render styled text with its outline"s, should_render_styled_text_with_its_outline);
 	tests.add("Should preserve clipboard format contracts"s, should_preserve_clipboard_format_contracts);
 	tests.add("Should restore a window onto a display that still exists"s, should_restore_a_window_onto_a_display);
 	tests.add("Should classify DXGI device loss"s, should_classify_dxgi_device_loss);
@@ -1191,30 +911,16 @@ void register_render_win_tests(test_registry& tests)
 	          should_copy_a_picture_decoded_on_the_render_device_into_its_texture);
 	tests.add("Should present a video frame in software through its interface"s,
 	          should_present_a_video_frame_in_software_through_its_interface);
-	tests.add("Should present vertex rectangles updated after the scene"s,
-	          should_present_vertex_rectangles_updated_after_the_scene);
 	tests.add("Should suppress GPU for one recovery session"s, should_suppress_gpu_for_recovery_session);
 	tests.add("Issue #219: Should fall back for missing glyphs"s, should_fall_back_for_missing_glyphs);
 	tests.add("Issue #232/#189: Should cache font faces per face and size"s,
 	          should_cache_font_faces_per_face_and_size);
 	tests.add("Issue #189: Should key glyph cache by size"s, should_key_glyph_cache_by_size);
-	tests.add("Should render common controls into a buffer"s, should_render_common_controls_into_a_buffer);
-	tests.add("Should replace the full trailing spelling word"s, should_replace_the_full_trailing_spelling_word);
-	tests.add("Should check edit words against the supplied dictionary"s,
-	          should_check_edit_words_against_the_supplied_dictionary);
 	tests.add("Should decode embedded chrome images"s, should_decode_embedded_chrome_images);
-	tests.add("Should hit test the last trailing spelling character"s,
-	          should_hit_test_the_last_trailing_spelling_character);
-	tests.add("Should delegate ordinary common controls edit context menus"s,
-	          should_delegate_ordinary_edit_context_menus);
 	tests.add("Should offer the maximize caption button only on a resizable frame"s,
 	          should_offer_the_maximize_caption_button_only_on_a_resizable_frame);
-	tests.add("Should invoke the maximize caption button only on a release over its press"s,
-	          should_invoke_the_maximize_caption_button_only_on_a_release_over_its_press);
 	tests.add("Should answer hit tests on the maximize toolbar button as the caption button"s,
 	          should_answer_hit_tests_on_the_maximize_toolbar_button_as_the_caption_button);
-	tests.add("Should bound the software buffer as the client grows"s,
-	          should_bound_the_software_buffer_as_the_client_grows);
 	tests.add("Should translate highlight spans to utf16 clusters"s, should_translate_highlight_spans_to_utf16_clusters);
 	tests.add("Should build text cluster spans once per run"s, should_build_text_cluster_spans_once_per_run);
 	tests.add("Should apply positive ascender offsets upward"s, should_apply_positive_ascender_offsets_upward);

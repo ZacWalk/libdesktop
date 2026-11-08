@@ -10,7 +10,7 @@ A small C++20 platform layer for desktop applications, in six static libraries:
 | **libdesktop-ui** | `libdesktop::ui` | The reusable presentation layer in `src/ui`: widgets, text and document views, markdown rendering, lists and the prompt composer, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
 | **libdesktop-text** | `libdesktop::text` | The part of `src/ui` that is standard C++ alone: the text layer's vocabulary (`text_types.h`) and the syntax highlighters (`syntax.h`), in `pf::ui`. libdesktop-ui is written in it; an application on another window model links it alone to colour text it draws itself. |
 | **libdesktop-system** | `libdesktop::system` | The foundation and OS services that began as Diffractor's, in `include/libdesktop`: `df::` and `str::` (strings, paths, dates, geometry, containers, hashing, logging, JSON) and `platform::` (files, settings, processes, threads, known folders, the shell, sharing, the web, crash recovery), for Windows and Linux. Opt in with `LIBDESKTOP_SYSTEM`; [docs/system.md](docs/system.md) describes it. |
-| **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, controls and commands, the Direct3D 11 and software renderers, DirectWrite text, WIC, native controls, Media Foundation movie writing and sound, for Windows, with Linux stand-ins. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
+| **libdesktop-render** | `libdesktop::render` | The desktop UI that began as Diffractor's, written in libdesktop-system: the `ui::` types, draw contexts, frames, commands, the element tree an application builds its UI from, and controls and menus it draws itself. On Windows: Direct3D 11 and software renderers, DirectWrite text, WIC, Media Foundation movie writing and sound. On Linux: SDL3 windows, the software renderer and Pango text. Opt in with `LIBDESKTOP_RENDER`; [docs/render.md](docs/render.md) describes it. |
 | **libdesktop-os** | `libdesktop::os` | The OS services libdesktop-core and libdesktop-system share, in `os::`: UTF-8/extended-path files and dialogs, escaped INI storage, the web client, clipboard text, known folders and the audio endpoint both stacks' sound plays through. A service here names no application and writes no log, so both call it; neither exposes it to an application. Windows only so far. |
 
 libdesktop-ui operates on a UTF-8 text buffer the application hands it. It never
@@ -19,8 +19,8 @@ saving stay in the app.
 
 libdesktop-core, libdesktop-ui and libdesktop-os have one backend, Win32/MSVC; libdesktop-text needs none and builds
 everywhere libdesktop does.
-libdesktop-system has two: Windows with MSVC and Linux with GCC, and libdesktop-render builds on both,
-with stand-ins on Linux. On Windows libdesktop-core and libdesktop-system both link libdesktop-os; its
+libdesktop-system and libdesktop-render have two: Windows with MSVC and Linux with GCC.
+On Windows libdesktop-core and libdesktop-system both link libdesktop-os; its
 Linux implementations are still libdesktop-system's own.
 
 [dde](https://github.com/ZacWalk/dde) builds on libdesktop-ui;
@@ -163,12 +163,15 @@ Layout and hit testing are testable without a window, because
 | `tests/system_win_tests.cpp`, `tests/system_tests.manifest` | Its Windows backend's own tests, and the manifest that runs them as an application runs |
 | `include/libdesktop/render.h` | libdesktop-render's umbrella header: libdesktop-system, then `platform_render.h` and `ui.h` |
 | `include/libdesktop/ui.h`, `platform_render.h`, `render_software.h` | The desktop UI's API, the services its backends implement and the software rasterizer |
+| `include/libdesktop/render_controls.h` | The drawn controls, menus and bubble: `ui::control`, the element every control is, and its kinds; the `input_manager` a frame finds them in its tree with, the host interfaces, and the models they edit |
+| `include/libdesktop/ui_elements.h` | The element tree: elements measured, laid out by flex, drawn and hit tested; the controllers a hit test hands the pointer to; the element host and what an element asks of it; the scroller; frame elements; and text, link, icon, divider and padding elements |
 | `include/libdesktop/platform_win_render.h`, `platform_win_visual.h`, `platform_win_ui_internal.h`, `platform_win_render_res.h` | The Windows backend's semi-public headers, for an application's own window layer, and its resource IDs |
-| `src/render/ui.cpp`, `render_*.cpp` | The UI layer's definitions, surfaces, colour and the software rasterizer |
-| `src/render/platform_win_*.cpp`, `platform_linux_ui.cpp` | The Windows backend - windows, controls, Direct3D 11, software, fonts, WIC, movie writing, sound - and the Linux stand-ins |
+| `src/render/ui.cpp`, `ui_*.cpp`, `render_*.cpp` | The UI layer's definitions, the element tree (`ui_elements.cpp`) and its flex layout (`ui_flex.cpp`), surfaces, colour, the software rasterizer, and the drawn controls (`render_controls.cpp`, `render_edit.cpp`), menu (`render_menu.cpp`) and bubble (`render_bubble.cpp`) |
+| `src/render/platform_win_*.cpp` | The Windows backend - windows, Direct3D 11, software, fonts, WIC, movie writing, sound |
+| `src/render/platform_linux_*.cpp` | The Linux backend - SDL3 windows (`platform_linux_window.cpp`), Pango text, the entry point and the theme |
 | `src/render/shaders/`, `src/render/res/` | The Direct3D shaders, compiled with fxc at build time, and the resource script an application's own includes, with its cursors and shadow |
 | `cmake/render.cmake` | The libdesktop-render target, its shaders and `libdesktop_render_resources()` |
-| `tests/render_tests.cpp`, `render_win_tests.cpp`, `render_tests.rc` | The libdesktop-render suite (CTest label `libdesktop-render`), on Windows and Linux |
+| `tests/render_tests.cpp`, `render_controls_tests.cpp`, `render_elements_tests.cpp`, `render_win_tests.cpp`, `render_tests.rc` | The libdesktop-render suite (CTest label `libdesktop-render`), on Windows and Linux |
 | `include/libdesktop/os.h` | libdesktop-os: the services both stacks share, reached as `#include "libdesktop/os.h"` by their backends alone |
 | `src/os/os_win.cpp` | Its Windows backend: UTF-8/extended-path files and dialogs, escaped INI storage, WinINet/WinHTTP, clipboard text and known folders |
 | `src/os/os_win_audio.cpp` | Its WASAPI audio endpoint, the playback devices and the Pro Audio thread class |
@@ -343,7 +346,9 @@ uses the CMake and Ninja that ship with it.
 the CMake and Ninja that ship with it, so nothing extra needs installing. To
 drive CMake directly: `cmake --preset release && cmake --build --preset release`.
 
-On Linux only libdesktop-system, libdesktop-render and libdesktop-text build, with GCC 13 or later:
+On Linux only libdesktop-system, libdesktop-render and libdesktop-text build, with GCC 13 or later.
+libdesktop-render also needs Pango's development packages and those of the X11
+and Wayland libraries SDL3 drives (the CI workflow lists them):
 
 ```bash
 cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -390,7 +395,7 @@ Found by hand-testing the applications, and not yet closed:
 [docs/system.md](docs/system.md) — libdesktop-system: using it, what the
 application supplies, the window layer's hooks and the Linux backend.
 [docs/render.md](docs/render.md) — libdesktop-render: using it, what the
-application supplies, its resources and the Linux stand-ins.
+application supplies, its resources, the drawn controls and the Linux window layer.
 [docs/todo.md](docs/todo.md) — open work and second adopters.
 
 ## License
