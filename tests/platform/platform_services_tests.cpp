@@ -135,8 +135,9 @@ namespace
 
 	void should_write_and_read_atomically()
 	{
-		const auto destination = platform::temp_folder().combine_file(
-			std::format("libdesktop-c3a-{}.atomic", core::tick_count()));
+		// temp_file makes its folder where it is missing; on Linux, temp_folder names one that a clean machine
+		// may not have.
+		const auto destination = platform::temp_file(".atomic");
 		platform::delete_file(destination);
 
 		auto opened = platform::create_atomic_file_writer_result(destination);
