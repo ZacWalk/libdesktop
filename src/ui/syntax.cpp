@@ -1,3 +1,11 @@
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// Copyright 2026  Zac Walker
+//
+// This program is free software; you can redistribute it and / or modify it
+// under the terms of the LGPL License either version 2.1 or later.
+// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+
 // syntax.cpp — syntax highlighters for the text views.
 //
 // Each highlighter turns one line into styled runs and returns the cookie the next
@@ -9,7 +17,7 @@
 // layer's: language_from_extension is offered as a convenience, but nothing here
 // looks at a path.
 
-#include "ui/syntax.h"
+#include "libdesktop/ui/syntax.h"
 
 #include <cctype>
 #include <cstddef>
@@ -20,10 +28,10 @@
 #include <string_view>
 #include <unordered_set>
 
-namespace pf::ui::syntax
+namespace ui::syntax
 {
 	// The scanners were written against this spelling; text_style is the type.
-	using style = pf::ui::text_style;
+	using style = ui::text_style;
 
 	// Every keyword and extension below is ASCII, and the words the scanners collect are made of the
 	// bytes isalnum accepts, so folding ASCII letters is the whole of the case-insensitivity they need.

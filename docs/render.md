@@ -1,162 +1,174 @@
-# libdesktop-render
+# libdesktop::render
 
-libdesktop-render is the desktop UI that began as Diffractor's: the `ui::` types
-- surfaces, textures, colours and styles - the draw contexts, frames, controls,
-commands and the `ui::app` they host, with the services its backends implement
-(`platform_render.h`): the Direct3D 11 and software renderers, DirectWrite text,
-WIC, native controls, Media Foundation movie writing and sound, through
-libdesktop-os's WASAPI endpoint. Windows is
-its backend; on Linux it builds with stand-ins, which run a headless core.
-
-It is written in libdesktop-system and sits beside libdesktop-core (`pf::`) and
-libdesktop-ui (`pf::ui::`). Its `ui::` window model and `pf::`'s reactor are
-separate on purpose, and merge only when one application needs both.
+`libdesktop::render` draws. It binds a device to a `platform::window` and hands
+whoever paints the window a draw context - Direct3D 11 or the software renderer
+on Windows, the software renderer on Linux - with text set by DirectWrite or by
+Pango, fonts and the icon font, textures, video frames and geometry that
+re-presents without the scene being recorded again. It also draws into a CPU
+surface with no window at all. It neither lays out an interface nor takes input:
+that is `ui`, built on it. An application that draws for itself, a game say,
+links render and implements `platform::window_events` itself.
 
 ## Using it
 
-The module is opt-in, and needs libdesktop-system. A consumer turns both on
-before it brings libdesktop in, links `libdesktop::render`, and on Windows names
-the resource script that includes the module's (below):
-
 ```cmake
-set(LIBDESKTOP_SYSTEM ON)
-set(LIBDESKTOP_RENDER ON)
-FetchContent_MakeAvailable(libdesktop)
 target_link_libraries(app PRIVATE libdesktop::render)
-libdesktop_render_resources("${CMAKE_SOURCE_DIR}/src/app.rc")
 ```
 
-Built directly, libdesktop builds it by default.
+`libdesktop/render.h` brings in platform and the render headers but
+`render/software.h` and `render/win32.h`, which are included where used. On
+Windows the build needs `fxc` from the Windows SDK, which compiles the shaders
+(configuration fails without it); the compiled shaders and the drop shadow are
+embedded in the library. On Linux it needs Pango (`pangoft2`), fontconfig and
+FreeType, through pkg-config, and SDL3.
 
-Code includes the umbrella header first: it brings in `libdesktop/system.h`,
-then `platform_render.h` and `ui.h`. An application's window layer on Windows
-also includes the backend's semi-public headers, which include `<windows.h>`:
-`platform_win_render.h` (factories, textures, adapters, device loss),
-`platform_win_visual.h`, `platform_win_ui_internal.h` and
-`platform_win_render_res.h`.
+## Headers
 
-```cpp
-#include "libdesktop/render.h"
-#include "libdesktop/render_software.h"   // the software rasterizer, where used
-```
+| Header | What it holds |
+|---|---|
+| `render/device.h` | Choosing the renderer (`startup`), the base font size, and `window_device`, which presents what is drawn to a window |
+| `render/context.h` | `measure_context` and `draw_context`, textures and samplers, text layouts and highlights, video frames, vertices, colour adjustment, `draw_surface`, `scoped_clip`, and the hooks an application sets |
+| `render/text.h` | Font faces and descriptors, metrics, the icon font, styled text rasterised for subtitles |
+| `render/software.h` | The CPU rasterizer: canvas, present targets, the text engine seam, `create_surface_context` |
+| `render/counters.h` | GPU identity and budgets, and what painting and Direct3D cost this session (`ui_perf`, `gpu_perf`) |
+| `render/probes.h` | Glyph fallback, font cache and tiling probes, for tests |
+| `render/win32.h` | Semi-public, including `<windows.h>`: Direct3D, DirectWrite and WIC types, the render device and adapter published for a hardware decoder, device-loss classification |
 
-### What the application supplies
+## Drawing on a window
 
-Everything libdesktop-system asks for - `s_app_name`, a UTF-8 C locale, COM on
-the threads that use the shell or WIC - and:
+`render::startup(gpu)` chooses the renderer once, before the first device:
+Direct3D 11 where it is asked for and works, otherwise software. For a `ui`
+application `ui::create_app_frame` does this, asking for the GPU when
+`ui::app::wants_gpu()` does and the `gpu_render` crash guard has not turned it
+off for the session. `create_window_device(window, options)` binds a
+device to a window; the window's `paint(damage)` calls
+`device->paint(damage, draw)`, and its size, scale and timer events go to the
+device too. A device skips frames nothing could be seen in - minimized,
+cloaked, behind a secure desktop - and repaints whole once it can. `redraw()`
+presents the last scene again without recording it. Damage is a hint: a
+backend may draw more, but the pixels inside the damage never depend on how
+much.
 
-- `const ui::chrome_icon_set ui::chrome_icons`: the glyphs the chrome draws - a
-  menu's check mark, check boxes, radio buttons and the caption buttons - as
-  code points of the icon font, which `icon_index` names. `icon_index` is opaque
-  here: the type is the module's, its values the application's.
-- `enum class command_group`, the groups its commands fall in, which a
-  `ui::command` carries for it. `ui.h` declares the type and the application
-  defines its values, with its "none" first, since a command's group is
-  value-initialized.
-- `ui::app_ptr create_app(const ui::plat_app_ptr&)`: the application the window
-  layer's entry point, `wWinMain`, hosts. It reads its own command line and runs
-  its headless modes behind `ui::app`.
-- On Windows, a resource script that includes `platform_win_render.rc` inside its
-  language block and supplies the two resources the module asks for, under the
-  IDs `libdesktop/platform_win_render_res.h` names: `IDI_APP_ICON`, the window
-  icon, and `IDF_ICONS`, the icon font, as a `BINARY` resource.
-- The hooks it sets before the first window: `ui::decode_embedded_image`, which
-  decodes the chrome's embedded PNG, the drop shadow; `ui::make_surface_scaler`,
-  the scaler a texture converts video frames and planar surfaces with - a
-  renderer without one falls back where it can and refuses otherwise; and
-  `ui::yuv_textures_allowed` and `ui::on_yuv_fault`, its latch on YUV textures.
-- `platform::set_ui_thread()`, first thing in its entry point. `wWinMain` does
-  it on Windows. Textures recycle only on that thread, and Debug builds assert it
-  throughout.
+`set_base_font_size(px)` sets the text size, in pixels at 96 DPI, everything is
+scaled from (`render::default_font_size`, 16, until set); every device follows
+and repaints.
 
-The application hands the renderers video as `ui::video_frame`s - a picture its
-decode thread prepared, or a hardware texture with the lock its decode device
-takes around it - and plays sound through `platform::audio_output`, in the
-endpoint's own format. The module never sees a decoder's types. It counts what
-painting and Direct3D cost in `df::ui_perf` and `df::gpu_perf`, which the
-application may summarise.
+When the Direct3D device is lost, recovery waits until the call that found it
+has unwound. The application's `system_event` hears
+`graphics_device_lost` first, synchronously on the UI thread, to release what it
+holds on the GPU; then every window device is rebuilt on the software renderer,
+which draws for the rest of the session.
 
-On Windows the Direct3D device is made with video support where the driver
-allows, and published with its adapter (`publish_render_device`,
-`render_device`, `render_adapter` in `platform_win_render.h`) so the
-application can decode on it. A hardware picture whose texture belongs to the
-render device is copied once, straight from the decoder's surface into the
-texture the scene draws; one from another device crosses through a keyed-mutex
-texture shared between the two. A YUV picture drawn at full opacity is drawn
-with blending off, since it covers what is beneath it. A window's frame tick is a
-high-resolution timer, falling back to a standard one where Windows has none.
+## Contexts
 
-Text to be drawn as a picture - a subtitle - is set off the UI thread with
-`platform::render_styled_text`: runs in their own weight, slant and colour, laid
-out together at a size in pixels, wrapped, aligned and outlined, and returned as
-a straight-alpha surface the application uploads like any other.
+A `measure_context` measures text, gives a face's line height and its baseline
+(`text_baseline`, the ascent and any line gap above it) and makes text layouts;
+its `scale_factor` and metrics (padding, icon and handle sizes, scroll bar
+width) follow the window's scale. A `draw_context` adds what is drawn: fills,
+rounded rectangles, polygons and shadows, lines, ellipses, text (plain, with
+highlights, or a layout), borders, textures (to a rectangle, a quad, through a
+`texture_transform`), panoramas where the backend projects them, vertices, and a
+clip (`scoped_clip`). `draw_surface(dc, surface, dst)` uploads a CPU surface for
+one draw. Every backend clears to `scene_clear_shade` before a scene, so what a
+scene leaves unpainted is the same grey everywhere.
+
+`render::create_surface_context(surface)` draws with the software renderer into
+a `core::surface`: one that already has the drawing's size, packed and top-down,
+is drawn on in place, so what was there survives; only a fresh allocation starts
+blank. The pixels are there once `render()` returns. `create_memory_present_target`
+is the rest of the seam a port needs before it has a window: the software
+context draws into it and shows no one.
+
+## Text and fonts
+
+Text is named by `font_face`: the built-in faces (`dialog`, `code`, `title`,
+`mega`, `icons`, `small_icons`), sized from the base font size, or one made from
+a `font_desc` with `render::make_font(desc)`, a process-wide id every backend
+resolves. `font_desc::size` is in the context's pixels, like a GDI `lfHeight` -
+the character height, or the cell height with `cell_size` - and render never
+scales it, so an application scales it by the frame's `scale_factor()`.
+
+`render::metrics(mc, face)` builds on the context: `ascent` is the backend's own
+baseline (DirectWrite and Pango measure it exactly), `descent` the rest of the
+line, `avg_char_width` the width of `0`. DirectWrite's measured width leaves out
+trailing whitespace and Pango's includes it ([todo](todo.md#render)).
+
+The icon font is the application's: `set_icon_font(bytes)` registers a bundled
+one, whose bytes must outlive the process, and `set_icon_font_family(name)`
+names an installed one - "Segoe Fluent Icons", which Windows 10 has as Segoe
+MDL2 Assets. The later call wins. `create_icon_surface(ch)` rasterises a glyph
+for the places that need an image. `render_styled_text` sets a block - a
+subtitle - of runs in their own weight, slant and colour, wrapped, aligned and
+outlined, into a straight-alpha surface, on any thread.
+
+## Textures, video and vertices
+
+A `texture` is updated from a surface, from raw pixels or from a
+`video_frame`, and drawn point-sampled, bilinear or bicubic. A video frame is a
+picture its decode thread prepared, or a hardware picture with the texture it is
+in and the lock its decode device takes around it; render never sees a
+decoder's types. On Windows the Direct3D device is made with video support where
+the driver allows and published with its adapter (`render/win32.h`), so the
+application can decode on it: a picture decoded on the render device is copied
+once into the texture the scene draws, and one from another device crosses
+through a keyed-mutex texture the two share. A YUV picture drawn opaque is drawn
+with blending off. A released plain texture is kept for the next of its size and
+format, once nothing will draw it again.
 
 Geometry that moves every frame while the rest of the scene stands still - a
-visualizer's bars, a trace, a meter - goes in a `ui::vertices`. A scene draws
-one by reference, so the application updates it and calls its frame's
-`redraw()`, which presents the scene again without recording it. `update` takes
-the audio visualizer's 64 bars, each over a drop shadow; `update_rects` takes
-flat rectangles, up to 16,384 of them on the Direct3D backend.
+visualizer's bars, a meter - goes in `vertices`: the scene draws it by
+reference, so the application updates it and calls `redraw()`. `update_bars`
+draws raised bars over a drop shadow, up to 1,024 on Direct3D; `update_rects`
+draws flat rectangles, up to 16,384.
 
-### Options
+### Hooks the application sets
 
-| Option | Effect |
-|---|---|
-| `LIBDESKTOP_RENDER` | Builds the module. Off for a consumer unless it sets it; needs `LIBDESKTOP_SYSTEM` |
+- `decode_embedded_image`: the application's PNG decoder for the drop shadow
+  render embeds. Without it nothing decodes and no shadow is drawn.
+- `make_surface_scaler`: the scaler a texture converts video frames and planar
+  surfaces with (FFmpeg's, in Diffractor); without one a renderer converts what
+  it can and refuses the rest.
+- `yuv_textures_allowed` and `on_yuv_fault`: the application's latch on planar
+  textures, which a driver fault clears for it to keep.
 
-### Dependencies
+render defines these hooks and the counters itself (`src/render/device.cpp`), so an application
+that links render without ui needs nothing more.
 
-On Windows, `fxc` from the Windows SDK, which compiles the shaders at build
-time; the build fails at configure without it. The sources name most of their
-import libraries with `#pragma comment(lib)`; the target links the rest. On
-Linux it needs nothing beyond libdesktop-system. The CRT is the consumer's
-choice.
+## Backends
 
-## Resources
+On Windows (`src/render/win/`): Direct3D 11 (`d3d11.cpp`) chooses the device -
+the Microsoft Basic Render Driver counts as software - and holds the shaders,
+the texture pool and the video paths; the software renderer presents through GDI
+(`software_present.cpp`), as a layered window for a bubble; DirectWrite sets the
+text (`font.cpp`), and `text_surfaces.cpp` rasterises icon glyphs and styled
+text.
 
-A static library carries no resources, so the module's travel as a script the
-application's own includes, as MFC's `afxres.rc` is: `src/render/res/` holds
-`platform_win_render.rc` - its seven cursors, the drop shadow and its eleven
-compiled shaders - with the files it names. The target puts that folder and
-the folder the shaders are compiled into on its consumers' include path, which
-is what finds them, and `libdesktop_render_resources()` names them all as the
-script's dependencies: the resource compiler tracks only the script, so a
-changed cursor or shader would otherwise leave the binary with the old copy.
-
-## The Linux stand-ins
-
-`src/render/platform_linux_ui.cpp` supplies what a portable core needs to run
-headless: the palette's system colours, the key table, UI-thread identity, a
-conventional desktop, focus and input state. It has no window, renderer or
-desktop integration. Rasterising an icon glyph or styled text, writing a movie
-and opening an audio endpoint answer that nothing is available, so an
-application leaves the commands that need them out rather than dimming them.
+On Linux (`src/render/linux/`) the software renderer presents the tiles that
+changed to the SDL window's surface (`window_device.cpp`), which a window asks
+for while it is still hidden: SDL may move a window to the GPU on the first
+request, which on X11 recreates it, and a menu takes its popup being hidden as
+being dismissed. Pango lays text out (`text.cpp`) - shaping with HarfBuzz,
+fallback through fontconfig, glyphs from FreeType - by the DirectWrite engine's
+rules: six text styles, text centred vertically in its box, and characters that
+do not fit trimmed rather than ellipsised. The application's icon font is
+registered with fontconfig. Animations are off, since every window is drawn on
+the CPU.
 
 ## Tests
 
-`tests/render_tests.cpp` is a console program, run on both platforms under the
-CTest label `libdesktop-render`. Its portable tests - alpha, the SIMD blends,
-resampling, animation and colour adjustment - came from Diffractor's
-`test_render.cpp`, and `tests/render_win_tests.cpp` adds the Windows backend's -
-windows and their placement, device loss and adapters, textures and their pool,
-video frames through their interface and copied from a decoder on the render
-device, vertices presented again after the scene
-was recorded, fonts and text, the native controls, the
-caption buttons, the clipboard's formats and the WASAPI mix format - from
-`test_platform_win.cpp`, and styled text rasterised for subtitles, its own. They use Diffractor's assertions (`tests/system_test.h`),
-so a test moves between the suites unchanged. The program supplies what an
-application does (above): its chrome glyphs are empty, since it loads no icon
-font, and `create_app` makes nothing. "Should decode embedded chrome images"
-installs a decoder of its own; Diffractor's copy checks that the application
-installs one. Diffractor keeps its own copies, which test the module through the
-application, with its tests that need FFmpeg or its own decoders.
+`libdesktop_render_tests`, in `tests/render/`, under the CTest label
+`libdesktop-render`, links render alone. It covers colour adjustment, vertices
+presented again after the scene, the software buffer as the client grows,
+styled text, text measured and drawn by one set of rules, primitives drawn into
+fresh and existing CPU surfaces, uploaded surfaces, custom font descriptors and
+the baseline. `tests/render/win/` adds the Windows backends': GPU text snapping,
+device-loss classification, the Basic Render Driver, planar textures, an
+integrated GPU's memory, texture recycling, glyph fallback, font and glyph
+caches by face and size, and highlights through UTF-16 clusters.
 
 ## Known gaps
 
-- Linux has no audio endpoint, so `platform::create_audio_output` answers that
-  none is available. libdesktop-os is where one goes, and it would serve
-  libdesktop-core's sounds and streams as well.
+- DirectWrite and Pango disagree on the width of trailing whitespace.
+- `metrics()` gives the line height as `x_height`: no backend measures ink.
+- Linux draws in software only, without animations.
 - The headers rely on the umbrella's includes and order.
-- The window classes are named `LIBDESKTOP_*` whichever application registers
-  them.
-- Linux has no window layer, renderer or desktop integration.

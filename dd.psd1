@@ -16,10 +16,10 @@
         @{
             id = 'lib'
             kind = 'library'
-            'cmake-target' = 'libdesktop-core'
-            'test-label' = 'libdesktop'
-            'debug-path' = 'build/debug/{libprefix}libdesktop-core{lib}'
-            'release-path' = 'build/release/{libprefix}libdesktop-core{lib}'
+            'cmake-target' = 'libdesktop-ui'
+            'test-label' = 'libdesktop-ui'
+            'debug-path' = 'build/debug/{libprefix}libdesktop-ui{lib}'
+            'release-path' = 'build/release/{libprefix}libdesktop-ui{lib}'
             platforms = @('x64-windows')
         }
     )

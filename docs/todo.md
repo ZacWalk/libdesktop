@@ -1,53 +1,67 @@
 # To do
 
 Open development tasks and their acceptance criteria. Keep completed work out
-of this list. Current limitations are listed under *Known gaps* in the
-[README](../README.md#known-gaps), [system.md](system.md#known-gaps) and
-[render.md](render.md#known-gaps).
+of this list. Current limitations are listed under *Known gaps* in
+[core.md](core.md#known-gaps), [platform.md](platform.md#known-gaps),
+[render.md](render.md#known-gaps) and [ui.md](ui.md#known-gaps).
 
-## libdesktop-os
+## core
 
-A service libdesktop-core and libdesktop-system both implement moves into
-libdesktop-os one at a time, held to both suites' record of its outcomes
-([AGENTS.md](../AGENTS.md#libdesktop-os)). The web client, clipboard text, known
-folders, audio output, files, dialogs and the escaped-INI store have moved on
-Windows. The wrappers retain their own paths, settings locations, registry
-policy and result types; Linux keeps its native headless implementations until
-an os backend exists.
+- [ ] **Retire the `_snscanf_s` shim on Linux.** `core/dialect.h` gives GCC and
+      Clang a bounded `sscanf` under MSVC's name, because Diffractor still reads
+      XMP rationals, property ratios and search terms with `_snscanf_s`, and the
+      two can read damaged text differently. Done when those reads use portable
+      parsers and the shim is deleted.
 
-Not duplicates, so not merged: pf::'s child processes, with pipes and line
-callbacks, beside `platform::run`, which starts a program and returns;
-`try_lock_instance`, one holder per user, beside `claim_startup_scope`; pf::'s
-asynchronous WinHTTP client, which libdesktop-system has no counterpart for;
-and spelling and images, where the stacks use different engines - the Windows
-spell checker and Hunspell, WIC and libfiles.
+## platform
 
-## libdesktop-system
+- [ ] **Linux file dialogs, clipboard and drag.** The file pickers,
+      `show_modal_dialog`, the file and image clipboard and drag and drop, either
+      way, are stand-ins on Linux (`src/platform/linux/desktop.cpp` and
+      `shell.cpp`); only clipboard text works. SDL3, already linked, has file
+      dialogs through the desktop portal, drop events and clipboard data by MIME
+      type; dragging files out needs more. Done when each works on Wayland and
+      X11 desktops and the capability queries answer true there.
+- [ ] **Name the image-only save picker for what it does.**
+      `prompt_for_save_path(path)` and `prompt_for_save_path(owner, path)` offer
+      JPEG, PNG, WebP and JPEG XL alone, while the overloads beside them take the
+      caller's filters, and dde picked the image one by mistake. Consider
+      `prompt_for_image_save_path`. Done when the name says what it offers and
+      every consumer has moved in the same step.
 
-- [ ] **Retire the `_snscanf_s` shim on Linux.** Dates parse by one rule
-      everywhere (`date_text`), but Diffractor still reads XMP rationals,
-      property ratios and search terms with `_snscanf_s`, which can differ
-      from glibc on damaged text. Done when those reads use portable parsers
-      and the Linux shim is deleted.
+## render
+
+- [ ] **Measure trailing whitespace alike.** *Owner decision.* DirectWrite's
+      measured width leaves trailing whitespace out and Pango's counts it, so
+      text that ends in a space measures differently on each platform. Decide
+      which answer both give - Diffractor, which ships on Windows, is laid out
+      with DirectWrite's - and make the other backend give it. Done when the
+      render suite measures text with trailing spaces and passes on both.
+
+## ui
+
+- [ ] **Accessibility of the drawn controls.** The controls, menus and views
+      draw themselves, so nothing reaches a screen reader: there is no UI
+      Automation provider on Windows and no AT-SPI on Linux. Done when a screen
+      reader can name, read and operate the controls and menus of a dialog,
+      Diffractor's first.
 
 ## Second adopters
 
-Each module was extracted from one application. A second adopter is where its
-design is tested; read the adopter's tests before replacing its code.
+A shared component is tested by its second consumer; read the adopter's tests
+before replacing its code.
 
-- [ ] **A second libdesktop-render consumer.** Its window model still serves
-      Diffractor alone. zpilot uses core windowing and audio while retaining
-      its specialized HDR/bloom/CRT renderer; do not replace that renderer
-      merely to adopt another target.
-- [ ] **More of `src/ui` in libdesktop-text.** Diffractor's read-only document
-      view draws text and dumps itself, coloured by libdesktop-text. Rendered
-      Markdown or CSV tables there would want `ui/markdown.h` (standard C++ but
-      for one `_strnicmp`) and `table_layout`'s cell parsing moved into it, not
-      the views, which are written in `pf::`. Done when a second consumer needs
-      either.
+- [ ] **One list.** Diffractor's task rows and `ui::list_view` become one
+      virtualised list, sys-mate's next. Done when Diffractor's own list is gone.
+- [ ] **One document view.** Diffractor's selection panel shows text, bytes,
+      Markdown and CSV through ui's read-only, hex, Markdown and CSV views in
+      place of its `document_control`. Done when `document_control` is gone and
+      its tests run against the views.
 
-The two window models - libdesktop-core's reactor and libdesktop-render's
-`ui::` - stay side by side until one application needs both. What depends on
-neither is shared instead: libdesktop-text, the text vocabulary and syntax
-highlighters that libdesktop-ui and Diffractor's document view both use. ddc
-stays independent of libdesktop.
+## Workspace
+
+- [ ] **Propagate dd's `gui` template with libdesktop's next release.** `dd init --type
+      gui` in dd's source tree generates a Windows/MSVC application with
+      `libdesktop_add_app`, `ui::app`/`ui::frame_host` and `platform::run`. Vendor
+      that template in every repository and verify that a fresh `gui` project builds
+      and passes its smoke test.

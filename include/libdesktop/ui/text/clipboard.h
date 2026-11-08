@@ -1,0 +1,28 @@
+// This file is part of libdesktop, a C++20 platform layer for desktop applications
+// Copyright 2026  Zac Walker
+//
+// This program is free software; you can redistribute it and / or modify it
+// under the terms of the LGPL License either version 2.1 or later.
+// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+
+// Purpose: Testable text-only clipboard seam for UI views.
+
+#pragma once
+
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace ui
+{
+	class text_clipboard
+	{
+	public:
+		virtual ~text_clipboard() = default;
+		virtual bool set_text(std::string_view text) = 0;
+		virtual std::optional<std::string> text() = 0;
+	};
+
+	text_clipboard& system_clipboard();
+}

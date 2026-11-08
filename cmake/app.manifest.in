@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<!-- Generated from libdesktop/cmake/app.manifest.in by platform_add_app(). Do not edit. -->
+<!-- Generated from libdesktop/cmake/app.manifest.in by libdesktop_add_app(). Do not edit. -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
   <assemblyIdentity type="win32" name="@PLATFORM_APP_NAME@" version="@PLATFORM_APP_VERSION@" processorArchitecture="*"/>
   <description>@PLATFORM_APP_DESCRIPTION@</description>
