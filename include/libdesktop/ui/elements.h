@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The element tree an application builds its UI from: elements that are measured, laid out by
 // flex, drawn and hit tested; the controllers a hit test hands the pointer to; the host a tree is drawn
@@ -90,15 +89,10 @@ namespace ui
 	// Every rect is device space, the space _loc is in.
 	struct hit_test_context
 	{
-		hit_test_context(const core::pointi loc, const core::recti extent) : _loc(loc), _stability(extent)
-		{
-		}
+		hit_test_context(const core::pointi loc, const core::recti extent) : _loc(loc), _stability(extent) {}
 
 		// The region a controller found at this location remains the right answer for.
-		core::recti stability() const
-		{
-			return _stability;
-		}
+		core::recti stability() const { return _stability; }
 
 		// Answers whether the pointer is inside a region that takes precedence, so nothing beneath it
 		// may claim the pointer. When it is not, the region is cut away instead.
@@ -130,14 +124,13 @@ namespace ui
 	};
 
 	inline core::color handle_color(const bool selected, const bool hover, const bool tracking,
-	                              const bool view_has_focus, const bool text_over,
-	                              const core::color bg_clr = core::color(ui::style::colors.group_background))
+	                                const bool view_has_focus, const bool text_over,
+	                                const core::color bg_clr = core::color(ui::style::colors.group_background))
 	{
 		if (tracking)
 		{
-			const auto clr = selected
-				                 ? core::color(ui::style::colors.view_selected_background)
-				                 : bg_clr.average(core::color(ui::style::colors.view_text));
+			const auto clr = selected ? core::color(ui::style::colors.view_selected_background)
+			                          : bg_clr.average(core::color(ui::style::colors.view_text));
 
 			return clr.scale(hover ? 1.22f : 1.0f).aa(0.9f);
 		}
@@ -145,9 +138,9 @@ namespace ui
 		if (selected)
 		{
 			const auto clr = view_has_focus
-				                 ? core::color(ui::style::colors.view_selected_background).scale(hover ? 1.22f : 1.0f)
-				                 : bg_clr.average(core::color(ui::style::colors.view_selected_background)).scale(
-					                 hover ? 1.33f : 1.0f);
+			                     ? core::color(ui::style::colors.view_selected_background).scale(hover ? 1.22f : 1.0f)
+			                     : bg_clr.average(core::color(ui::style::colors.view_selected_background))
+			                           .scale(hover ? 1.33f : 1.0f);
 			return clr.aa(0.9f);
 		}
 
@@ -191,9 +184,7 @@ namespace ui
 	class controller
 	{
 	public:
-		controller(element_host_ptr host, const core::recti bounds) : _host(std::move(host)), _bounds(bounds)
-		{
-		}
+		controller(element_host_ptr host, const core::recti bounds) : _host(std::move(host)), _bounds(bounds) {}
 
 		virtual ~controller() = default;
 
@@ -206,68 +197,40 @@ namespace ui
 		core::pointi _start_loc;
 		float _alpha = 1.0f;
 
-		const core::recti bounds() const
-		{
-			return _bounds;
-		}
+		const core::recti bounds() const { return _bounds; }
 
-		virtual void draw(render::draw_context& rc)
-		{
-		}
+		virtual void draw(render::draw_context& /*rc*/) {}
 
-		virtual platform::cursor cursor() const
-		{
-			return platform::cursor::normal;
-		}
+		virtual platform::cursor cursor() const { return platform::cursor::normal; }
 
-		virtual void on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys)
+		virtual void on_mouse_left_button_down(const core::pointi loc, const platform::key_state /*keys*/)
 		{
 			_last_loc = _start_loc = loc;
 		}
 
-		virtual void on_mouse_move(const core::pointi loc)
+		virtual void on_mouse_move(const core::pointi /*loc*/) {}
+
+		virtual void on_mouse_left_button_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
+
+		virtual void on_mouse_middle_button_down(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
+
+		virtual void on_mouse_middle_button_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
+
+		virtual void on_mouse_left_button_double_click(const core::pointi /*loc*/, const platform::key_state /*keys*/)
 		{
 		}
 
-		virtual void on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys)
-		{
-		}
+		virtual bool key_down(const char32_t /*key*/, const platform::key_state /*keys*/) { return false; }
 
-		virtual void on_mouse_middle_button_down(const core::pointi loc, const platform::key_state keys)
-		{
-		}
-
-		virtual void on_mouse_middle_button_up(const core::pointi loc, const platform::key_state keys)
-		{
-		}
-
-		virtual void on_mouse_left_button_double_click(const core::pointi loc, const platform::key_state keys)
-		{
-		}
-
-		virtual bool key_down(const char32_t key, const platform::key_state keys)
-		{
-			return false;
-		}
-
-		virtual void on_mouse_leave()
-		{
-		}
+		virtual void on_mouse_leave() {}
 
 		// True only when something in progress was actually cancelled. Escape is shared with the view
 		// and the app, so a controller that merely sits under the pointer must not consume it.
-		virtual bool escape()
-		{
-			return false;
-		}
+		virtual bool escape() { return false; }
 
-		virtual void popup_from_location(hover_bubble& hover)
-		{
-		}
+		virtual void popup_from_location(hover_bubble& /*hover*/) {}
 
-		virtual void tick()
-		{
-		}
+		virtual void tick() {}
 	};
 
 	// What an element reports its own changes to: the host it is drawn in, or a model standing in
@@ -310,10 +273,7 @@ namespace ui
 		virtual controller_ptr controller_from_location(core::pointi loc, hit_test_context& ctx) = 0;
 
 		// After a scroll of content holding controls or frames: they are found again where they now are.
-		virtual void scroll_controls()
-		{
-			frame()->layout();
-		}
+		virtual void scroll_controls() { frame()->layout(); }
 
 		// The modal drag of files out of the window. Virtual so that a test host can stand in for it.
 		virtual platform::drop_effect perform_drag(const std::vector<core::file_path>& files,
@@ -322,10 +282,7 @@ namespace ui
 			return platform::perform_drag(frame()->handle(), files, folders);
 		}
 
-		void on_window_destroy() override
-		{
-			_active_controller.reset();
-		}
+		void on_window_destroy() override { _active_controller.reset(); }
 
 		void update_controller(const core::pointi loc)
 		{
@@ -354,9 +311,8 @@ namespace ui
 				// The controller answers for its own region; the hit test answers for how far that answer
 				// travels. An empty rect here is the idiom for re-testing on every move, which is what a
 				// controller standing in for whatever happens to be under the pointer wants.
-				_controller_bounds = _active_controller
-					                     ? _active_controller->bounds().intersection(ctx.stability())
-					                     : core::recti{};
+				_controller_bounds = _active_controller ? _active_controller->bounds().intersection(ctx.stability())
+				                                        : core::recti{};
 				_controller_invalid = false;
 
 				controller_changed();
@@ -463,7 +419,7 @@ namespace ui
 			update_cursor();
 		}
 
-		void on_mouse_leave(const core::pointi loc) override
+		void on_mouse_leave(const core::pointi /*loc*/) override
 		{
 			update_controller({-1, -1});
 			_hover = false;
@@ -488,10 +444,7 @@ namespace ui
 			}
 		}
 
-		bool show_cursor() const
-		{
-			return _show_cursor;
-		}
+		bool show_cursor() const { return _show_cursor; }
 	};
 
 	struct scroller_section
@@ -530,10 +483,7 @@ namespace ui
 		// knows, whose scroll draws the frame again.
 		bool _moves_pixels = true;
 
-		const core::recti scroll_bounds() const
-		{
-			return _scroll_bounds;
-		}
+		const core::recti scroll_bounds() const { return _scroll_bounds; }
 
 		// The painted track. Every mapping between list position and scrollbar position goes through
 		// it, so the thumb, the section bands and the hit tests cannot disagree.
@@ -550,8 +500,7 @@ namespace ui
 		}
 
 		// Section bands in track-relative coordinates, in paint order.
-		template <class F>
-		void for_each_band(F&& f) const
+		template <class F> void for_each_band(F&& f) const
 		{
 			const auto track_height = track_bounds().height();
 			if (track_height <= 0) return;
@@ -598,10 +547,7 @@ namespace ui
 
 		// Device y the thumb starts at before it is padded out to a usable size. A drag measures its
 		// grab from here so scrollbar_pos_to_logical inverts it exactly.
-		int thumb_origin() const
-		{
-			return track_bounds().top + logical_to_scrollbar_pos(_offset.y);
-		}
+		int thumb_origin() const { return track_bounds().top + logical_to_scrollbar_pos(_offset.y); }
 
 		// The painted thumb. Hit testing shares it so a press lands on what the user aimed at.
 		core::recti thumb_bounds() const
@@ -614,10 +560,8 @@ namespace ui
 			const auto origin = thumb_origin();
 			const auto inset = track_inset() + 1;
 
-			return {
-				track.left + inset, std::clamp(origin - pad, track.top, track.bottom),
-				track.right - inset, std::clamp(origin + cy + pad, track.top, track.bottom)
-			};
+			return {track.left + inset, std::clamp(origin - pad, track.top, track.bottom), track.right - inset,
+			        std::clamp(origin + cy + pad, track.top, track.bottom)};
 		}
 
 		void scroll_offset(const element_host_ptr& host, const int x, const int y)
@@ -665,20 +609,11 @@ namespace ui
 			_offset.y = cy > 0 ? std::clamp(_offset.y, 0, cy) : 0;
 		}
 
-		void sections(std::vector<scroller_section> section_offsets)
-		{
-			_sections = std::move(section_offsets);
-		}
+		void sections(std::vector<scroller_section> section_offsets) { _sections = std::move(section_offsets); }
 
-		const core::pointi scroll_offset() const
-		{
-			return _offset;
-		}
+		const core::pointi scroll_offset() const { return _offset; }
 
-		const core::recti client_bounds() const
-		{
-			return _client_bounds;
-		}
+		const core::recti client_bounds() const { return _client_bounds; }
 
 		scroll_anchor capture_anchor(const element_ptr& element) const;
 		int anchor_offset(const scroll_anchor& anchor, bool element_is_current) const;
@@ -707,15 +642,9 @@ namespace ui
 			scroll_offset(host, 0, scrollbar_pos_to_logical(device_y));
 		}
 
-		core::pointi device_to_logical(const core::pointi loc) const
-		{
-			return {loc.x, loc.y + _offset.y};
-		}
+		core::pointi device_to_logical(const core::pointi loc) const { return {loc.x, loc.y + _offset.y}; }
 
-		core::pointi logical_to_device(const core::pointi loc) const
-		{
-			return {loc.x, loc.y - _offset.y};
-		}
+		core::pointi logical_to_device(const core::pointi loc) const { return {loc.x, loc.y - _offset.y}; }
 
 		core::recti logical_to_device(const core::recti bounds) const
 		{
@@ -737,10 +666,7 @@ namespace ui
 			}
 		}
 
-		bool can_scroll() const
-		{
-			return _scroll_extent.cy > _client_bounds.height() && _client_bounds.height() > 0;
-		}
+		bool can_scroll() const { return _scroll_extent.cy > _client_bounds.height() && _client_bounds.height() > 0; }
 
 		void clear()
 		{
@@ -768,6 +694,8 @@ namespace ui
 	{
 	public:
 		scroller& _parent;
+		// An element can leave the tree while its captured scroller still receives the release.
+		element_ptr _owner;
 		// Where the scroller's coordinates sit in the frame: nothing for a host's own, an element's offset
 		// for one drawn among other elements.
 		core::pointi _origin;
@@ -775,10 +703,9 @@ namespace ui
 		// Where in the thumb the drag took hold, so the list does not jump under the pointer.
 		int _grab_offset = 0;
 
-
 		scroll_controller(const element_host_ptr& host, scroller& parent, const core::recti bounds,
-		                  const core::pointi origin = {}) :
-			controller(host, bounds), _parent(parent), _origin(origin)
+		                  const core::pointi origin = {}, element_ptr owner = {}) :
+			controller(host, bounds), _parent(parent), _owner(std::move(owner)), _origin(origin)
 		{
 			_parent._active = true;
 		}
@@ -797,17 +724,11 @@ namespace ui
 		// paint between the two made the bar and its section bands vanish whenever the flag and the
 		// active controller disagreed.
 
-		platform::cursor cursor() const override
-		{
-			return platform::cursor::up_down;
-		}
+		platform::cursor cursor() const override { return platform::cursor::up_down; }
 
-		void update_pos(const int y) const
-		{
-			_parent.scrollbar_thumb_to(_host, y - _origin.y - _grab_offset);
-		}
+		void update_pos(const int y) const { _parent.scrollbar_thumb_to(_host, y - _origin.y - _grab_offset); }
 
-		void on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_down(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			_last_loc = loc;
 			_parent._tracking = true;
@@ -836,7 +757,7 @@ namespace ui
 			}
 		}
 
-		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			const auto moved = loc != _last_loc;
 			_last_loc = loc;
@@ -871,6 +792,8 @@ namespace ui
 	enum class element_style : uint32_t
 	{
 		none = 0,
+		// Resolving a different width does not change the measured height.
+		fixed_measure_height = 1 << 0,
 		checked = 1 << 16,
 
 		visible = 1 << 17,
@@ -940,10 +863,7 @@ namespace ui
 		int16_t cx = 0;
 		int16_t cy = 0;
 
-		void operator()(const int16_t xy)
-		{
-			cx = cy = xy;
-		}
+		void operator()(const int16_t xy) { cx = cy = xy; }
 
 		void operator()(const int16_t x, const int16_t y)
 		{
@@ -951,30 +871,24 @@ namespace ui
 			cy = y;
 		}
 
-		operator core::sizei() const
-		{
-			return {cx, cy};
-		}
+		operator core::sizei() const { return {cx, cy}; }
 
-		core::sizei operator *(const double d) const noexcept
-		{
-			return {core::round(cx * d), core::round(cy * d)};
-		}
+		core::sizei operator*(const double d) const noexcept { return {core::round(cx * d), core::round(cy * d)}; }
 	};
 
-	enum class flex_direction
+	enum class flex_direction : uint8_t
 	{
 		row,
 		column
 	};
 
-	enum class flex_wrap
+	enum class flex_wrap : uint8_t
 	{
 		no_wrap,
 		wrap
 	};
 
-	enum class flex_justify
+	enum class flex_justify : uint8_t
 	{
 		start,
 		center,
@@ -982,7 +896,7 @@ namespace ui
 		space_between
 	};
 
-	enum class flex_align
+	enum class flex_align : uint8_t
 	{
 		automatic,
 		start,
@@ -1000,11 +914,11 @@ namespace ui
 		core::sizei min_size{};
 		core::sizei max_size{INT_MAX, INT_MAX};
 		flex_align align_self = flex_align::automatic;
-		bool main_start_auto = false;
-		bool break_before = false;
-		bool break_after = false;
-		bool keep_with_next = false;
-		bool center_line = false;
+		bool main_start_auto : 1 = false;
+		bool break_before : 1 = false;
+		bool break_after : 1 = false;
+		bool keep_with_next : 1 = false;
+		bool center_line : 1 = false;
 	};
 
 	struct flex_container_layout
@@ -1105,13 +1019,9 @@ namespace ui
 
 		constexpr element_options() = default;
 
-		constexpr element_options(const element_style style_in) : style(style_in)
-		{
-		}
+		constexpr element_options(const element_style style_in) : style(style_in) {}
 
-		constexpr element_options(const flex_item_layout& flex_in) : flex(flex_in)
-		{
-		}
+		constexpr element_options(const flex_item_layout& flex_in) : flex(flex_in) {}
 	};
 
 	constexpr element_options operator|(element_options left, const element_options& right)
@@ -1180,14 +1090,10 @@ namespace ui
 		mutable uint8_t invalidate_slack = unknown_invalidate_slack;
 
 		core::color _bg_color;
-		core::color _bg_target;
 
 		element() noexcept = default;
 
-		constexpr explicit element(const element_style style_in) noexcept : style(
-			style_in | element_style::visible)
-		{
-		}
+		constexpr explicit element(const element_style style_in) noexcept : style(style_in | element_style::visible) {}
 
 		constexpr explicit element(const element_options& options) noexcept :
 			flex(options.flex), style(options.style | element_style::visible)
@@ -1222,9 +1128,8 @@ namespace ui
 			// draw_rounded_rect grows its fill by round(0.8333 * (radius + 2) - radius), which is at most
 			// 2 for any radius. Recorded even when nothing is drawn, so the first hover already knows it.
 			const auto slack = std::max(pad.cx, pad.cy) + 2;
-			invalidate_slack = slack < unknown_invalidate_slack
-				                   ? static_cast<uint8_t>(slack)
-				                   : unknown_invalidate_slack;
+			invalidate_slack = slack < unknown_invalidate_slack ? static_cast<uint8_t>(slack)
+			                                                    : unknown_invalidate_slack;
 
 			const auto bg = calc_background_color(dc);
 
@@ -1234,10 +1139,7 @@ namespace ui
 			}
 		}
 
-		core::sizei porch() const
-		{
-			return {padding.cx + margin.cx, padding.cy + margin.cy};
-		}
+		core::sizei porch() const { return {padding.cx + margin.cx, padding.cy + margin.cy}; }
 
 		// Whether a press at loc is the element's or what it holds acts on, so a window that moves by the rest of
 		// its ground leaves it alone.
@@ -1265,42 +1167,28 @@ namespace ui
 			render_children(dc, element_offset);
 		}
 
-		virtual core::sizei measure(render::measure_context& mc, const int width_limit) const
-		{
-			return {};
-		}
+		virtual core::sizei measure(render::measure_context& /*mc*/, const int /*width_limit*/) const { return {}; }
 
 		// Places the element, and whatever it holds, in content coordinates.
-		virtual void layout(render::measure_context& mc, const core::recti bounds_in)
-		{
-			bounds = bounds_in;
-		}
+		virtual void layout(render::measure_context& /*mc*/, const core::recti bounds_in) { bounds = bounds_in; }
 
-		virtual void tooltip(hover_bubble& hover, const core::pointi loc, const core::pointi element_offset) const
+		virtual void tooltip(hover_bubble& /*hover*/, const core::pointi /*loc*/,
+		                     const core::pointi /*element_offset*/) const
 		{
 		}
 
-		virtual void hover(interaction_context& ic)
-		{
-		}
+		virtual void hover(interaction_context& /*ic*/) {}
 
-		virtual void dispatch_event(const element_event& event)
-		{
-		}
+		virtual void dispatch_event(const element_event& /*event*/) {}
 
 		// What the element holds, in the order it draws them, which is the order Tab visits the controls
 		// among them. A frame finds its drawn controls and frame elements through this, so an element that
 		// holds either names it here.
-		virtual void visit_children(const std::function<void(const element_ptr&)>& visit) const
-		{
-		}
+		virtual void visit_children(const std::function<void(const element_ptr&)>& /*visit*/) const {}
 
 		// Where what it holds sits against the element's own content coordinates: an element that scrolls
 		// what it holds moves it by its scroll.
-		virtual core::pointi children_offset() const
-		{
-			return {};
-		}
+		virtual core::pointi children_offset() const { return {}; }
 
 		// Offered a wheel turned over loc: an element that scrolls what it shows takes it, and answers true.
 		// One that holds others offers it to them.
@@ -1322,43 +1210,26 @@ namespace ui
 
 		// What a press, a hover or a tooltip at loc goes to: the element's own controller, or by default the
 		// first that a visible element it holds offers.
-		virtual controller_ptr controller_from_location(const element_host_ptr& host, core::pointi loc, core::pointi element_offset,
-		                                                hit_test_context& ctx);
+		virtual controller_ptr controller_from_location(const element_host_ptr& host, core::pointi loc,
+		                                                core::pointi element_offset, hit_test_context& ctx);
 
-		bool is_style_bit_set(const element_style mask) const
-		{
-			return style && mask;
-		}
+		bool is_style_bit_set(const element_style mask) const { return style && mask; }
 
 		void set_style_bit(element_style mask, bool state, const element_host_base_ptr& view, const element_ptr& e);
 		void update_background_color();
+		void cancel_background_animation();
 		void set_style_bit(element_style mask, bool state);
 
-		bool can_invoke() const
-		{
-			return is_style_bit_set(element_style::can_invoke);
-		}
+		bool can_invoke() const { return is_style_bit_set(element_style::can_invoke); }
 
-		bool has_tooltip() const
-		{
-			return is_style_bit_set(element_style::has_tooltip);
-		}
+		bool has_tooltip() const { return is_style_bit_set(element_style::has_tooltip); }
 
-		bool is_visible() const
-		{
-			return is_style_bit_set(element_style::visible);
-		}
+		bool is_visible() const { return is_style_bit_set(element_style::visible); }
 
-		void is_visible(const bool visible)
-		{
-			set_style_bit(element_style::visible, visible);
-		}
+		void is_visible(const bool visible) { set_style_bit(element_style::visible, visible); }
 
 		// Whether the element itself takes input. One that does not disables everything it holds.
-		bool is_enabled() const
-		{
-			return !is_style_bit_set(element_style::disabled);
-		}
+		bool is_enabled() const { return !is_style_bit_set(element_style::disabled); }
 
 		void enable(const bool enable)
 		{
@@ -1367,9 +1238,7 @@ namespace ui
 			enabled_changed();
 		}
 
-		virtual void enabled_changed()
-		{
-		}
+		virtual void enabled_changed() {}
 	};
 
 	struct flex_layout_result
@@ -1381,8 +1250,8 @@ namespace ui
 	flex_layout_result calc_flex_layout(const std::vector<element_ptr>& elements, render::measure_context& mc,
 	                                    core::sizei available, const flex_container_layout& container);
 
-	core::sizei layout_flex_elements(const std::vector<element_ptr>& elements, render::measure_context& mc, core::recti bounds,
-	                           const flex_container_layout& container);
+	core::sizei layout_flex_elements(const std::vector<element_ptr>& elements, render::measure_context& mc,
+	                                 core::recti bounds, const flex_container_layout& container);
 
 	class elements : public element, public std::enable_shared_from_this<elements>
 	{
@@ -1396,26 +1265,16 @@ namespace ui
 
 		explicit elements(const element_options& options) noexcept : element(options)
 		{
+			style &= ~element_style::fixed_measure_height;
 		}
 
-		explicit elements(std::vector<element_ptr> children) noexcept : _children(std::move(children))
-		{
-		}
+		explicit elements(std::vector<element_ptr> children) noexcept : _children(std::move(children)) {}
 
-		bool is_empty() const
-		{
-			return _children.empty();
-		}
+		bool is_empty() const { return _children.empty(); }
 
-		void clear()
-		{
-			_children.clear();
-		}
+		void clear() { _children.clear(); }
 
-		size_t size() const
-		{
-			return _children.size();
-		}
+		size_t size() const { return _children.size(); }
 
 		void render(render::draw_context& dc, const core::pointi offset) const override
 		{
@@ -1433,10 +1292,7 @@ namespace ui
 			}
 		}
 
-		void add(const element_ptr& v)
-		{
-			_children.emplace_back(v);
-		}
+		void add(const element_ptr& v) { _children.emplace_back(v); }
 
 		void add(const std::vector<element_ptr>& vals)
 		{
@@ -1448,14 +1304,14 @@ namespace ui
 
 		core::sizei measure(render::measure_context& mc, const int width_limit) const override
 		{
-			return calc_flex_layout(_children, mc, {width_limit, -1}, container_layout(mc)).extent;
+			return calc_flex_layout(_children, mc, {width_limit, -1}, flex_container).extent;
 		}
 
 		void layout(render::measure_context& mc, const core::recti bounds_in) override
 		{
 			update_style_from_children();
 			bounds = bounds_in;
-			layout_flex_elements(_children, mc, bounds, container_layout(mc));
+			layout_flex_elements(_children, mc, bounds, flex_container);
 		}
 
 		void update_style_from_children()
@@ -1492,7 +1348,6 @@ namespace ui
 			}
 		}
 
-
 		void dispatch_event(const element_event& event) override
 		{
 			for (const auto& c : _children)
@@ -1508,13 +1363,32 @@ namespace ui
 				visit(c);
 			}
 		}
+	};
 
-	protected:
-		// Metrics such as a gap in device pixels are only known once there is a measure context, so a
-		// derived container folds them in here rather than caching a scale-dependent value.
-		virtual flex_container_layout container_layout(const render::measure_context& mc) const
+	class panel_element : public elements
+	{
+	public:
+		static constexpr int content_padding = 8;
+		static constexpr int spacing = 8;
+
+		explicit panel_element(const element_options& options = flex_item::stretch) :
+			elements(options | element_style::background)
 		{
-			return flex_container;
+			padding(0);
+			margin(0);
+			flex_container.padding = {content_padding, content_padding};
+			update_background_color();
+		}
+
+		void render(render::draw_context& dc, const core::pointi offset) const override
+		{
+			const auto panel = bounds.offset(offset);
+			if (panel.is_empty() || !dc.clip_bounds().intersects(panel) ||
+			    std::ranges::none_of(_children, [](const element_ptr& child) { return child && child->is_visible(); }))
+				return;
+			render_background(dc, offset);
+			const render::scoped_clip clip(dc, panel);
+			render_children(dc, offset);
 		}
 	};
 
@@ -1527,20 +1401,14 @@ namespace ui
 		// The frame placed where this element is; null until there is one.
 		frame_ptr child;
 
-		frame_element() noexcept
-		{
-			kind = element_kind::frame;
-		}
+		frame_element() noexcept { kind = element_kind::frame; }
 
 		explicit frame_element(const element_options& options) noexcept : element(options)
 		{
 			kind = element_kind::frame;
 		}
 
-		virtual frame_ptr placed_frame() const
-		{
-			return child;
-		}
+		virtual frame_ptr placed_frame() const { return child; }
 	};
 
 	using frame_element_ptr = std::shared_ptr<frame_element>;
@@ -1553,10 +1421,7 @@ namespace ui
 		render::draw_context& _dc;
 		std::shared_ptr<core::pointi> _origin;
 
-		core::recti to_dc(const core::recti r) const
-		{
-			return r.offset(*_origin);
-		}
+		core::recti to_dc(const core::recti r) const { return r.offset(*_origin); }
 
 	public:
 		offset_draw_context(render::draw_context& dc, std::shared_ptr<core::pointi> origin);
@@ -1568,30 +1433,32 @@ namespace ui
 
 		void clear(core::color c) override;
 		void draw_rounded_rect(core::recti bounds, core::color c, int radius) override;
-		void fill_polygon(std::span<const core::pointd> points, core::color c) override;
-		void draw_shadow(core::recti bounds, int width, float alpha) override;
+		void draw_polygon(std::span<const core::pointd> outline, const render::polygon_style& style) override;
 		void draw_rect(core::recti bounds, core::color c) override;
 		void draw_line(core::pointd a, core::pointd b, core::color c, double width = 1.0) override;
 		void draw_polyline(std::span<const core::pointd> points, core::color c, double width = 1.0) override;
 		void draw_ellipse(core::recti bounds, core::color c, double width = 1.0) override;
 		void fill_ellipse(core::recti bounds, core::color c) override;
-		void draw_text(std::string_view text, core::recti bounds, render::font_face font, render::text_style style, core::color c,
+		void draw_text(std::string_view text, core::recti bounds, render::font_face font, render::text_style style,
+		               core::color c, core::color bg) override;
+		void draw_text(std::string_view text, const std::vector<render::text_highlight_t>& highlights,
+		               core::recti bounds, render::font_face font, render::text_style style, core::color clr,
 		               core::color bg) override;
-		void draw_text(std::string_view text, const std::vector<render::text_highlight_t>& highlights, core::recti bounds,
-		               render::font_face font, render::text_style style, core::color clr, core::color bg) override;
 		void draw_text(const render::text_layout_ptr& tl, core::recti bounds, core::color clr, core::color bg) override;
 		void draw_border(core::recti inside, core::recti outside, core::color c_inside, core::color c_outside) override;
-		void draw_texture(const render::texture_ptr& t, core::recti dst, float alpha, render::texture_sampler sampler) override;
-		void draw_texture(const render::texture_ptr& t, core::recti dst, core::recti src, float alpha, render::texture_sampler sampler,
-		                  float radius) override;
+		void draw_texture(const render::texture_ptr& t, core::recti dst, float alpha,
+		                  render::texture_sampler sampler) override;
+		void draw_texture(const render::texture_ptr& t, core::recti dst, core::recti src, float alpha,
+		                  render::texture_sampler sampler, float radius) override;
 		void draw_texture(const render::texture_ptr& t, const core::quadd& dst, core::recti src, float alpha,
 		                  render::texture_sampler sampler) override;
 		void draw_texture(const render::texture_ptr& t, const core::quadd& dst, core::recti src, float alpha,
 		                  render::texture_sampler sampler, const render::texture_transform& transform) override;
-		bool draw_panorama(const render::texture_ptr& t, core::recti dst, const render::panorama_params& params, float alpha) override;
+		bool draw_panorama(const render::texture_ptr& t, core::recti dst, const render::panorama_params& params,
+		                   float alpha) override;
 		void draw_vertices(const render::vertices_ptr& v) override;
 		core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style, int width,
-		                   int height) override;
+		                         int height) override;
 		int text_line_height(render::font_face font) override;
 		int text_baseline(render::font_face font) override;
 		render::texture_ptr create_texture() override;
@@ -1619,10 +1486,7 @@ namespace ui
 
 		hover_bubble() = default;
 
-		bool is_empty() const
-		{
-			return elements == nullptr || elements->is_empty();
-		}
+		bool is_empty() const { return elements == nullptr || elements->is_empty(); }
 
 		void clear()
 		{
@@ -1646,8 +1510,8 @@ namespace ui
 
 	public:
 		clickable_controller(const element_host_ptr& host, element_ptr e, const core::pointi element_offset) :
-			controller(host, e->bounds.offset(element_offset)), _element(std::move(e)),
-			_element_offset(element_offset), _can_click(_element->can_invoke())
+			controller(host, e->bounds.offset(element_offset)), _element(std::move(e)), _element_offset(element_offset),
+			_can_click(_element->can_invoke())
 		{
 			update_highlight();
 		}
@@ -1655,8 +1519,9 @@ namespace ui
 		// For an element the controller owns only part of, such as one tile of a grid. The bounds are
 		// the part, not the element clipped by what covers it -- clipping here drops the click.
 		clickable_controller(const element_host_ptr& host, element_ptr e, const core::pointi element_offset,
-		                     const core::recti bounds) : controller(host, bounds), _element(std::move(e)),
-		                                           _element_offset(element_offset), _can_click(_element->can_invoke())
+		                     const core::recti bounds) :
+			controller(host, bounds), _element(std::move(e)), _element_offset(element_offset),
+			_can_click(_element->can_invoke())
 		{
 			update_highlight();
 		}
@@ -1679,7 +1544,7 @@ namespace ui
 			update_highlight();
 		}
 
-		void on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_down(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			_last_loc = loc;
 			_hover = _bounds.contains(loc);
@@ -1708,7 +1573,7 @@ namespace ui
 			}
 		}
 
-		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			_last_loc = loc;
 			_hover = _bounds.contains(loc);
@@ -1733,7 +1598,7 @@ namespace ui
 			}
 		}
 
-		void on_mouse_left_button_double_click(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_double_click(const core::pointi /*loc*/, const platform::key_state /*keys*/) override
 		{
 			if (_can_click)
 			{
@@ -1768,10 +1633,7 @@ namespace ui
 			return _can_click ? platform::cursor::link : platform::cursor::normal;
 		}
 
-		void popup_from_location(hover_bubble& hover) override
-		{
-			_element->tooltip(hover, _last_loc, _element_offset);
-		}
+		void popup_from_location(hover_bubble& hover) override { _element->tooltip(hover, _last_loc, _element_offset); }
 
 		void update_highlight() const
 		{
@@ -1791,10 +1653,10 @@ namespace ui
 	template <class T>
 	static controller_ptr default_controller_from_location(T& this_element, const element_host_ptr& host,
 	                                                       const core::pointi loc, const core::pointi element_offset,
-	                                                       hit_test_context& ctx)
+	                                                       hit_test_context& /*ctx*/)
 	{
 		if (this_element.is_visible() && (this_element.can_invoke() || this_element.has_tooltip()) &&
-			this_element.bounds.contains(loc - element_offset))
+		    this_element.bounds.contains(loc - element_offset))
 		{
 			return std::make_shared<clickable_controller>(host, this_element.shared_from_this(), element_offset);
 		}
@@ -1818,10 +1680,9 @@ namespace ui
 		{
 		}
 
-		void foreground_color(const core::color32 clr)
-		{
-			_foreground_clr = clr;
-		}
+		void foreground_color(const core::color32 clr) { _foreground_clr = clr; }
+
+		const std::string& text() const { return _text; }
 
 		void text(const std::string_view t)
 		{
@@ -1854,6 +1715,15 @@ namespace ui
 		}
 
 	protected:
+		void update_measure_behavior()
+		{
+			style &= ~element_style::fixed_measure_height;
+			if (_text_style == render::text_style::single_line ||
+			    _text_style == render::text_style::single_line_center ||
+			    _text_style == render::text_style::single_line_far)
+				style |= element_style::fixed_measure_height;
+		}
+
 		// Text layout creation can fail when the graphics device is lost, so every caller checks the result.
 		const render::text_layout_ptr& text_layout(render::measure_context& mc) const
 		{
@@ -1872,9 +1742,8 @@ namespace ui
 
 			if (tl)
 			{
-				const auto clr = _foreground_clr
-					                 ? core::color(_foreground_clr, dc.colors.alpha)
-					                 : core::color(dc.colors.foreground, dc.colors.alpha);
+				const auto clr = _foreground_clr ? core::color(_foreground_clr, dc.colors.alpha)
+				                                 : core::color(dc.colors.foreground, dc.colors.alpha);
 
 				dc.draw_text(tl, logical_bounds, clr, {});
 			}
@@ -1889,14 +1758,15 @@ namespace ui
 		{
 			_font = font;
 			_text_style = text_style;
-
+			update_measure_behavior();
 			update_background_color();
 		}
 
-		text_element(const std::string_view text, const render::text_style text_style) noexcept : text_element_base(
-			text)
+		text_element(const std::string_view text, const render::text_style text_style) noexcept :
+			text_element_base(text)
 		{
 			_text_style = text_style;
+			update_measure_behavior();
 		}
 
 		text_element(const std::string_view text, const render::font_face font) noexcept : text_element_base(text)
@@ -1904,14 +1774,12 @@ namespace ui
 			_font = font;
 		}
 
-		text_element(const std::string_view text, const element_options& options) noexcept : text_element_base(
-			text, options)
+		text_element(const std::string_view text, const element_options& options) noexcept :
+			text_element_base(text, options)
 		{
 		}
 
-		text_element(const std::string_view text) noexcept : text_element_base(text)
-		{
-		}
+		text_element(const std::string_view text) noexcept : text_element_base(text) {}
 	};
 
 	inline core::color32 link_foreground_color()
@@ -1928,11 +1796,9 @@ namespace ui
 
 	public:
 		link_element(const std::string_view text, const commands cmd, const render::font_face font,
-		             const render::text_style text_style,
-		             const element_options& options = {},
-		             const bool full_background = false) noexcept : text_element_base(
-			                                                            text, options), _cmd(cmd),
-		                                                            _full_background(full_background)
+		             const render::text_style text_style, const element_options& options = {},
+		             const bool full_background = false) noexcept :
+			text_element_base(text, options), _cmd(cmd), _full_background(full_background)
 		{
 			_font = font;
 			_text_style = text_style;
@@ -1940,8 +1806,7 @@ namespace ui
 		}
 
 		link_element(const std::string_view text, std::function<void()> func, const render::font_face font,
-		             const render::text_style text_style,
-		             const element_options& options = {},
+		             const render::text_style text_style, const element_options& options = {},
 		             const bool full_background = false) noexcept :
 			text_element_base(text, options), _invoke(std::move(func)), _full_background(full_background)
 		{
@@ -1951,9 +1816,8 @@ namespace ui
 		}
 
 		link_element(const std::string_view text, std::function<void()> func,
-		             std::function<void(hover_bubble&)> tooltip,
-		             const render::font_face font, const render::text_style text_style,
-		             const element_options& options = {}) noexcept :
+		             std::function<void(hover_bubble&)> tooltip, const render::font_face font,
+		             const render::text_style text_style, const element_options& options = {}) noexcept :
 			text_element_base(text, options), _invoke(std::move(func)), _tooltip(std::move(tooltip))
 		{
 			_font = font;
@@ -1966,19 +1830,17 @@ namespace ui
 			update_style();
 		}
 
-		link_element(const std::string_view text, std::function<void()> func) noexcept : text_element_base(text),
-			_invoke(std::move(func))
+		link_element(const std::string_view text, std::function<void()> func) noexcept :
+			text_element_base(text), _invoke(std::move(func))
 		{
 			update_style();
 		}
 
-		link_element(const std::string_view text) noexcept : text_element_base(text)
-		{
-			update_style();
-		}
+		link_element(const std::string_view text) noexcept : text_element_base(text) { update_style(); }
 
 		void update_style()
 		{
+			update_measure_behavior();
 			set_style_bit(element_style::has_tooltip, _cmd != commands{} || _tooltip);
 			set_style_bit(element_style::can_invoke, _cmd != commands{} || _invoke);
 
@@ -1987,10 +1849,7 @@ namespace ui
 
 		// A link may be asked to fill its own background - a box rather than a run of underlined words -
 		// while still carrying a hover bubble.
-		void full_background(const bool v)
-		{
-			_full_background = v;
-		}
+		void full_background(const bool v) { _full_background = v; }
 
 		void render(render::draw_context& dc, const core::pointi element_offset) const override
 		{
@@ -2010,8 +1869,8 @@ namespace ui
 		void dispatch_event(const element_event& event) override;
 		void tooltip(hover_bubble& hover, core::pointi loc, core::pointi element_offset) const override;
 
-		controller_ptr controller_from_location(const element_host_ptr& host, core::pointi loc, core::pointi element_offset,
-		                                        hit_test_context& ctx) override;
+		controller_ptr controller_from_location(const element_host_ptr& host, core::pointi loc,
+		                                        core::pointi element_offset, hit_test_context& ctx) override;
 	};
 
 	inline element_ptr make_icon_element(const icon_index i, const element_options& options)
@@ -2049,9 +1908,7 @@ namespace ui
 	class divider_element final : public std::enable_shared_from_this<divider_element>, public element
 	{
 	public:
-		divider_element() noexcept : element(flex_item::stretch)
-		{
-		}
+		divider_element() noexcept : element(flex_item::stretch) {}
 
 		void render(render::draw_context& dc, const core::pointi element_offset) const override
 		{

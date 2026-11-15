@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Date and time utilities. Defines date_t class for timestamps,
 // date calculations, timezone conversion, and date formatting.
@@ -25,10 +24,7 @@ namespace core
 		day_t start;
 		day_t end;
 
-		bool is_empty() const
-		{
-			return start.is_empty() && end.is_empty();
-		}
+		bool is_empty() const { return start.is_empty() && end.is_empty(); }
 	};
 
 	class date_t
@@ -53,9 +49,7 @@ namespace core
 			date(dd);
 		}
 
-		constexpr explicit date_t(const uint64_t n) noexcept : _i(n)
-		{
-		}
+		constexpr explicit date_t(const uint64_t n) noexcept : _i(n) {}
 
 		constexpr int64_t operator+(const date_t other) const noexcept
 		{
@@ -85,17 +79,11 @@ namespace core
 			return *this;
 		}
 
-		constexpr uint64_t to_int64() const
-		{
-			return _i;
-		}
+		constexpr uint64_t to_int64() const { return _i; }
 
 		friend auto operator<=>(const date_t&, const date_t&) = default;
 
-		constexpr void clear()
-		{
-			_i = 0;
-		}
+		constexpr void clear() { _i = 0; }
 
 		int year() const
 		{
@@ -115,10 +103,7 @@ namespace core
 			return st.day;
 		}
 
-		day_t date() const
-		{
-			return core::to_date(_i);
-		}
+		day_t date() const { return core::to_date(_i); }
 
 		bool date(const day_t& d)
 		{
@@ -134,15 +119,9 @@ namespace core
 
 		std::string to_xmp_date() const;
 
-		constexpr static date_t from_days(const uint32_t days)
-		{
-			return date_t(days * intervals_per_day);
-		}
+		constexpr static date_t from_days(const uint32_t days) { return date_t(days * intervals_per_day); }
 
-		__forceinline constexpr uint32_t to_days() const
-		{
-			return static_cast<uint32_t>(_i / intervals_per_day);
-		}
+		__forceinline constexpr uint32_t to_days() const { return static_cast<uint32_t>(_i / intervals_per_day); }
 
 		constexpr date_t previous_day() const
 		{
@@ -150,20 +129,11 @@ namespace core
 			return date_t(days == 0 ? 0 : (days - 1) * intervals_per_day);
 		}
 
-		constexpr date_t add_day(const int d) const
-		{
-			return from_days(to_days() + d);
-		}
+		constexpr date_t add_day(const int d) const { return from_days(to_days() + d); }
 
-		constexpr uint64_t to_seconds() const
-		{
-			return _i / intervals_per_second;
-		}
+		constexpr uint64_t to_seconds() const { return _i / intervals_per_second; }
 
-		constexpr bool matches(const date_t other) const
-		{
-			return to_days() == other.to_days();
-		}
+		constexpr bool matches(const date_t other) const { return to_days() == other.to_days(); }
 
 		__forceinline bool is_valid() const
 		{

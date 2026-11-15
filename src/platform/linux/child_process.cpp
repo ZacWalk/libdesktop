@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: POSIX child processes with independent pipes and UI-thread line callbacks.
 
@@ -109,7 +108,9 @@ namespace platform
 				{
 					if (kill_descendants && process_group > 0) ::kill(-process_group, SIGKILL);
 					else ::kill(pid, SIGKILL);
-					while (::waitpid(pid, &exit_status, 0) < 0 && errno == EINTR) {}
+					while (::waitpid(pid, &exit_status, 0) < 0 && errno == EINTR)
+					{
+					}
 				}
 				else if (state == pid) exit_status = status;
 			}
@@ -144,8 +145,10 @@ namespace platform
 
 	process_ptr process_spawn(const process_options& options)
 	{
-		if (options.exe.empty() || options.exe.find('\0') != std::string::npos || options.cwd.find('\0') != std::string::npos ||
-			std::any_of(options.args.begin(), options.args.end(), [](const auto& value) { return value.find('\0') != std::string::npos; }))
+		if (options.exe.empty() || options.exe.find('\0') != std::string::npos ||
+		    options.cwd.find('\0') != std::string::npos ||
+		    std::any_of(options.args.begin(), options.args.end(),
+		                [](const auto& value) { return value.find('\0') != std::string::npos; }))
 			return {};
 		auto executable = options.exe;
 		if (executable.find('/') == std::string::npos) executable = find_executable(executable).str();
@@ -167,7 +170,8 @@ namespace platform
 		int input_pipe[2] = {-1, -1};
 		int output_pipe[2] = {-1, -1};
 		int error_pipe[2] = {-1, -1};
-		if (::pipe2(input_pipe, O_CLOEXEC) != 0 || ::pipe2(output_pipe, O_CLOEXEC) != 0 || ::pipe2(error_pipe, O_CLOEXEC) != 0)
+		if (::pipe2(input_pipe, O_CLOEXEC) != 0 || ::pipe2(output_pipe, O_CLOEXEC) != 0 ||
+		    ::pipe2(error_pipe, O_CLOEXEC) != 0)
 		{
 			for (auto& fd : input_pipe) close_fd(fd);
 			for (auto& fd : output_pipe) close_fd(fd);
@@ -183,15 +187,20 @@ namespace platform
 			for (auto& fd : error_pipe) close_fd(fd);
 			return {};
 		}
-		const auto finish_actions = [&] { posix_spawn_file_actions_destroy(&actions); };
+		const auto finish_actions = [&]
+		{
+			posix_spawn_file_actions_destroy(&actions);
+		};
 		bool actions_ok = posix_spawn_file_actions_adddup2(&actions, input_pipe[0], STDIN_FILENO) == 0 &&
-			posix_spawn_file_actions_adddup2(&actions, output_pipe[1], STDOUT_FILENO) == 0 &&
-			posix_spawn_file_actions_adddup2(&actions, error_pipe[1], STDERR_FILENO) == 0;
-		for (const auto fd : {input_pipe[0], input_pipe[1], output_pipe[0], output_pipe[1], error_pipe[0], error_pipe[1]})
+		                  posix_spawn_file_actions_adddup2(&actions, output_pipe[1], STDOUT_FILENO) == 0 &&
+		                  posix_spawn_file_actions_adddup2(&actions, error_pipe[1], STDERR_FILENO) == 0;
+		for (const auto fd :
+		     {input_pipe[0], input_pipe[1], output_pipe[0], output_pipe[1], error_pipe[0], error_pipe[1]})
 			if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO)
 				actions_ok = actions_ok && posix_spawn_file_actions_addclose(&actions, fd) == 0;
 #ifdef __GLIBC__
-		if (actions_ok && !options.cwd.empty()) actions_ok = posix_spawn_file_actions_addchdir_np(&actions, options.cwd.c_str()) == 0;
+		if (actions_ok && !options.cwd.empty())
+			actions_ok = posix_spawn_file_actions_addchdir_np(&actions, options.cwd.c_str()) == 0;
 #else
 		if (!options.cwd.empty()) actions_ok = false;
 #endif
@@ -253,7 +262,8 @@ namespace platform
 		std::lock_guard lock(owner->output.mutex);
 		if (owner->output.eof || owner->output.fd < 0 || owner->cancelled) return 0;
 		ssize_t count = 0;
-		do count = ::read(owner->output.fd, buffer, bytes); while (count < 0 && errno == EINTR);
+		do count = ::read(owner->output.fd, buffer, bytes);
+		while (count < 0 && errno == EINTR);
 		if (count <= 0) owner->output.eof = true;
 		return count > 0 ? static_cast<size_t>(count) : 0;
 	}
@@ -264,7 +274,8 @@ namespace platform
 		std::lock_guard lock(owner->error.mutex);
 		if (owner->error.eof || owner->error.fd < 0 || owner->cancelled) return 0;
 		ssize_t count = 0;
-		do count = ::read(owner->error.fd, buffer, bytes); while (count < 0 && errno == EINTR);
+		do count = ::read(owner->error.fd, buffer, bytes);
+		while (count < 0 && errno == EINTR);
 		if (count <= 0) owner->error.eof = true;
 		return count > 0 ? static_cast<size_t>(count) : 0;
 	}
@@ -322,7 +333,9 @@ namespace platform
 				{
 					if (owner->kill_descendants && owner->process_group > 0) ::kill(-owner->process_group, SIGKILL);
 					else ::kill(owner->pid, SIGKILL);
-					while (::waitpid(owner->pid, &owner->exit_status, 0) < 0 && errno == EINTR) {}
+					while (::waitpid(owner->pid, &owner->exit_status, 0) < 0 && errno == EINTR)
+					{
+					}
 				}
 				else if (state == owner->pid) owner->exit_status = status;
 				owner->waited = true;
@@ -378,20 +391,24 @@ namespace platform
 			splitter.flush(emit);
 			if (!error_stream)
 			{
-				while (process_alive(_process) && !_cancelled->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				while (process_alive(_process) && !_cancelled->load())
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				const auto callback = _callbacks.on_exit;
 				const auto state = _cancelled;
 				if (callback)
 				{
 					const auto exit_code = process_exit_code(_process);
-					run_ui([state, callback, exit_code] { if (!state->load()) callback(exit_code); });
+					run_ui([state, callback, exit_code]
+					{
+						if (!state->load()) callback(exit_code);
+					});
 				}
 			}
 		}
 
 	public:
-		linux_child_process(process_ptr process, child_process_callbacks callbacks)
-			: _process(std::move(process)), _callbacks(std::move(callbacks))
+		linux_child_process(process_ptr process, child_process_callbacks callbacks) :
+			_process(std::move(process)), _callbacks(std::move(callbacks))
 		{
 			_stdout = std::thread([this] { read_lines(false); });
 			_stderr = std::thread([this] { read_lines(true); });

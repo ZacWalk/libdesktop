@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The Windows os:: services - clipboard text, known folders, and the synchronous web
 // client, which uses WinINet and switches to WinHTTP for a request bounded by a timeout or a limit.
@@ -65,9 +64,7 @@ namespace
 		HANDLE _h = INVALID_HANDLE_VALUE;
 
 	public:
-		explicit file_handle(const HANDLE h) : _h(h)
-		{
-		}
+		explicit file_handle(const HANDLE h) : _h(h) {}
 
 		~file_handle()
 		{
@@ -90,19 +87,15 @@ namespace
 	std::wstring native_path(const std::string_view path)
 	{
 		auto result = widen(path);
-		if (result.empty() || result.starts_with(LR"(\\?\)") || result.starts_with(LR"(\\.\)"))
-			return result;
+		if (result.empty() || result.starts_with(LR"(\\?\)") || result.starts_with(LR"(\\.\)")) return result;
 
-		const bool drive_rooted = result.size() >= 3 && result[1] == L':' &&
-			(result[2] == L'\\' || result[2] == L'/');
+		const bool drive_rooted = result.size() >= 3 && result[1] == L':' && (result[2] == L'\\' || result[2] == L'/');
 		const bool unc_rooted = result.size() >= 2 && result[0] == L'\\' && result[1] == L'\\';
 		// CreateDirectoryW needs the extended form a little before MAX_PATH because it reserves
 		// room for an 8.3 child; using the same threshold for all file APIs keeps one path policy.
-		if (result.size() < MAX_PATH - 12 || (!drive_rooted && !unc_rooted))
-			return result;
+		if (result.size() < MAX_PATH - 12 || (!drive_rooted && !unc_rooted)) return result;
 
-		if (unc_rooted)
-			return LR"(\\?\UNC\)" + result.substr(2);
+		if (unc_rooted) return LR"(\\?\UNC\)" + result.substr(2);
 		return LR"(\\?\)" + result;
 	}
 
@@ -117,11 +110,10 @@ namespace
 
 		LPWSTR raw = nullptr;
 		const auto length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-		                                   FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error,
-		                                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		                                       FORMAT_MESSAGE_IGNORE_INSERTS,
+		                                   nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 		                                   reinterpret_cast<LPWSTR>(&raw), 0, nullptr);
-		if (length == 0 || raw == nullptr)
-			return std::format("Windows error {}", error);
+		if (length == 0 || raw == nullptr) return std::format("Windows error {}", error);
 
 		auto result = narrow(std::wstring_view(raw, length));
 		LocalFree(raw);
@@ -136,8 +128,8 @@ namespace
 
 		const auto error = GetLastError();
 		const auto code = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
-			                  ? os::file_operation_code::already_exists
-			                  : os::file_operation_code::failed;
+		                      ? os::file_operation_code::already_exists
+		                      : os::file_operation_code::failed;
 		auto diagnostic = error_text(error);
 		if (diagnostic.empty()) diagnostic = std::format("Windows error {}", error);
 		return {code, error, std::move(diagnostic)};
@@ -147,8 +139,7 @@ namespace
 	bool numbers_root_zero(const HANDLE handle)
 	{
 		wchar_t file_system[MAX_PATH + 1] = {};
-		if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, nullptr, file_system,
-		                                   MAX_PATH + 1))
+		if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, nullptr, file_system, MAX_PATH + 1))
 		{
 			return false;
 		}
@@ -200,9 +191,8 @@ namespace
 		result.identity.valid = true;
 	}
 
-	void fill_attributes(os::file_attributes& result, const DWORD attributes,
-	                     const FILETIME& created, const FILETIME& modified,
-	                     const DWORD size_high, const DWORD size_low)
+	void fill_attributes(os::file_attributes& result, const DWORD attributes, const FILETIME& created,
+	                     const FILETIME& modified, const DWORD size_high, const DWORD size_low)
 	{
 		result.presence = os::file_presence::found;
 		result.directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -210,7 +200,7 @@ namespace
 		result.hidden = (attributes & FILE_ATTRIBUTE_HIDDEN) != 0;
 		result.reparse = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 		result.offline = (attributes & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN |
-		                               FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_VIRTUAL)) != 0;
+		                                FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_VIRTUAL)) != 0;
 		result.created = file_time(created);
 		result.modified = file_time(modified);
 		result.size = (static_cast<uint64_t>(size_high) << 32) | size_low;
@@ -325,8 +315,8 @@ namespace
 
 		return read_listing<FILE_ID_EXTD_DIR_INFO>(folder.get(), FileIdExtdDirectoryRestartInfo,
 		                                           FileIdExtdDirectoryInfo, volume, show_hidden, result) ||
-			read_listing<FILE_ID_BOTH_DIR_INFO>(folder.get(), FileIdBothDirectoryRestartInfo, FileIdBothDirectoryInfo,
-			                                    volume, show_hidden, result);
+		       read_listing<FILE_ID_BOTH_DIR_INFO>(folder.get(), FileIdBothDirectoryRestartInfo,
+		                                           FileIdBothDirectoryInfo, volume, show_hidden, result);
 	}
 
 	std::wstring dialog_filter(const std::vector<os::file_dialog_filter>& filters)
@@ -355,8 +345,7 @@ namespace
 	{
 		const auto slash = path.find_last_of("/\\");
 		const auto dot = path.find_last_of('.');
-		if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash))
-			return {};
+		if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash)) return {};
 		const auto extension = path.substr(dot + 1);
 		return widen(extension);
 	}
@@ -374,8 +363,7 @@ namespace
 			{
 				const auto request = static_cast<DWORD>(std::min<uint64_t>(size - total, MAXDWORD));
 				DWORD count = 0;
-				if (!ReadFile(_handle, data + total, request, &count, nullptr) || count == 0)
-					break;
+				if (!ReadFile(_handle, data + total, request, &count, nullptr) || count == 0) break;
 				total += count;
 			}
 			return total;
@@ -388,8 +376,7 @@ namespace
 			{
 				const auto request = static_cast<DWORD>(std::min<uint64_t>(size - total, MAXDWORD));
 				DWORD count = 0;
-				if (!WriteFile(_handle, data + total, request, &count, nullptr) || count == 0)
-					break;
+				if (!WriteFile(_handle, data + total, request, &count, nullptr) || count == 0) break;
 				total += count;
 			}
 			return total;
@@ -399,15 +386,12 @@ namespace
 		{
 			LARGE_INTEGER zero = {};
 			LARGE_INTEGER position = {};
-			return SetFilePointerEx(_handle, zero, &position, FILE_CURRENT)
-				       ? static_cast<uint64_t>(position.QuadPart)
-				       : UINT64_MAX;
+			return SetFilePointerEx(_handle, zero, &position, FILE_CURRENT) ? static_cast<uint64_t>(position.QuadPart)
+			                                                                : UINT64_MAX;
 		}
 
 	public:
-		win_file(const HANDLE handle, std::string path) : _handle(handle), _path(std::move(path))
-		{
-		}
+		win_file(const HANDLE handle, std::string path) : _handle(handle), _path(std::move(path)) {}
 
 		~win_file() override
 		{
@@ -481,9 +465,8 @@ namespace
 			if (whence == os::file_whence::end) method = FILE_END;
 
 			LARGE_INTEGER result = {};
-			return SetFilePointerEx(_handle, where, &result, method)
-				       ? static_cast<uint64_t>(result.QuadPart)
-				       : UINT64_MAX;
+			return SetFilePointerEx(_handle, where, &result, method) ? static_cast<uint64_t>(result.QuadPart)
+			                                                         : UINT64_MAX;
 		}
 
 		uint64_t position() const override
@@ -501,10 +484,7 @@ namespace
 			return SetEndOfFile(_handle) != 0;
 		}
 
-		std::string path() const override
-		{
-			return _path;
-		}
+		std::string path() const override { return _path; }
 
 		HANDLE native_handle() const { return _handle; }
 	};
@@ -519,8 +499,8 @@ namespace
 	public:
 		ini_store_impl(std::wstring path, const bool write_unicode_bom) : _path(std::move(path))
 		{
-			const auto handle = CreateFileW(_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-			                                nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			const auto handle = CreateFileW(_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+			                                CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 			if (handle != INVALID_HANDLE_VALUE)
 			{
 				_root_created = true;
@@ -541,8 +521,7 @@ namespace
 
 		bool root_created() const override { return _root_created; }
 
-		std::optional<std::string> read(const std::string_view section,
-		                               const std::string_view key) const override
+		std::optional<std::string> read(const std::string_view section, const std::string_view key) const override
 		{
 			std::scoped_lock lock(_mutex);
 			if (_failed) return {};
@@ -553,13 +532,11 @@ namespace
 			std::vector<wchar_t> buffer(1024);
 			for (;;)
 			{
-				const auto length = GetPrivateProfileStringW(section_w.c_str(), key_w.c_str(), absent,
-				                                             buffer.data(), static_cast<DWORD>(buffer.size()),
-				                                             _path.c_str());
+				const auto length = GetPrivateProfileStringW(section_w.c_str(), key_w.c_str(), absent, buffer.data(),
+				                                             static_cast<DWORD>(buffer.size()), _path.c_str());
 				if (length < buffer.size() - 1)
 				{
-					if (std::wstring_view(buffer.data(), length) == std::wstring_view(absent, 1))
-						return {};
+					if (std::wstring_view(buffer.data(), length) == std::wstring_view(absent, 1)) return {};
 					return narrow(std::wstring_view(buffer.data(), length));
 				}
 				if (buffer.size() >= 1024 * 1024) return {};
@@ -567,8 +544,7 @@ namespace
 			}
 		}
 
-		bool write(const std::string_view section, const std::string_view key,
-		           const std::string_view value) override
+		bool write(const std::string_view section, const std::string_view key, const std::string_view value) override
 		{
 			std::scoped_lock lock(_mutex);
 			if (_failed) return false;
@@ -613,8 +589,8 @@ namespace
 
 			HKEY key = nullptr;
 			DWORD disposition = 0;
-			const auto status = RegCreateKeyExW(HKEY_CURRENT_USER, _root.c_str(), 0, nullptr, 0,
-			                                    KEY_READ | KEY_WRITE, nullptr, &key, &disposition);
+			const auto status = RegCreateKeyExW(HKEY_CURRENT_USER, _root.c_str(), 0, nullptr, 0, KEY_READ | KEY_WRITE,
+			                                    nullptr, &key, &disposition);
 			if (status != ERROR_SUCCESS)
 			{
 				_failed = true;
@@ -626,8 +602,7 @@ namespace
 
 		bool root_created() const override { return _root_created; }
 
-		std::optional<std::string> read(const std::string_view section,
-		                               const std::string_view name) const override
+		std::optional<std::string> read(const std::string_view section, const std::string_view name) const override
 		{
 			if (_failed) return {};
 			HKEY key = nullptr;
@@ -645,23 +620,22 @@ namespace
 			}
 
 			std::vector<wchar_t> value(bytes / sizeof(wchar_t) + 1, L'\0');
-			status = RegQueryValueExW(key, widen(name).c_str(), nullptr, &type,
-			                          reinterpret_cast<LPBYTE>(value.data()), &bytes);
+			status = RegQueryValueExW(key, widen(name).c_str(), nullptr, &type, reinterpret_cast<LPBYTE>(value.data()),
+			                          &bytes);
 			RegCloseKey(key);
 			if (status != ERROR_SUCCESS) return {};
 			const auto length = wcsnlen(value.data(), value.size());
 			return narrow(std::wstring_view(value.data(), length));
 		}
 
-		bool write(const std::string_view section, const std::string_view name,
-		           const std::string_view value) override
+		bool write(const std::string_view section, const std::string_view name, const std::string_view value) override
 		{
 			if (_failed) return false;
 			HKEY key = nullptr;
 			DWORD disposition = 0;
 			const auto key_name = key_path(section);
-			if (RegCreateKeyExW(HKEY_CURRENT_USER, key_name.c_str(), 0, nullptr, 0,
-			                    KEY_SET_VALUE, nullptr, &key, &disposition) != ERROR_SUCCESS)
+			if (RegCreateKeyExW(HKEY_CURRENT_USER, key_name.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+			                    &disposition) != ERROR_SUCCESS)
 				return false;
 			const auto wide = widen(value);
 			const auto status = RegSetValueExW(key, widen(name).c_str(), 0, REG_SZ,
@@ -802,21 +776,18 @@ os::file_attributes os::query_file(const std::string_view path)
 	{
 		const auto error = GetLastError();
 		result.error = error;
-		result.presence = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
-			                  ? file_presence::not_found
-			                  : file_presence::unknown;
+		result.presence = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? file_presence::not_found
+		                                                                                 : file_presence::unknown;
 		return result;
 	}
 
-	fill_attributes(result, data.dwFileAttributes, data.ftCreationTime, data.ftLastWriteTime,
-	                data.nFileSizeHigh, data.nFileSizeLow);
+	fill_attributes(result, data.dwFileAttributes, data.ftCreationTime, data.ftLastWriteTime, data.nFileSizeHigh,
+	                data.nFileSizeLow);
 
 	const auto handle = CreateFileW(w.c_str(), FILE_READ_ATTRIBUTES,
-	                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-	                                OPEN_EXISTING,
-	                                data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY
-		                                ? FILE_FLAG_BACKUP_SEMANTICS
-		                                : FILE_ATTRIBUTE_NORMAL,
+	                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+	                                data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY ? FILE_FLAG_BACKUP_SEMANTICS
+	                                                                                 : FILE_ATTRIBUTE_NORMAL,
 	                                nullptr);
 	if (handle != INVALID_HANDLE_VALUE)
 	{
@@ -840,8 +811,8 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 	const auto search = root + L'*';
 
 	WIN32_FIND_DATAW data = {};
-	const auto handle = FindFirstFileExW(search.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
-	                                     nullptr, FIND_FIRST_EX_LARGE_FETCH);
+	const auto handle = FindFirstFileExW(search.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch, nullptr,
+	                                     FIND_FIRST_EX_LARGE_FETCH);
 	if (handle == INVALID_HANDLE_VALUE)
 	{
 		result.error = GetLastError();
@@ -851,10 +822,8 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 	bool complete = true;
 	do
 	{
-		if (std::wstring_view(data.cFileName) == L"." || std::wstring_view(data.cFileName) == L"..")
-			continue;
-		if (!show_hidden && (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0)
-			continue;
+		if (std::wstring_view(data.cFileName) == L"." || std::wstring_view(data.cFileName) == L"..") continue;
+		if (!show_hidden && (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0) continue;
 
 		file_entry entry;
 		entry.name = narrow(data.cFileName);
@@ -862,8 +831,7 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 		                data.nFileSizeHigh, data.nFileSizeLow);
 		entry.can_recurse = can_recurse(data.dwFileAttributes);
 		result.entries.emplace_back(std::move(entry));
-	}
-	while (FindNextFileW(handle, &data) != 0);
+	} while (FindNextFileW(handle, &data) != 0);
 
 	const auto error = GetLastError();
 	if (error != ERROR_NO_MORE_FILES)
@@ -876,8 +844,7 @@ os::file_enumeration os::enumerate_files(const std::string_view folder, const bo
 	return result;
 }
 
-os::file_ptr os::open_file(const std::string_view path, const file_open_mode mode,
-                           const file_share_mode share)
+os::file_ptr os::open_file(const std::string_view path, const file_open_mode mode, const file_share_mode share)
 {
 	DWORD desired_access = GENERIC_READ;
 	DWORD share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -886,8 +853,7 @@ os::file_ptr os::open_file(const std::string_view path, const file_open_mode mod
 
 	switch (mode)
 	{
-	case file_open_mode::read:
-		break;
+	case file_open_mode::read: break;
 	case file_open_mode::write:
 		desired_access = GENERIC_WRITE;
 		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -906,9 +872,7 @@ os::file_ptr os::open_file(const std::string_view path, const file_open_mode mod
 		desired_access = GENERIC_READ | GENERIC_WRITE;
 		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 		break;
-	case file_open_mode::sequential_scan:
-		flags |= FILE_FLAG_SEQUENTIAL_SCAN;
-		break;
+	case file_open_mode::sequential_scan: flags |= FILE_FLAG_SEQUENTIAL_SCAN; break;
 	}
 	switch (share)
 	{
@@ -936,8 +900,8 @@ uintptr_t os::native_file_handle(const file_ptr& file)
 os::file_operation os::copy_file(const std::string_view source, const std::string_view destination,
                                  const bool fail_if_exists)
 {
-	return operation_result(::CopyFileW(native_path(source).c_str(), native_path(destination).c_str(),
-	                                    fail_if_exists ? TRUE : FALSE));
+	return operation_result(
+		::CopyFileW(native_path(source).c_str(), native_path(destination).c_str(), fail_if_exists ? TRUE : FALSE));
 }
 
 os::file_operation os::move_file(const std::string_view source, const std::string_view destination,
@@ -976,10 +940,8 @@ os::file_operation os::recycle_file(const std::string_view path)
 	operation.pFrom = w.c_str();
 	operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
 	const auto result = SHFileOperationW(&operation);
-	if (result == 0 && operation.fAnyOperationsAborted == FALSE)
-		return {file_operation_code::ok, ERROR_SUCCESS, {}};
-	if (result == 0)
-		return {file_operation_code::cancelled, ERROR_CANCELLED, "The file operation was cancelled."};
+	if (result == 0 && operation.fAnyOperationsAborted == FALSE) return {file_operation_code::ok, ERROR_SUCCESS, {}};
+	if (result == 0) return {file_operation_code::cancelled, ERROR_CANCELLED, "The file operation was cancelled."};
 	return {file_operation_code::failed, static_cast<uint32_t>(result), error_text(static_cast<DWORD>(result))};
 }
 
@@ -991,13 +953,11 @@ bool os::can_recycle(const std::string_view path)
 
 	const auto root = w.size() >= 3 && w[1] == L':' ? w.substr(0, 3) : w;
 	const auto type = GetDriveTypeW(root.c_str());
-	return type != DRIVE_NO_ROOT_DIR && type != DRIVE_UNKNOWN && type != DRIVE_REMOTE &&
-	       type != DRIVE_CDROM;
+	return type != DRIVE_NO_ROOT_DIR && type != DRIVE_UNKNOWN && type != DRIVE_REMOTE && type != DRIVE_CDROM;
 }
 
 os::file_dialog_result os::open_file_dialog(const uintptr_t owner, const std::string_view title,
-                                            const std::vector<file_dialog_filter>& filters,
-                                            const bool allow_multiple)
+                                            const std::vector<file_dialog_filter>& filters, const bool allow_multiple)
 {
 	file_dialog_result result;
 	const auto filter = dialog_filter(filters);
@@ -1013,7 +973,7 @@ os::file_dialog_result os::open_file_dialog(const uintptr_t owner, const std::st
 	dialog.nMaxFile = static_cast<DWORD>(buffer.size());
 	dialog.nFilterIndex = 1;
 	dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
-	              (allow_multiple ? OFN_ALLOWMULTISELECT : 0);
+	               (allow_multiple ? OFN_ALLOWMULTISELECT : 0);
 
 	if (GetOpenFileNameW(&dialog) == 0)
 	{
@@ -1030,14 +990,47 @@ os::file_dialog_result os::open_file_dialog(const uintptr_t owner, const std::st
 		return result;
 	}
 
-	const auto folder = first;
 	while (*next != L'\0')
 	{
-		const std::wstring name(next);
-		result.paths.emplace_back(narrow(folder + L'\\' + name));
+		const std::wstring_view name(next);
+		result.paths.emplace_back(narrow(std::format(L"{}\\{}", first, name)));
 		next += name.size() + 1;
 	}
 	return result;
+}
+
+// The dialog opens on the type the suggested name has, so a name ending .png is not offered under JPEG.
+uint32_t os::file_dialog_filter_index(const std::vector<file_dialog_filter>& filters, const std::string_view path)
+{
+	const auto slash = path.find_last_of("/\\");
+	const auto dot = path.find_last_of('.');
+	if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash)) return 1;
+	const auto extension = path.substr(dot + 1);
+
+	const auto same = [](const std::string_view a, const std::string_view b)
+	{
+		const auto lower = [](const char c)
+		{
+			return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+		};
+		return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [&lower](const char x, const char y)
+		{ return lower(x) == lower(y); });
+	};
+
+	for (size_t i = 0; i < filters.size(); ++i)
+	{
+		std::string_view patterns = filters[i].extensions;
+
+		while (!patterns.empty())
+		{
+			const auto end = patterns.find(';');
+			const auto pattern = patterns.substr(0, end);
+			if (pattern.starts_with("*.") && same(pattern.substr(2), extension)) return static_cast<uint32_t>(i + 1);
+			patterns = end == std::string_view::npos ? std::string_view{} : patterns.substr(end + 1);
+		}
+	}
+
+	return 1;
 }
 
 os::file_dialog_result os::save_file_dialog(const uintptr_t owner, const std::string_view title,
@@ -1048,8 +1041,7 @@ os::file_dialog_result os::save_file_dialog(const uintptr_t owner, const std::st
 	const auto filter = dialog_filter(filters);
 	std::vector<wchar_t> buffer(64 * 1024, L'\0');
 	const auto initial = widen(default_path);
-	if (initial.size() < buffer.size())
-		std::copy(initial.begin(), initial.end(), buffer.begin());
+	if (initial.size() < buffer.size()) std::copy(initial.begin(), initial.end(), buffer.begin());
 
 	const auto title_w = widen(title);
 	const auto extension = dialog_default_extension(default_path);
@@ -1061,7 +1053,7 @@ os::file_dialog_result os::save_file_dialog(const uintptr_t owner, const std::st
 	dialog.lpstrFile = buffer.data();
 	dialog.nMaxFile = static_cast<DWORD>(buffer.size());
 	dialog.lpstrDefExt = extension.empty() ? nullptr : extension.c_str();
-	dialog.nFilterIndex = 1;
+	dialog.nFilterIndex = file_dialog_filter_index(filters, default_path);
 	dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
 
 	if (GetSaveFileNameW(&dialog) == 0)
@@ -1074,12 +1066,12 @@ os::file_dialog_result os::save_file_dialog(const uintptr_t owner, const std::st
 }
 
 os::file_dialog_result os::folder_dialog(const uintptr_t owner, const std::string_view title,
-                                        const std::string_view default_path)
+                                         const std::string_view default_path)
 {
 	file_dialog_result result;
 	IFileOpenDialog* dialog = nullptr;
-	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-	                            IID_PPV_ARGS(&dialog))) || dialog == nullptr)
+	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) ||
+	    dialog == nullptr)
 	{
 		result.error = static_cast<uint32_t>(GetLastError());
 		return result;
@@ -1088,8 +1080,8 @@ os::file_dialog_result os::folder_dialog(const uintptr_t owner, const std::strin
 	DWORD options = 0;
 	const auto title_w = widen(title);
 	if (SUCCEEDED(dialog->GetOptions(&options)) &&
-		SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)) &&
-		(title_w.empty() || SUCCEEDED(dialog->SetTitle(title_w.c_str()))))
+	    SUCCEEDED(dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)) &&
+	    (title_w.empty() || SUCCEEDED(dialog->SetTitle(title_w.c_str()))))
 	{
 		if (!default_path.empty())
 		{
@@ -1194,8 +1186,8 @@ std::string os::url_encode(const std::string_view input)
 
 	for (const auto c : input)
 	{
-		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '~')
 		{
 			result += c;
 		}
@@ -1217,7 +1209,8 @@ static bool web_header_token(const std::string_view text)
 	for (const unsigned char c : text)
 	{
 		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-			std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos)) return false;
+		      std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos))
+			return false;
 	}
 	return true;
 }
@@ -1253,8 +1246,8 @@ static bool web_length(const std::string_view text, uint64_t& value)
 static bool set_web_timeouts(const HINTERNET handle, const uint32_t timeout)
 {
 	DWORD milliseconds = timeout == 0 ? 30000 : timeout;
-	for (const auto option : {INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
-		INTERNET_OPTION_RECEIVE_TIMEOUT})
+	for (const auto option :
+	     {INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT})
 	{
 		if (!InternetSetOptionW(handle, option, &milliseconds, sizeof(milliseconds))) return false;
 	}
@@ -1293,9 +1286,7 @@ class inet_handle
 	HINTERNET _h;
 
 public:
-	explicit inet_handle(const HINTERNET handle = nullptr) : _h(handle)
-	{
-	}
+	explicit inet_handle(const HINTERNET handle = nullptr) : _h(handle) {}
 
 	~inet_handle()
 	{
@@ -1356,7 +1347,10 @@ struct sync_http_handle
 	sync_http_handle() = default;
 	sync_http_handle(const sync_http_handle&) = delete;
 	sync_http_handle& operator=(const sync_http_handle&) = delete;
-	~sync_http_handle() { if (value) WinHttpCloseHandle(value); }
+	~sync_http_handle()
+	{
+		if (value) WinHttpCloseHandle(value);
+	}
 };
 
 // The public call blocks, but async handles permit documented, race-free
@@ -1370,16 +1364,14 @@ class bounded_http_request
 	std::atomic<DWORD> error = ERROR_SUCCESS;
 	std::atomic<DWORD> received = 0;
 
-	static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status,
-		void* info, const DWORD length)
+	static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status, void* info,
+	                              const DWORD length)
 	{
 		const auto self = reinterpret_cast<bounded_http_request*>(context);
 		if (!self) return;
 		switch (status)
 		{
-		case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
-			SetEvent(self->closed);
-			break;
+		case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING: SetEvent(self->closed); break;
 		case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
 			self->error = static_cast<WINHTTP_ASYNC_RESULT*>(info)->dwError;
 			SetEvent(self->completed);
@@ -1389,11 +1381,8 @@ class bounded_http_request
 			SetEvent(self->completed);
 			break;
 		case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
-		case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
-			SetEvent(self->completed);
-			break;
-		default:
-			break;
+		case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE: SetEvent(self->completed); break;
+		default: break;
 		}
 	}
 
@@ -1428,14 +1417,14 @@ public:
 		DWORD_PTR context = reinterpret_cast<DWORD_PTR>(this);
 		if (!WinHttpSetOption(value, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) return false;
 		if (WinHttpSetStatusCallback(value, callback,
-			WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
+		                             WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES,
+		                             0) == WINHTTP_INVALID_STATUS_CALLBACK)
 			return false;
 		has_callback = true;
 		return true;
 	}
 
-	template <typename F>
-	bool invoke(F issue)
+	template <typename F> bool invoke(F issue)
 	{
 		error = ERROR_SUCCESS;
 		received = 0;
@@ -1467,15 +1456,15 @@ public:
 os::web_host_ptr os::connect_to_host(const std::string_view host, const bool secure_in, const int port_in,
                                      const std::string_view user_agent, const bool timeouts)
 {
-	if (host.empty() || host.size() >= INT_MAX || port_in < 0 || port_in > 65535 ||
-		!web_header_value(user_agent)) return nullptr;
+	if (host.empty() || host.size() >= INT_MAX || port_in < 0 || port_in > 65535 || !web_header_value(user_agent))
+		return nullptr;
 	for (const unsigned char c : host)
 	{
 		if (c <= 32 || c == 127 || std::string_view("/\\?#@").find(c) != std::string_view::npos) return nullptr;
 	}
 
-	inet_handle session_handle(InternetOpenW(widen(user_agent).c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr,
-	                                         nullptr, 0));
+	inet_handle session_handle(
+		InternetOpenW(widen(user_agent).c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0));
 
 	if (!session_handle.is_valid())
 	{
@@ -1484,9 +1473,7 @@ os::web_host_ptr os::connect_to_host(const std::string_view host, const bool sec
 
 	if (timeouts && !set_web_timeouts(session_handle, 0)) return nullptr;
 
-	const auto port = port_in == 0
-		                  ? (secure_in ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT)
-		                  : port_in;
+	const auto port = port_in == 0 ? (secure_in ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT) : port_in;
 	inet_handle conn(InternetConnectW(session_handle, widen(host).c_str(), static_cast<INTERNET_PORT>(port), nullptr,
 	                                  nullptr, INTERNET_SERVICE_HTTP, 0, 0));
 
@@ -1519,8 +1506,8 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 	};
 
 	if (!host || (req.verb != web_request_verb::GET && req.verb != web_request_verb::POST) ||
-		req.body.size() > MAXDWORD || req.path.size() >= INT_MAX ||
-		(!req.path.empty() && (req.path.front() != '/' || req.path.starts_with("//"))))
+	    req.body.size() > MAXDWORD || req.path.size() >= INT_MAX ||
+	    (!req.path.empty() && (req.path.front() != '/' || req.path.starts_with("//"))))
 		return fail(web_response_error::invalid_request);
 	for (const unsigned char c : req.path)
 	{
@@ -1532,9 +1519,9 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 
 	for (const auto& h : req.headers)
 	{
-		if (!web_header_token(h.first) || !web_header_value(h.second) ||
-			h.first.size() >= INT_MAX || header_str.size() + h.first.size() + h.second.size() + 4 >= INT_MAX ||
-			iequals(h.first, "Transfer-Encoding") || (!req.use_cookies && iequals(h.first, "Cookie")))
+		if (!web_header_token(h.first) || !web_header_value(h.second) || h.first.size() >= INT_MAX ||
+		    header_str.size() + h.first.size() + h.second.size() + 4 >= INT_MAX ||
+		    iequals(h.first, "Transfer-Encoding") || (!req.use_cookies && iequals(h.first, "Cookie")))
 			return fail(web_response_error::invalid_request);
 		header_str += h.first;
 		header_str += ": ";
@@ -1552,8 +1539,7 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 
 		for (const auto& f : req.form_data)
 		{
-			if (!web_multipart_name(f.first) ||
-				content.size() + f.first.size() + f.second.size() + 256 > MAXDWORD)
+			if (!web_multipart_name(f.first) || content.size() + f.first.size() + f.second.size() + 256 > MAXDWORD)
 				return fail(web_response_error::invalid_request);
 			content += "--";
 			content += boundary;
@@ -1570,11 +1556,10 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 		if (!req.upload_file_path.empty() && !req.file_form_data_name.empty())
 		{
 			if (!web_multipart_name(req.file_form_data_name) || !web_multipart_name(req.file_name) ||
-				content.size() + req.file_form_data_name.size() + req.file_name.size() + 256 > MAXDWORD)
+			    content.size() + req.file_form_data_name.size() + req.file_name.size() + 256 > MAXDWORD)
 				return fail(web_response_error::invalid_request);
-			const auto content_type = has_extension(req.upload_file_path, ".zip")
-				                          ? "application/x-zip-compressed"
-				                          : "application/octet-stream";
+			const auto content_type = has_extension(req.upload_file_path, ".zip") ? "application/x-zip-compressed"
+			                                                                      : "application/octet-stream";
 
 			content += "--";
 			content += boundary;
@@ -1631,17 +1616,16 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 	for (const auto& [key, value] : req.query)
 	{
 		if (path_bound > INT_MAX - 2 || key.size() > (INT_MAX - path_bound - 2) / 3 ||
-			value.size() > (INT_MAX - path_bound - 2) / 3 - key.size())
+		    value.size() > (INT_MAX - path_bound - 2) / 3 - key.size())
 			return fail(web_response_error::invalid_request);
 		path_bound += 3 * (key.size() + value.size()) + 2;
 	}
 	const auto path = format_path(req);
-	if (path.size() >= INT_MAX || header_str.size() >= INT_MAX)
-		return fail(web_response_error::invalid_request);
+	if (path.size() >= INT_MAX || header_str.size() >= INT_MAX) return fail(web_response_error::invalid_request);
 	const auto wverb = req.verb == web_request_verb::GET ? L"GET" : L"POST";
 	const auto wpath = widen(path.empty() ? "/" : path);
 	auto flags = INTERNET_FLAG_KEEP_CONNECTION | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTH |
-		INTERNET_FLAG_RELOAD;
+	             INTERNET_FLAG_RELOAD;
 	if (host->secure) flags |= INTERNET_FLAG_SECURE;
 	if (!req.follow_redirects) flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
 	if (!req.use_cookies) flags |= INTERNET_FLAG_NO_COOKIES;
@@ -1662,32 +1646,34 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 			DWORD status = 0;
 			DWORD size = sizeof(status);
 			if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-				WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))
+			                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))
 				result.status_code = static_cast<int>(status);
 		}
-		return fail(bounded && native_error == ERROR_WINHTTP_HEADER_SIZE_OVERFLOW
-			? web_response_error::response_limit : web_response_error::transport);
+		return fail(bounded && native_error == ERROR_WINHTTP_HEADER_SIZE_OVERFLOW ? web_response_error::response_limit
+		                                                                          : web_response_error::transport);
 	};
 	if (bounded)
 	{
 		bounded_session.value = WinHttpOpen(widen(host->user_agent).c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+		                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
 		if (!bounded_session.value) return transport_failure();
 		const auto timeout = static_cast<int>(std::min<uint32_t>(req.timeout_ms ? req.timeout_ms : 30000, INT_MAX));
-		if (!WinHttpSetTimeouts(bounded_session.value, timeout, timeout, timeout, timeout))
-			return transport_failure();
-		const auto port = host->port ? host->port : (host->secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
+		if (!WinHttpSetTimeouts(bounded_session.value, timeout, timeout, timeout, timeout)) return transport_failure();
+		const auto port = host->port ? host->port
+		                             : (host->secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
 		bounded_connection.value = WinHttpConnect(bounded_session.value, widen(host->name).c_str(),
-			static_cast<INTERNET_PORT>(port), 0);
+		                                          static_cast<INTERNET_PORT>(port), 0);
 		if (!bounded_connection.value) return transport_failure();
 		bounded_request.value = WinHttpOpenRequest(bounded_connection.value, wverb, wpath.c_str(), nullptr,
-			WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, host->secure ? WINHTTP_FLAG_SECURE : 0);
+		                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+		                                           host->secure ? WINHTTP_FLAG_SECURE : 0);
 		if (!bounded_request.value) return transport_failure();
 		if (!bounded_request.initialize(req.timeout_ms)) return transport_failure();
 		DWORD receive_timeout = static_cast<DWORD>(timeout);
 		if (!WinHttpSetTimeouts(bounded_request.value, timeout, timeout, timeout, timeout) ||
-			!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
-				&receive_timeout, sizeof(receive_timeout))) return transport_failure();
+		    !WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT, &receive_timeout,
+		                      sizeof(receive_timeout)))
+			return transport_failure();
 		DWORD disabled = WINHTTP_DISABLE_AUTHENTICATION;
 		if (!req.follow_redirects) disabled |= WINHTTP_DISABLE_REDIRECTS;
 		if (!req.use_cookies) disabled |= WINHTTP_DISABLE_COOKIES;
@@ -1696,20 +1682,25 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 		if (req.max_header_bytes)
 		{
 			DWORD maximum = static_cast<DWORD>(std::min<size_t>(req.max_header_bytes, MAXDWORD));
-			if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
-				&maximum, sizeof(maximum))) return transport_failure();
+			if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE, &maximum,
+			                      sizeof(maximum)))
+				return transport_failure();
 		}
-		if (!bounded_request.invoke([&] {
+		if (!bounded_request.invoke(
+				[&]
+		{
 			return WinHttpSendRequest(bounded_request.value, headerW.c_str(), static_cast<DWORD>(headerW.size()),
-				content.empty() ? nullptr : content.data(), static_cast<DWORD>(content.size()),
-				static_cast<DWORD>(content.size()), reinterpret_cast<DWORD_PTR>(&bounded_request));
-		}) || !bounded_request.invoke([&] { return WinHttpReceiveResponse(bounded_request.value, nullptr); }))
+			                          content.empty() ? nullptr : content.data(), static_cast<DWORD>(content.size()),
+			                          static_cast<DWORD>(content.size()),
+			                          reinterpret_cast<DWORD_PTR>(&bounded_request));
+		}) ||
+		    !bounded_request.invoke([&] { return WinHttpReceiveResponse(bounded_request.value, nullptr); }))
 			return transport_failure();
 	}
 	else
 	{
-		request_handle.reset(HttpOpenRequestW(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr,
-		                                      nullptr, flags, 0));
+		request_handle.reset(
+			HttpOpenRequestW(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr, nullptr, flags, 0));
 		if (!request_handle.is_valid()) return transport_failure();
 		if (host->timeouts && !set_web_timeouts(request_handle, 0)) return transport_failure();
 
@@ -1738,7 +1729,9 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 				const auto to_write = std::min(chunk_size, remaining);
 				DWORD written = 0;
 				if (!InternetWriteFile(request_handle, content.data() + total_written, static_cast<DWORD>(to_write),
-					&written) || written == 0) return fail(web_response_error::transport);
+				                       &written) ||
+				    written == 0)
+					return fail(web_response_error::transport);
 				total_written += written;
 			}
 			if (!HttpEndRequestW(request_handle, nullptr, 0, 0)) return fail(web_response_error::transport);
@@ -1747,25 +1740,25 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 
 	DWORD status = 0;
 	DWORD size = sizeof(status);
-	if (bounded ? !WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-		WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)
-		: !HttpQueryInfoW(request_handle, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-		&status, &size, nullptr)) return transport_failure();
+	if (bounded
+	        ? !WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+	                               WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)
+	        : !HttpQueryInfoW(request_handle, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &size, nullptr))
+		return transport_failure();
 	result.status_code = static_cast<int>(status);
 
 	size = 0;
 	if (bounded)
 	{
-		if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
-			WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &size, WINHTTP_NO_HEADER_INDEX) ||
-			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size < sizeof(wchar_t))
+		if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+		                        nullptr, &size, WINHTTP_NO_HEADER_INDEX) ||
+		    GetLastError() != ERROR_INSUFFICIENT_BUFFER || size < sizeof(wchar_t))
 			return transport_failure();
 		const auto chars = size / sizeof(wchar_t);
-		if (req.max_header_bytes && chars - 1 > req.max_header_bytes)
-			return fail(web_response_error::response_limit);
+		if (req.max_header_bytes && chars - 1 > req.max_header_bytes) return fail(web_response_error::response_limit);
 		std::wstring headers(chars, L'\0');
-		if (!WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
-			WINHTTP_HEADER_NAME_BY_INDEX, headers.data(), &size, WINHTTP_NO_HEADER_INDEX))
+		if (!WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+		                         headers.data(), &size, WINHTTP_NO_HEADER_INDEX))
 			return transport_failure();
 		headers.resize(size / sizeof(wchar_t));
 		// HTTP header octets are widened one-to-one by WinHTTP, not UTF-8 text.
@@ -1775,7 +1768,7 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 	else
 	{
 		if (HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, nullptr, &size, nullptr) ||
-			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0)
+		    GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0)
 			return fail(web_response_error::transport);
 		result.headers.resize(size);
 		if (!HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, result.headers.data(), &size, nullptr))
@@ -1809,10 +1802,8 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 					return fail(web_response_error::transport);
 				content_length = length;
 			}
-			else if (iequals(name, "Content-Type"))
-				result.content_type = value;
-			else if (iequals(name, "Transfer-Encoding"))
-				transfer_encoded = true;
+			else if (iequals(name, "Content-Type")) result.content_type = value;
+			else if (iequals(name, "Transfer-Encoding")) transfer_encoded = true;
 		}
 		if (end == std::string_view::npos) break;
 		remaining_headers.remove_prefix(end + 2);
@@ -1836,7 +1827,7 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 		uint8_t buffer[8192];
 		DWORD read = 0;
 		if (bounded ? !bounded_request.read(buffer, sizeof(buffer), read)
-			: !InternetReadFile(request_handle, buffer, sizeof(buffer), &read))
+		            : !InternetReadFile(request_handle, buffer, sizeof(buffer), &read))
 			return transport_failure();
 		if (read == 0) break;
 		if (req.max_response_bytes && (total > req.max_response_bytes || read > req.max_response_bytes - total))
@@ -1848,8 +1839,7 @@ os::web_response os::send_request(const web_host_ptr& host, const web_request& r
 			if (!WriteFile(download->get(), buffer, read, &written, nullptr) || written != read)
 				return fail(web_response_error::transport);
 		}
-		else
-			result.body.append(reinterpret_cast<const char*>(buffer), read);
+		else result.body.append(reinterpret_cast<const char*>(buffer), read);
 	}
 	if (!no_body && content_length && total != *content_length) return fail(web_response_error::transport);
 	return result;

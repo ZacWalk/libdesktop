@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Opaque UI enums, forward declarations, and shared UI pointer aliases.
 
@@ -32,7 +31,6 @@ namespace ui
 	class date_time_control;
 	class frame_host;
 	class frame;
-	class measure_context;
 
 	using app_ptr = std::shared_ptr<app>;
 	using weak_app_ptr = std::weak_ptr<app>;

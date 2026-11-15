@@ -1,16 +1,14 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: File path handling. Defines file_path and folder_path classes for
 // type-safe path manipulation, comparison, and iteration.
 
 #pragma once
-
 
 namespace core
 {
@@ -25,7 +23,6 @@ namespace core
 		file_paths files;
 		folder_paths folders;
 	};
-
 
 	// How a path is spelled is a property of the filesystem, and this module owns path spelling, so
 	// the conditional lives here rather than behind a platform function: it has to be a constant
@@ -57,7 +54,7 @@ namespace core
 		if (l.id == r.id) return 0;
 		const auto folded = core::icmp(l, r);
 		if constexpr (case_insensitive_path_identity) return folded;
-		return folded != 0 ? folded : core::cmp(l, r);
+		else return folded != 0 ? folded : core::cmp(l, r);
 	}
 
 	// The hash that goes with it. Case-folded identity reads the hash stored at intern time;
@@ -66,7 +63,7 @@ namespace core
 	inline size_t path_text_hash(const core::cached s)
 	{
 		if constexpr (case_insensitive_path_identity) return s.ihash();
-		return s.id * 2654435761u;
+		else return s.id * 2654435761u;
 	}
 
 	// The same rule for a path that is not interned: a key the rename planner builds, or a name read
@@ -76,7 +73,7 @@ namespace core
 	{
 		const auto folded = core::icmp(l, r);
 		if constexpr (case_insensitive_path_identity) return folded;
-		return folded != 0 ? folded : core::cmp(l, r);
+		else return folded != 0 ? folded : core::cmp(l, r);
 	}
 
 	inline size_t path_prefix_length(const std::string_view path, const std::string_view prefix)
@@ -124,9 +121,7 @@ namespace core
 
 		// A root keeps its separator - "C:\" and "/" normalise with one - so the boundary to test is
 		// the text without it. Testing the raw length instead makes every drive root contain nothing.
-		const auto boundary = parent_text.empty()
-			                      ? size_t{0}
-			                      : consumed - (is_path_sep(parent_text.back()) ? 1 : 0);
+		const auto boundary = parent_text.empty() ? size_t{0} : consumed - (is_path_sep(parent_text.back()) ? 1 : 0);
 		return child_text.size() == boundary || is_path_sep(child_text[boundary]);
 	}
 
@@ -164,7 +159,12 @@ namespace core
 		else
 		{
 			if (r.size() < 3) return false;
-			return is_path(r.data());
+			if (r[1] == ':' && is_path_sep(r[2]))
+			{
+				const auto first_char = core::to_lower(r[0]);
+				return first_char >= 'a' && first_char <= 'z';
+			}
+			return is_path_sep(r[0]) && is_path_sep(r[1]); // unc path
 		}
 	}
 
@@ -181,7 +181,8 @@ namespace core
 			// A drive root such as "C:\" is also a single path segment, but it is never a server name.
 			// Treating one as a server sends drive enumeration failures down the NetShareEnum path.
 			if (path.size() >= 2 && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')) &&
-			    path[1] == ':') return false;
+			    path[1] == ':')
+				return false;
 			size_t first = 0;
 			while (first < path.size() && is_path_sep(path[first])) ++first;
 			auto last = path.size();
@@ -268,9 +269,9 @@ namespace core
 			{
 				if (s.size() > 2)
 				{
-					if (s[1] == 0 || s[2] == 0) return false; // Too short
+					if (s[1] == 0 || s[2] == 0) return false;                // Too short
 					if (is_path_sep(s[0]) && is_path_sep(s[1])) return true; // network
-					if (s[1] == ':' && is_path_sep(s[2])) return true; // drive
+					if (s[1] == ':' && is_path_sep(s[2])) return true;       // drive
 				}
 
 				return false;
@@ -284,10 +285,7 @@ namespace core
 			return s[0] == L':' && s[1] == L':' && s[2] == L'{';
 		}
 
-		static bool is_device_path(const std::string_view s)
-		{
-			return core::starts(s, "\\Device\\");
-		}
+		static bool is_device_path(const std::string_view s) { return core::starts(s, "\\Device\\"); }
 
 		folder_path() noexcept = default;
 		folder_path(const folder_path&) noexcept = default;
@@ -295,57 +293,38 @@ namespace core
 		folder_path(folder_path&&) noexcept = default;
 		folder_path& operator=(folder_path&&) noexcept = default;
 
-		folder_path(const std::string_view sr) noexcept
+		// Not noexcept: interning the text can throw std::bad_alloc when the string pool is full.
+		folder_path(const std::string_view sr)
 		{
 			_s = cached_normalized_folder(sr);
 			assert_true(is_valid());
 		}
 
-		const core::cached text() const
-		{
-			return _s;
-		}
+		const core::cached text() const { return _s; }
 
-		void clear()
-		{
-			_s.clear();
-		}
+		void clear() { _s.clear(); }
 
-		bool is_empty() const
-		{
-			return _s.is_empty();
-		}
+		bool is_empty() const { return _s.is_empty(); }
 
-		size_t size() const
-		{
-			return _s.size();
-		}
+		size_t size() const { return _s.size(); }
 
 		bool is_valid() const
 		{
-			if (is_empty())
-				return true;
+			if (is_empty()) return true;
 
 			if (_s.is_empty())
 			{
 				return false;
 			}
 
-			return is_computer(_s) ||
-				is_guid_path(_s) ||
-				is_device_path(_s) ||
-				is_path(_s) ||
-				core::is_server(_s);
+			return is_computer(_s) || is_guid_path(_s) || is_device_path(_s) || is_path(_s) || core::is_server(_s);
 		}
-
 
 		bool is_save_valid() const
 		{
-			if (is_empty())
-				return false;
+			if (is_empty()) return false;
 
-			if (!is_valid())
-				return false;
+			if (!is_valid()) return false;
 
 			const auto last_slash = find_last_slash();
 			const auto name = is_root() ? _s : _s.substr(last_slash + 1);
@@ -378,11 +357,7 @@ namespace core
 			return folder_path(_s.substr(0, found_last_slash));
 		}
 
-		bool is_root() const
-		{
-			return is_root(_s);
-		}
-
+		bool is_root() const { return is_root(_s); }
 
 		static bool is_drive(const std::string_view s)
 		{
@@ -407,25 +382,13 @@ namespace core
 			}
 		}
 
-		bool is_drive() const
-		{
-			return is_drive(_s);
-		}
+		bool is_drive() const { return is_drive(_s); }
 
-		bool is_qualified() const
-		{
-			return is_qualified(_s);
-		}
+		bool is_qualified() const { return is_qualified(_s); }
 
-		static bool is_computer(const std::string_view path)
-		{
-			return core::icmp(path, "Computer") == 0;
-		}
+		static bool is_computer(const std::string_view path) { return core::icmp(path, "Computer") == 0; }
 
-		bool is_computer() const
-		{
-			return is_computer(_s);
-		}
+		bool is_computer() const { return is_computer(_s); }
 
 		folder_path combine(const std::string_view part) const
 		{
@@ -443,15 +406,9 @@ namespace core
 		file_path combine_file(core::cached part) const;
 		file_path combine_file_ext(std::string_view part, std::string_view ext) const;
 
-		int compare(const folder_path other) const
-		{
-			return compare_path_text(_s, other._s);
-		}
+		int compare(const folder_path other) const { return compare_path_text(_s, other._s); }
 
-		std::string_view::size_type find_last_slash() const
-		{
-			return core::find_last_slash(_s);
-		}
+		std::string_view::size_type find_last_slash() const { return core::find_last_slash(_s); }
 
 		core::cached name() const
 		{
@@ -459,25 +416,14 @@ namespace core
 			return is_root() ? _s : core::cache(_s.substr(last_slash + 1));
 		}
 
+		bool operator==(const folder_path other) const { return compare(other) == 0; }
 
-		bool operator==(const folder_path other) const
-		{
-			return compare(other) == 0;
-		}
+		bool operator!=(const folder_path other) const { return compare(other) != 0; }
 
-		bool operator!=(const folder_path other) const
-		{
-			return compare(other) != 0;
-		}
-
-		bool operator<(const folder_path other) const
-		{
-			return compare(other) < 0;
-		}
+		bool operator<(const folder_path other) const { return compare(other) < 0; }
 
 		friend class file_path;
 	};
-
 
 	class file_path
 	{
@@ -485,7 +431,8 @@ namespace core
 		core::cached _name;
 
 	public:
-		file_path(const std::string_view sv) noexcept
+		// Not noexcept: interning the text can throw std::bad_alloc when the string pool is full.
+		file_path(const std::string_view sv)
 		{
 			un_pack(sv);
 			assert_true(is_valid());
@@ -497,8 +444,8 @@ namespace core
 		file_path(file_path&&) noexcept = default;
 		file_path& operator=(file_path&&) noexcept = default;
 
-		file_path(const folder_path folder, const std::string_view name_in,
-		          const std::string_view ext_in) : _folder(folder)
+		file_path(const folder_path folder, const std::string_view name_in, const std::string_view ext_in) :
+			_folder(folder)
 		{
 			auto name = std::string(name_in);
 			const auto ext_has_dot = !ext_in.empty() && ext_in.front() == '.';
@@ -510,10 +457,7 @@ namespace core
 			assert_true(is_valid());
 		}
 
-		explicit file_path(const folder_path folder) : _folder(folder)
-		{
-			assert_true(is_valid());
-		}
+		explicit file_path(const folder_path folder) : _folder(folder) { assert_true(is_valid()); }
 
 		file_path(const folder_path folder, const std::string_view name) : _folder(folder), _name(core::cache(name))
 		{
@@ -533,7 +477,7 @@ namespace core
 			_name.clear();
 
 			if (last_slash != std::string_view::npos && last_slash + 1 < path.size() &&
-				(last_slash > 0 || !windows_path_semantics))
+			    (last_slash > 0 || !windows_path_semantics))
 			{
 				_name = core::cache(path.substr(last_slash + 1));
 				_folder = folder_path(path.substr(0, last_slash == 0 ? 1 : last_slash));
@@ -559,10 +503,7 @@ namespace core
 			_name.clear();
 		}
 
-		bool is_empty() const
-		{
-			return _folder.is_empty() && core::is_empty(_name);
-		}
+		bool is_empty() const { return _folder.is_empty() && core::is_empty(_name); }
 
 		int icmp(const file_path other) const
 		{
@@ -571,31 +512,15 @@ namespace core
 			return compare_path_text(_name, other._name);
 		}
 
-		bool operator==(const file_path other) const
-		{
-			return icmp(other) == 0;
-		}
+		bool operator==(const file_path other) const { return icmp(other) == 0; }
 
-		bool operator!=(const file_path other) const
-		{
-			return icmp(other) != 0;
-		}
+		bool operator!=(const file_path other) const { return icmp(other) != 0; }
 
+		static bool is_original(const std::string_view name) { return core::contains(name, ".original."); }
 
-		static bool is_original(const std::string_view name)
-		{
-			return core::contains(name, ".original.");
-		}
+		bool is_original() const { return is_original(_name); }
 
-		bool is_original() const
-		{
-			return is_original(_name);
-		}
-
-		static bool is_link(const std::string_view path)
-		{
-			return core::ends(path, ".lnk");
-		}
+		static bool is_link(const std::string_view path) { return core::ends(path, ".lnk"); }
 
 		std::string_view file_name_without_extension() const
 		{
@@ -614,25 +539,15 @@ namespace core
 			return sv.substr(find_ext(sv));
 		}
 
-		const core::cached name() const
-		{
-			return _name;
-		}
+		const core::cached name() const { return _name; }
 
-		const folder_path folder() const
-		{
-			return _folder;
-		}
+		const folder_path folder() const { return _folder; }
 
-		void folder(const folder_path f)
-		{
-			_folder = f;
-		};
+		void folder(const folder_path f) { _folder = f; };
 
 		bool is_valid() const
 		{
-			if (is_empty())
-				return true;
+			if (is_empty()) return true;
 
 			if (!_folder.is_empty() && _name.is_empty())
 			{
@@ -649,24 +564,16 @@ namespace core
 
 		bool is_save_valid() const
 		{
-			if (is_empty())
-				return false;
+			if (is_empty()) return false;
 
-			if (!is_valid())
-				return false;
+			if (!is_valid()) return false;
 
 			return !is_illegal_name(_name);
 		}
 
-		std::string str() const
-		{
-			return pack();
-		}
+		std::string str() const { return pack(); }
 
-		bool operator<(const file_path other) const
-		{
-			return icmp(other) < 0;
-		}
+		bool operator<(const file_path other) const { return icmp(other) < 0; }
 	};
 
 	inline file_path folder_path::combine_file(const std::string_view part) const
@@ -694,8 +601,7 @@ namespace core
 
 }
 
-template <>
-struct std::formatter<core::folder_path, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::folder_path, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::folder_path& p, std::format_context& ctx) const
 	{
@@ -703,8 +609,7 @@ struct std::formatter<core::folder_path, char> : std::formatter<std::string_view
 	}
 };
 
-template <>
-struct std::formatter<core::file_path, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::file_path, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::file_path& p, std::format_context& ctx) const
 	{

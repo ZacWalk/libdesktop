@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The HTTP client as platform:: offers it: the os:: client, with the application's name
 // as its user agent and the system's own timeouts, where a transfer that fails or is cut short is no
@@ -43,8 +42,7 @@ platform::web_response platform::send_request(const web_host_ptr& host, const we
 {
 	web_response result;
 
-	if (!host)
-		return result;
+	if (!host) return result;
 
 	os::web_request native;
 	// WinINet sends an object name that lacks its leading '/' as though it had one - download_and_verify

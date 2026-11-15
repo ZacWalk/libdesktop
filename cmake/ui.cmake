@@ -12,6 +12,7 @@ set(libdesktop_ui_headers
     include/libdesktop/ui/syntax.h
     include/libdesktop/ui/text_types.h
     include/libdesktop/ui/menu_bar.h
+    include/libdesktop/ui/shell.h
     include/libdesktop/ui/test_support.h
     include/libdesktop/ui/views.h
     include/libdesktop/ui/text/text_line.h
@@ -48,6 +49,7 @@ add_library(libdesktop-ui STATIC
     src/ui/ui.cpp
     src/ui/syntax.cpp
     src/ui/menu_bar.cpp
+    src/ui/shell.cpp
     src/ui/text/text_buffer.cpp
     src/ui/text/spell.cpp
     src/ui/text/table_layout.cpp
@@ -71,7 +73,7 @@ target_include_directories(libdesktop-ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc
 target_precompile_headers(libdesktop-ui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/libdesktop/ui.h")
 
 if(MSVC)
-    target_compile_options(libdesktop-ui PRIVATE /bigobj /W3 /sdl)
+    target_compile_options(libdesktop-ui PRIVATE /bigobj /W4 /sdl)
     libdesktop_enable_msvc_exceptions(libdesktop-ui)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(libdesktop-ui PRIVATE -Wall -Wno-unknown-pragmas -Wno-multichar)

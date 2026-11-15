@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Table cell parsing, alignment classification, and width capping.
 
@@ -22,6 +21,176 @@
 
 namespace ui::table_layout
 {
+	void columns::layout(const std::span<const int> natural, const int available, const int minimum, const double scale,
+	                     const bool fill, const std::span<const uint8_t> fixed)
+	{
+		_natural.assign(natural.begin(), natural.end());
+		if (!natural.empty()) _user.resize(natural.size(), 0.0);
+		_fixed.assign(natural.size(), 0);
+		std::copy_n(fixed.begin(), std::min(fixed.size(), _fixed.size()), _fixed.begin());
+		_available = std::max(0, available);
+		_minimum = std::max(1, minimum);
+		_scale = scale > 0.0 ? scale : 1.0;
+		_fill = fill;
+		arrange();
+	}
+
+	bool columns::user_sized(const int column) const
+	{
+		return column >= 0 && column < static_cast<int>(_user.size()) && _user[column] > 0.0;
+	}
+
+	void columns::arrange()
+	{
+		_widths.resize(_natural.size());
+		int64_t total = 0;
+		int64_t fixed = 0;
+		for (size_t i = 0; i < _widths.size(); ++i)
+		{
+			_widths[i] = std::max(0, user_sized(static_cast<int>(i)) ? core::round(_user[i] * _scale) : _natural[i]);
+			total += _widths[i];
+			if (_fixed[i] || user_sized(static_cast<int>(i))) fixed += _widths[i];
+		}
+		if (total > _available)
+		{
+			const auto all = fixed >= _available;
+			const auto budget = all ? _available : _available - static_cast<int>(fixed);
+			const auto denominator = all ? total : total - fixed;
+			int64_t consumed = 0;
+			auto assigned = 0;
+			for (size_t i = 0; i < _widths.size(); ++i)
+			{
+				if (!all && (_fixed[i] || user_sized(static_cast<int>(i)))) continue;
+				consumed += _widths[i];
+				const auto end = denominator > 0 ? static_cast<int>(consumed * budget / denominator) : 0;
+				_widths[i] = end - assigned;
+				assigned = end;
+			}
+		}
+		if (_fill && !_widths.empty())
+		{
+			const auto others = std::accumulate(_widths.begin(), _widths.end() - 1, 0);
+			_widths.back() = std::max(0, _available - others);
+		}
+	}
+
+	int columns::maximum(const int column) const
+	{
+		if (column < 0 || column >= static_cast<int>(_widths.size()) - 1) return 0;
+		const auto last = static_cast<int>(_widths.size()) - 1;
+		auto taken = 0;
+		for (int i = 0; i < static_cast<int>(_widths.size()); ++i)
+		{
+			if (i == column) continue;
+			if (i < column || user_sized(i)) taken += _widths[i];
+			// A filled last column is the one that makes the room: it gives back what filling gave it, down
+			// to what it holds when it may not shrink, as any column after the divider gives back its slack.
+			else if (_fixed[i]) taken += i == last && _fill ? std::min(_widths[i], _natural[i]) : _widths[i];
+			else taken += std::min(_widths[i], _minimum);
+		}
+		return std::max(0, _available - taken);
+	}
+
+	bool columns::resize(const int column, const int width)
+	{
+		if (column < 0 || column >= static_cast<int>(_widths.size()) - 1) return false;
+		const auto before = _user;
+		for (int i = 0; i < column; ++i)
+			if (!user_sized(i)) _user[i] = _widths[i] / _scale;
+		const auto max = maximum(column);
+		_user[column] = std::clamp(width, std::min(_minimum, max), max) / _scale;
+		arrange();
+		return before != _user;
+	}
+
+	bool columns::fit(const int column)
+	{
+		return column >= 0 && column < static_cast<int>(_natural.size()) && resize(column, _natural[column]);
+	}
+
+	void columns::restore(sizes before)
+	{
+		if (!_natural.empty()) before.resize(_natural.size(), 0.0);
+		_user = std::move(before);
+		arrange();
+	}
+
+	void columns::reset()
+	{
+		_user.assign(_natural.size(), 0.0);
+		arrange();
+	}
+
+	core::recti columns::divider_bounds(const int column, const core::recti band, const int gap, const int grip) const
+	{
+		if (column < 0 || column >= static_cast<int>(_widths.size()) - 1 || band.is_empty()) return {};
+		const auto x = band.left + std::accumulate(_widths.begin(), _widths.begin() + column + 1, 0) + column * gap +
+		               gap / 2;
+		return core::recti(x - std::max(1, grip), band.top, x + std::max(1, grip), band.bottom).intersection(band);
+	}
+
+	int columns::divider_at(const core::pointi point, const core::recti band, const int gap, const int grip) const
+	{
+		for (int i = 0; i < static_cast<int>(_widths.size()) - 1; ++i)
+			if (divider_bounds(i, band, gap, grip).contains(point)) return i;
+		return -1;
+	}
+
+	bool resize_gesture::begin(const columns& layout, const int column, const int x)
+	{
+		if (active() || column < 0 || column >= static_cast<int>(layout.widths().size()) - 1) return false;
+		_column = column;
+		_start_x = x;
+		_start_width = layout.widths()[column];
+		_before = layout.user_sizes();
+		return true;
+	}
+
+	bool resize_gesture::update(columns& layout, const int x)
+	{
+		if (!active() || (x == _start_x && layout.user_sizes() == _before)) return false;
+		return layout.resize(_column, _start_width + x - _start_x);
+	}
+
+	bool resize_gesture::cancel(columns& layout)
+	{
+		if (!active()) return false;
+		layout.restore(std::move(_before));
+		finish();
+		return true;
+	}
+
+	void size_table(table_block& table, const int available_columns)
+	{
+		for (auto& width : table.col_widths) width = std::max(1, width);
+		cap_col_widths(table.col_widths, available_columns);
+		const auto count = static_cast<int>(table.col_widths.size());
+		table.sizing.layout(table.col_widths, std::max(count, available_columns - 1 - count * 3));
+		table.col_widths = table.sizing.widths();
+	}
+
+	core::recti table_header_band(const table_block& table, const int left, const int top, const int char_width,
+	                              const int height)
+	{
+		const auto width = 1 + std::accumulate(table.col_widths.begin(), table.col_widths.end(), 0) +
+		                   static_cast<int>(table.col_widths.size()) * 3;
+		return {left, top, left + width * char_width, top + height};
+	}
+
+	int table_divider_at(const table_block& table, const core::pointi point, const core::recti header,
+	                     const int char_width)
+	{
+		if (char_width <= 0 || !header.contains(point)) return -1;
+		auto x = header.left + char_width;
+		for (int i = 0; i < static_cast<int>(table.col_widths.size()) - 1; ++i)
+		{
+			x += (table.col_widths[i] + 2) * char_width;
+			if (std::abs(point.x - x) <= std::max(2, char_width / 2)) return i;
+			x += char_width;
+		}
+		return -1;
+	}
+
 	std::string_view trim_cell(const std::string_view s)
 	{
 		const auto start = s.find_first_not_of(' ');
@@ -30,8 +199,7 @@ namespace ui::table_layout
 		return s.substr(start, end - start + 1);
 	}
 
-	std::vector<std::string_view>& split_pipe_cells(std::vector<std::string_view>& cells,
-	                                                       const std::string_view line)
+	std::vector<std::string_view>& split_pipe_cells(std::vector<std::string_view>& cells, const std::string_view line)
 	{
 		cells.clear();
 		const auto len = static_cast<int>(line.size());
@@ -57,8 +225,8 @@ namespace ui::table_layout
 		return cells;
 	}
 
-	std::vector<std::string_view>& split_csv_cells(std::vector<std::string_view>& cells,
-	                                                      const std::string_view line, std::string* const storage)
+	std::vector<std::string_view>& split_csv_cells(std::vector<std::string_view>& cells, const std::string_view line,
+	                                               std::string* const storage)
 	{
 		cells.clear();
 		const auto len = static_cast<int>(line.size());
@@ -131,8 +299,7 @@ namespace ui::table_layout
 			}
 		}
 
-		if (after_delimiter)
-			cells.push_back(line.substr(line.size()));
+		if (after_delimiter) cells.push_back(line.substr(line.size()));
 
 		return cells;
 	}
@@ -150,12 +317,11 @@ namespace ui::table_layout
 
 		// optional currency symbol
 		if (pos < len && trimmed[pos] == '$') pos++;
-		else if (pos + 2 < len && static_cast<uint8_t>(trimmed[pos]) == 0xE2
-			&& static_cast<uint8_t>(trimmed[pos + 1]) == 0x82
-			&& static_cast<uint8_t>(trimmed[pos + 2]) == 0xAC)
+		else if (pos + 2 < len && static_cast<uint8_t>(trimmed[pos]) == 0xE2 &&
+		         static_cast<uint8_t>(trimmed[pos + 1]) == 0x82 && static_cast<uint8_t>(trimmed[pos + 2]) == 0xAC)
 			pos += 3; // EUR
-		else if (pos + 1 < len && static_cast<uint8_t>(trimmed[pos]) == 0xC2
-			&& static_cast<uint8_t>(trimmed[pos + 1]) == 0xA3)
+		else if (pos + 1 < len && static_cast<uint8_t>(trimmed[pos]) == 0xC2 &&
+		         static_cast<uint8_t>(trimmed[pos + 1]) == 0xA3)
 			pos += 2; // GBP
 
 		bool has_digit = false;

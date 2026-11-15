@@ -99,7 +99,6 @@ static void should_skip_alpha_animation_when_disabled()
 // the tone curve, the YUV round trip or the rounding shows up here as a picture the app quietly
 // altered. Truncating instead of rounding in adjust_color moves every channel a level and fails this.
 
-
 void register_ui_render_tests(test_registry& tests)
 {
 	tests.add("Should animate alpha between values"s, should_animate_alpha_between_values);

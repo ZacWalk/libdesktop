@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The platform identity platform::environment() reports, packed for the daily ping.
 // Encoder, decoder, field meanings, and layout live together so a round-trip test can cover every
@@ -110,10 +109,13 @@ namespace platform
 
 		// Everything above the last field. The reader masks it, or the first build that uses bit 27
 		// splits every existing row in two.
-		inline constexpr uint64_t reserved = ~(version.mask() | family.mask() | release.mask() |
-			process.mask() | machine.mask() | package.mask());
+		inline constexpr uint64_t reserved = ~(version.mask() | family.mask() | release.mask() | process.mask() |
+		                                       machine.mask() | package.mask());
 
-		constexpr bool fits(const field f, const uint64_t value) { return value < (1ull << f.width); }
+		constexpr bool fits(const field f, const uint64_t value)
+		{
+			return value < (1ull << f.width);
+		}
 
 		// pack truncates, so a value that outgrew its field would be reported as unknown with nothing
 		// to show for it. These fail the build instead, at the point the enum gains the value.
@@ -128,11 +130,11 @@ namespace platform
 	inline uint64_t pack_environment(const environment_facts& facts)
 	{
 		return environment_layout::version.pack(environment_layout_version) |
-			environment_layout::family.pack(static_cast<uint64_t>(facts.family)) |
-			environment_layout::release.pack(static_cast<uint64_t>(facts.release)) |
-			environment_layout::process.pack(static_cast<uint64_t>(facts.process)) |
-			environment_layout::machine.pack(static_cast<uint64_t>(facts.machine)) |
-			environment_layout::package.pack(static_cast<uint64_t>(facts.package));
+		       environment_layout::family.pack(static_cast<uint64_t>(facts.family)) |
+		       environment_layout::release.pack(static_cast<uint64_t>(facts.release)) |
+		       environment_layout::process.pack(static_cast<uint64_t>(facts.process)) |
+		       environment_layout::machine.pack(static_cast<uint64_t>(facts.machine)) |
+		       environment_layout::package.pack(static_cast<uint64_t>(facts.package));
 	}
 
 	// Answers nothing for a layout it does not recognise, and nothing for a value carrying reserved

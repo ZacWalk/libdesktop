@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows Imaging Component integration. Provides fallback image decoding
 // for formats not handled by specialized decoders, and rasterises icon glyphs and styled
@@ -29,14 +28,12 @@ namespace
 		std::atomic<ULONG> _ref = 1;
 
 	public:
-		icon_glyph_renderer(IDWriteFactory* factory, core::surface* surface) : _factory(factory), _surface(surface)
-		{
-		}
+		icon_glyph_renderer(IDWriteFactory* factory, core::surface* surface) : _factory(factory), _surface(surface) {}
 
 		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
 		{
 			if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWritePixelSnapping) ||
-				riid == __uuidof(IDWriteTextRenderer))
+			    riid == __uuidof(IDWriteTextRenderer))
 			{
 				*ppv = static_cast<IDWriteTextRenderer*>(this);
 				AddRef();
@@ -77,8 +74,8 @@ namespace
 			ComPtr<IDWriteGlyphRunAnalysis> analysis;
 
 			if (FAILED(_factory->CreateGlyphRunAnalysis(glyphRun, 1.0f, nullptr, DWRITE_RENDERING_MODE_NATURAL,
-				DWRITE_MEASURING_MODE_NATURAL, baselineOriginX, baselineOriginY,
-				&analysis)))
+			                                            DWRITE_MEASURING_MODE_NATURAL, baselineOriginX, baselineOriginY,
+			                                            &analysis)))
 			{
 				return S_OK;
 			}
@@ -93,7 +90,7 @@ namespace
 			std::vector<uint8_t> coverage(static_cast<size_t>(w) * h * 3);
 
 			if (FAILED(analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, coverage.data(),
-				static_cast<uint32_t>(coverage.size()))))
+			                                        static_cast<uint32_t>(coverage.size()))))
 			{
 				return S_OK;
 			}
@@ -134,8 +131,8 @@ namespace
 			return S_OK;
 		}
 
-		HRESULT STDMETHODCALLTYPE
-		DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override
+		HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*,
+		                                            IUnknown*) override
 		{
 			return S_OK;
 		}
@@ -186,9 +183,9 @@ core::const_surface_ptr render::create_icon_surface(const char32_t ch)
 	{
 		hr = dwrite_factory->CreateTextFormat(icon_font_family(), icon_collection.Get(), DWRITE_FONT_WEIGHT_NORMAL,
 		                                      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-		                                      static_cast<FLOAT>(core::mul_div(148, icon_font_scale_num,
-		                                                                     icon_font_scale_den)), L"",
-		                                      &text_format);
+		                                      static_cast<FLOAT>(
+												  core::mul_div(148, icon_font_scale_num, icon_font_scale_den)),
+		                                      L"", &text_format);
 	}
 
 	if (SUCCEEDED(hr))
@@ -201,8 +198,8 @@ core::const_surface_ptr render::create_icon_surface(const char32_t ch)
 		core::char32_to_utf8(std::back_inserter(utf8), static_cast<uint32_t>(ch));
 		const auto icon_text = core::utf8_to_utf16(utf8);
 		hr = dwrite_factory->CreateTextLayout(icon_text.c_str(), static_cast<uint32_t>(icon_text.size()),
-		                                      text_format.Get(), static_cast<float>(cxy),
-		                                      static_cast<float>(cxy), &text_layout);
+		                                      text_format.Get(), static_cast<float>(cxy), static_cast<float>(cxy),
+		                                      &text_layout);
 	}
 
 	if (SUCCEEDED(hr))
@@ -234,8 +231,9 @@ namespace
 		std::atomic<ULONG> _ref = 1;
 
 	public:
-		styled_glyph_renderer(IDWriteFactory* factory, const int width, const int height, std::vector<uint8_t>& coverage,
-		                      std::vector<uint32_t>& colors, const std::vector<std::pair<IUnknown*, uint32_t>>& effects) :
+		styled_glyph_renderer(IDWriteFactory* factory, const int width, const int height,
+		                      std::vector<uint8_t>& coverage, std::vector<uint32_t>& colors,
+		                      const std::vector<std::pair<IUnknown*, uint32_t>>& effects) :
 			_factory(factory), _width(width), _height(height), _coverage(coverage), _colors(colors), _effects(effects)
 		{
 		}
@@ -243,7 +241,7 @@ namespace
 		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
 		{
 			if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWritePixelSnapping) ||
-				riid == __uuidof(IDWriteTextRenderer))
+			    riid == __uuidof(IDWriteTextRenderer))
 			{
 				*ppv = static_cast<IDWriteTextRenderer*>(this);
 				AddRef();
@@ -295,8 +293,8 @@ namespace
 			ComPtr<IDWriteGlyphRunAnalysis> analysis;
 
 			if (FAILED(_factory->CreateGlyphRunAnalysis(glyphRun, 1.0f, nullptr, DWRITE_RENDERING_MODE_NATURAL,
-				DWRITE_MEASURING_MODE_NATURAL, baselineOriginX, baselineOriginY,
-				&analysis)))
+			                                            DWRITE_MEASURING_MODE_NATURAL, baselineOriginX, baselineOriginY,
+			                                            &analysis)))
 			{
 				return S_OK;
 			}
@@ -311,7 +309,7 @@ namespace
 			std::vector<uint8_t> texture(static_cast<size_t>(w) * h * 3);
 
 			if (FAILED(analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, texture.data(),
-				static_cast<uint32_t>(texture.size()))))
+			                                        static_cast<uint32_t>(texture.size()))))
 			{
 				return S_OK;
 			}
@@ -347,8 +345,8 @@ namespace
 			return S_OK;
 		}
 
-		HRESULT STDMETHODCALLTYPE
-		DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override
+		HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*,
+		                                            IUnknown*) override
 		{
 			return S_OK;
 		}
@@ -385,7 +383,8 @@ namespace
 
 	// The largest coverage within radius pixels, as a square: two passes, and at a few pixels as round as
 	// an outline needs to look.
-	std::vector<uint8_t> dilate(const std::vector<uint8_t>& coverage, const int width, const int height, const int radius)
+	std::vector<uint8_t> dilate(const std::vector<uint8_t>& coverage, const int width, const int height,
+	                            const int radius)
 	{
 		std::vector<uint8_t> across(coverage.size());
 		std::vector<uint8_t> result(coverage.size());
@@ -398,7 +397,8 @@ namespace
 			for (auto x = 0; x < width; ++x)
 			{
 				uint8_t m = 0;
-				for (auto dx = std::max(0, x - radius); dx <= std::min(width - 1, x + radius); ++dx) m = std::max(m, row[dx]);
+				for (auto dx = std::max(0, x - radius); dx <= std::min(width - 1, x + radius); ++dx)
+					m = std::max(m, row[dx]);
 				out[x] = m;
 			}
 		}
@@ -446,7 +446,8 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	ComPtr<IDWriteFactory> factory;
 
 	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-		reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) || !factory)
+	                               reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) ||
+	    !factory)
 	{
 		return {};
 	}
@@ -455,16 +456,14 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	ComPtr<IDWriteTextFormat> format;
 
 	if (FAILED(factory->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-		DWRITE_FONT_STRETCH_NORMAL, spec.font_px, L"", &format)))
+	                                     DWRITE_FONT_STRETCH_NORMAL, spec.font_px, L"", &format)))
 	{
 		return {};
 	}
 
-	format->SetTextAlignment(spec.alignment == 0
-		                         ? DWRITE_TEXT_ALIGNMENT_LEADING
-		                         : spec.alignment == 2
-		                         ? DWRITE_TEXT_ALIGNMENT_TRAILING
-		                         : DWRITE_TEXT_ALIGNMENT_CENTER);
+	format->SetTextAlignment(spec.alignment == 0   ? DWRITE_TEXT_ALIGNMENT_LEADING
+	                         : spec.alignment == 2 ? DWRITE_TEXT_ALIGNMENT_TRAILING
+	                                               : DWRITE_TEXT_ALIGNMENT_CENTER);
 	format->SetWordWrapping(spec.wrap_width > 0 ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
 
 	// Declared before the layout, so they outlive the references it takes on them.
@@ -476,7 +475,7 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	const auto max_width = spec.wrap_width > 0 ? static_cast<float>(spec.wrap_width) : unbounded;
 
 	if (FAILED(factory->CreateTextLayout(text.c_str(), static_cast<uint32_t>(text.size()), format.Get(), max_width,
-		unbounded, &layout)))
+	                                     unbounded, &layout)))
 	{
 		return {};
 	}
@@ -507,7 +506,10 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	layout->GetOverhangMetrics(&overhang);
 
 	const auto margin = static_cast<int>(std::ceil(std::max(0.0f, spec.outline_px))) + 2;
-	const auto beyond = [](const float v) { return static_cast<int>(std::ceil(std::max(0.0f, v))); };
+	const auto beyond = [](const float v)
+	{
+		return static_cast<int>(std::ceil(std::max(0.0f, v)));
+	};
 	const auto left = margin + beyond(overhang.left);
 	const auto top = margin + beyond(overhang.top);
 	const auto width = left + static_cast<int>(box_width) + margin + beyond(overhang.right);
@@ -529,7 +531,10 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	if (!surface->alloc(width, height, core::texture_format::ARGB, core::orientation::top_left)) return {};
 	surface->make_blank();
 
-	const auto channel = [](const uint32_t c, const int shift) { return static_cast<int64_t>((c >> shift) & 0xFFu); };
+	const auto channel = [](const uint32_t c, const int shift)
+	{
+		return static_cast<int64_t>((c >> shift) & 0xFFu);
+	};
 	const auto outline_alpha = channel(spec.outline_color, 24);
 	constexpr int64_t full = 255 * 255;
 

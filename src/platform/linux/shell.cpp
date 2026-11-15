@@ -1,14 +1,14 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Linux shell locks, SDL message boxes, and honest unavailable shell services.
 
 #include "libdesktop/platform.h"
+#include "../agent.h"
 
 #include <SDL3/SDL.h>
 
@@ -94,8 +94,8 @@ namespace
 		return 0;
 	}
 
-	void add_button(std::vector<SDL_MessageBoxButtonData>& buttons, std::vector<std::string>& labels,
-	                const int id, const std::string_view text, const SDL_MessageBoxButtonFlags flags = 0)
+	void add_button(std::vector<SDL_MessageBoxButtonData>& buttons, std::vector<std::string>& labels, const int id,
+	                const std::string_view text, const SDL_MessageBoxButtonFlags flags = 0)
 	{
 		labels.emplace_back(text);
 		buttons.push_back({flags, id, labels.back().c_str()});
@@ -116,7 +116,7 @@ namespace
 }
 
 platform::tray_service_ptr platform::create_tray_service(platform::tray_icon_image, std::string_view,
-                                                          platform::tray_callbacks)
+                                                         platform::tray_callbacks)
 {
 	return nullptr;
 }
@@ -128,11 +128,11 @@ void platform::test_set_tray_publication_failure(bool)
 platform::instance_lock_result platform::try_lock_instance(const std::string_view name)
 {
 	if (name.empty() || name.size() > 128 ||
-		!std::all_of(name.begin(), name.end(), [](const char c)
-		{
-			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			       (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-		}))
+	    !std::all_of(name.begin(), name.end(), [](const char c)
+	{
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		       c == '-';
+	}))
 		return {nullptr, false, "Instance lock name validation failed"};
 	return take_lock(name, false);
 }
@@ -154,6 +154,23 @@ bool platform::signal_existing_instance(std::string_view)
 	return false;
 }
 
+bool platform::can_receive_instance_requests()
+{
+	return false;
+}
+
+platform::instance_receiver_result platform::receive_instance_requests(
+	std::string_view, std::function<bool(std::vector<core::file_path>)>)
+{
+	return {nullptr, false, "Instance requests are not available in this build"};
+}
+
+platform::instance_request_result platform::send_instance_request(std::string_view, std::span<const core::file_path>,
+                                                                  uint32_t)
+{
+	return {instance_request_status::unavailable, "Instance requests are not available in this build"};
+}
+
 std::shared_ptr<platform::spell_checker> platform::create_spell_checker(std::string_view)
 {
 	return nullptr;
@@ -165,17 +182,16 @@ bool platform::begin_file_drag(platform::window*, std::span<const core::file_pat
 }
 
 platform::message_box_result platform::message_box(platform::window* owner, const std::string_view text,
-                                                    const std::string_view title, const message_box_style style)
+                                                   const std::string_view title, const message_box_style style)
 {
+	if (detail::agent_skips("a message box")) return message_box_result::none;
 	std::vector<SDL_MessageBoxButtonData> buttons;
 	std::vector<std::string> labels;
 	buttons.reserve(3);
 	labels.reserve(3);
 	switch (style.buttons)
 	{
-	case message_box_buttons::ok:
-		add_button(buttons, labels, 1, "OK", SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT);
-		break;
+	case message_box_buttons::ok: add_button(buttons, labels, 1, "OK", SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT); break;
 	case message_box_buttons::ok_cancel:
 		add_button(buttons, labels, 1, "OK", SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT);
 		add_button(buttons, labels, 2, "Cancel", SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT);
@@ -196,9 +212,13 @@ platform::message_box_result platform::message_box(platform::window* owner, cons
 	}
 	const std::string title_text(title);
 	const std::string message_text(text);
-	const SDL_MessageBoxData data{
-		message_box_flags(style.icon), native_owner(owner), title_text.c_str(), message_text.c_str(),
-		static_cast<int>(buttons.size()), buttons.data(), nullptr};
+	const SDL_MessageBoxData data{message_box_flags(style.icon),
+	                              native_owner(owner),
+	                              title_text.c_str(),
+	                              message_text.c_str(),
+	                              static_cast<int>(buttons.size()),
+	                              buttons.data(),
+	                              nullptr};
 	int selected = 0;
 	if (!SDL_ShowMessageBox(&data, &selected)) return message_box_result::none;
 	return result_for_id(selected);
@@ -206,6 +226,7 @@ platform::message_box_result platform::message_box(platform::window* owner, cons
 
 int platform::show_choice(platform::window* owner, const choice_definition& definition)
 {
+	if (detail::agent_skips("a choice")) return 0;
 	if (definition.buttons.empty()) return 0;
 	std::vector<SDL_MessageBoxButtonData> buttons;
 	std::vector<std::string> labels;
@@ -222,15 +243,19 @@ int platform::show_choice(platform::window* owner, const choice_definition& defi
 		if (!message.empty()) message += "\n\n";
 		message += definition.message;
 	}
-	const SDL_MessageBoxData data{
-		definition.warning ? SDL_MESSAGEBOX_WARNING : SDL_MESSAGEBOX_INFORMATION,
-		native_owner(owner), definition.title.c_str(), message.c_str(), static_cast<int>(buttons.size()), buttons.data(), nullptr};
+	const SDL_MessageBoxData data{definition.warning ? SDL_MESSAGEBOX_WARNING : SDL_MESSAGEBOX_INFORMATION,
+	                              native_owner(owner),
+	                              definition.title.c_str(),
+	                              message.c_str(),
+	                              static_cast<int>(buttons.size()),
+	                              buttons.data(),
+	                              nullptr};
 	int selected = 0;
 	return SDL_ShowMessageBox(&data, &selected) ? selected : 0;
 }
 
-std::optional<std::map<uint32_t, platform::modal_value>> platform::show_modal_dialog(
-	platform::window*, platform::modal_definition)
+std::optional<std::map<uint32_t, platform::modal_value>> platform::show_modal_dialog(platform::window*,
+                                                                                     platform::modal_definition)
 {
 	return std::nullopt;
 }
@@ -251,9 +276,8 @@ bool platform::prompt_for_open_paths(platform::window*, std::vector<core::file_p
 	return false;
 }
 
-bool platform::prompt_for_save_path(platform::window*, core::file_path&,
-                                    const std::vector<file_dialog_filter>&, std::string_view)
+bool platform::prompt_for_save_path(platform::window*, core::file_path&, const std::vector<file_dialog_filter>&,
+                                    std::string_view)
 {
 	return false;
 }
-

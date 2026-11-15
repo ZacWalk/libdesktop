@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Platform text, path, atomic-file and file-handle service tests.
 
@@ -26,8 +25,7 @@ namespace
 	{
 		constexpr std::string_view mixed = "a\xC3\xA9\xE2\x82\xAC\xF0\x90\x8D\x88";
 		std::vector<uint32_t> codepoints;
-		for (auto it = mixed.begin(); it != mixed.end();)
-			codepoints.push_back(core::pop_utf8_char(it, mixed.end()));
+		for (auto it = mixed.begin(); it != mixed.end();) codepoints.push_back(core::pop_utf8_char(it, mixed.end()));
 		assert_equal(4u, static_cast<uint32_t>(codepoints.size()), "UTF-8 code point count");
 		assert_equal(static_cast<uint32_t>('a'), codepoints[0], "ASCII code point");
 		assert_equal(0x10348u, codepoints[3], "astral code point");
@@ -81,7 +79,7 @@ namespace
 		assert_equal_strict("c:\\dir\\file", path.extension("").str(), "path without its extension");
 		assert_equal_strict("", core::file_path("c:\\dir.v2\\file").extension(), "a folder's dot is no extension");
 		assert_equal_strict("c:\\dir\\app.ini", path.folder().combine_file_ext("app", "ini").str(),
-		                     "file extension combination");
+		                    "file extension combination");
 		assert_equal(true, core::file_path("c:\\A\\B.TXT") == core::file_path("c:\\a\\b.txt"),
 		             "case-insensitive path comparison");
 #endif
@@ -92,12 +90,12 @@ namespace
 	{
 		assert_equal_strict("a%20b%26c%3Dd", platform::url_encode("a b&c=d"), "URL encoding");
 		assert_equal_strict("https://example.com/a/c.css",
-		                   platform::resolve_url("https://example.com/a/b.html", "c.css"), "relative URL");
+		                    platform::resolve_url("https://example.com/a/b.html", "c.css"), "relative URL");
 		assert_equal_strict("https://example.com/root.css",
-		                   platform::resolve_url("https://example.com/a/b.html", "/root.css"), "root URL");
+		                    platform::resolve_url("https://example.com/a/b.html", "/root.css"), "root URL");
 		assert_equal_strict("https://other.com/x.css",
-		                   platform::resolve_url("https://example.com/a/b.html", "https://other.com/x.css"),
-		                   "absolute URL");
+		                    platform::resolve_url("https://example.com/a/b.html", "https://other.com/x.css"),
+		                    "absolute URL");
 
 		assert_equal(65001u, platform::charset_to_codepage("UTF-8"), "UTF-8 charset");
 		const std::string latin1{"caf\xE9", 4};
@@ -112,8 +110,7 @@ namespace
 		const auto differently_cased = core::folder_path(root.text().sv());
 
 		assert_equal(true, !platform::current_directory().is_empty(), "current directory");
-		assert_equal(true, platform::is_directory(platform::current_directory()),
-		             "current directory is a directory");
+		assert_equal(true, platform::is_directory(platform::current_directory()), "current directory is a directory");
 		assert_equal(true, platform::is_path_within(root, root), "root contains itself");
 		assert_equal(true, platform::is_path_within(root, child), "root contains a child");
 		assert_equal(true, platform::is_path_within(root, root.combine("one").combine("..").combine("two")),
@@ -122,7 +119,8 @@ namespace
 		assert_equal(false, platform::is_path_within(root, escaped), "parent traversal escapes root");
 		assert_equal(false, platform::is_path_within(root, root.parent()), "parent root is not contained");
 		assert_equal(false, platform::is_path_within(root, core::folder_path{}), "empty path is not contained");
-		assert_equal(true, platform::canonical_path(root) == platform::canonical_path(root), "canonical path is stable");
+		assert_equal(true, platform::canonical_path(root) == platform::canonical_path(root),
+		             "canonical path is stable");
 	}
 
 	void should_expose_app_data_paths()
@@ -163,8 +161,7 @@ namespace
 		platform::test_set_atomic_file_failure(platform::atomic_file_test_failure::flush);
 		auto failed = platform::create_atomic_file_writer_result(destination);
 		assert_equal(true, failed.success(), "flush failure is deferred to flush");
-		if (failed.writer)
-			assert_equal(false, failed.writer->flush().success(), "forced flush failure");
+		if (failed.writer) assert_equal(false, failed.writer->flush().success(), "forced flush failure");
 		platform::test_set_atomic_file_failure(platform::atomic_file_test_failure::none);
 
 		const auto missing = platform::file_attributes(core::file_path(destination.str() + ".missing"));
@@ -174,65 +171,64 @@ namespace
 	}
 }
 #ifdef _WIN32
-	void should_round_trip_platform_web_requests()
+void should_round_trip_platform_web_requests()
+{
+	loopback::server server;
+	assert_equal(true, server.listening(), "loopback server");
+	if (!server.listening()) return;
+	server.respond("/hello", {loopback::http_response(200, "OK", "hello world", "Content-Type: text/plain\r\n")});
+	server.respond("/query", {loopback::http_response(200, "OK", "query ok")});
+	server.respond("/form", {loopback::http_response(200, "OK", "form ok")});
+	server.respond("/file", {loopback::http_response(200, "OK", "file body")});
+
+	const auto host = platform::connect_to_host("127.0.0.1", false, server.port());
+	assert_equal(true, host != nullptr, "web host");
+	if (!host) return;
+
+	platform::web_request get;
+	get.path = "/hello";
+	const auto response = platform::send_request(host, get);
+	assert_equal(200, response.status_code, "GET status");
+	assert_equal_strict("hello world", response.body, "GET body");
+	assert_equal_strict("text/plain", response.content_type, "GET content type");
+	assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "GET request line");
+
+	platform::web_request query;
+	query.path = "/query";
+	query.query = {{"a", "1"}, {"b", "x y"}};
+	query.headers = {{"X-Test", "1"}};
+	const auto queried = platform::send_request(host, query);
+	assert_equal(200, queried.status_code, "query status");
+	assert_equal_strict("GET /query?a=1&b=x%20y HTTP/1.1", server.last().request_line, "query encoding");
+	assert_equal_strict("1", loopback::header_value(server.last(), "X-Test"), "request header");
+
+	platform::web_request form;
+	form.verb = platform::web_request_verb::POST;
+	form.path = "/form";
+	form.form_data = {{"name", "value"}};
+	const auto posted = platform::send_request(host, form);
+	assert_equal(200, posted.status_code, "form status");
+	assert_equal(true, server.last().request_line.starts_with("POST /form "), "form request line");
+	assert_equal(true, server.last().body.find("value") != std::string::npos, "form body");
+
+	const auto download = temps.folder().combine_file("platform-service-download.txt");
+	platform::delete_file(download);
+	platform::web_request fetch;
+	fetch.path = "/file";
+	fetch.download_file_path = download;
+	const auto downloaded = platform::send_request(host, fetch);
+	assert_equal(200, downloaded.status_code, "download status");
+	assert_equal(true, platform::file_attributes(download).exists(), "download exists");
+	if (const auto file = platform::open_file(download, platform::file_open_mode::read))
 	{
-		loopback::server server;
-		assert_equal(true, server.listening(), "loopback server");
-		if (!server.listening()) return;
-		server.respond("/hello", {loopback::http_response(200, "OK", "hello world",
-		                                                   "Content-Type: text/plain\r\n")});
-		server.respond("/query", {loopback::http_response(200, "OK", "query ok")});
-		server.respond("/form", {loopback::http_response(200, "OK", "form ok")});
-		server.respond("/file", {loopback::http_response(200, "OK", "file body")});
-
-		const auto host = platform::connect_to_host("127.0.0.1", false, server.port());
-		assert_equal(true, host != nullptr, "web host");
-		if (!host) return;
-
-		platform::web_request get;
-		get.path = "/hello";
-		const auto response = platform::send_request(host, get);
-		assert_equal(200, response.status_code, "GET status");
-		assert_equal_strict("hello world", response.body, "GET body");
-		assert_equal_strict("text/plain", response.content_type, "GET content type");
-		assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "GET request line");
-
-		platform::web_request query;
-		query.path = "/query";
-		query.query = {{"a", "1"}, {"b", "x y"}};
-		query.headers = {{"X-Test", "1"}};
-		const auto queried = platform::send_request(host, query);
-		assert_equal(200, queried.status_code, "query status");
-		assert_equal_strict("GET /query?a=1&b=x%20y HTTP/1.1", server.last().request_line, "query encoding");
-		assert_equal_strict("1", loopback::header_value(server.last(), "X-Test"), "request header");
-
-		platform::web_request form;
-		form.verb = platform::web_request_verb::POST;
-		form.path = "/form";
-		form.form_data = {{"name", "value"}};
-		const auto posted = platform::send_request(host, form);
-		assert_equal(200, posted.status_code, "form status");
-		assert_equal(true, server.last().request_line.starts_with("POST /form "), "form request line");
-		assert_equal(true, server.last().body.find("value") != std::string::npos, "form body");
-
-		const auto download = _temps.folder().combine_file("platform-service-download.txt");
-		platform::delete_file(download);
-		platform::web_request fetch;
-		fetch.path = "/file";
-		fetch.download_file_path = download;
-		const auto downloaded = platform::send_request(host, fetch);
-		assert_equal(200, downloaded.status_code, "download status");
-		assert_equal(true, platform::file_attributes(download).exists(), "download exists");
-		if (const auto file = platform::open_file(download, platform::file_open_mode::read))
-		{
-			std::array<uint8_t, 9> bytes{};
-			assert_equal(uint64_t{9}, file->read(bytes.data(), bytes.size()), "download byte count");
-			assert_equal_strict("file body", std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()), "download body");
-		}
-		platform::delete_file(download);
+		std::array<uint8_t, 9> bytes{};
+		assert_equal(uint64_t{9}, file->read(bytes.data(), bytes.size()), "download byte count");
+		assert_equal_strict("file body", std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+		                    "download body");
 	}
+	platform::delete_file(download);
+}
 #endif
-
 
 void register_platform_services_tests(test_registry& tests)
 {

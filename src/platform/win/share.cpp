@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Offers files to other apps through the Windows share sheet. The sheet is a Windows
 // Runtime API, reached here through C++/WinRT so that no other file carries its headers.
@@ -12,6 +11,7 @@
 #include "libdesktop/platform.h"
 
 #include "libdesktop/platform/win32.h"
+#include "../agent.h"
 
 #include <Unknwn.h>
 #include <winrt/Windows.Foundation.h>
@@ -29,8 +29,8 @@ namespace
 	// ShObjIdl_core.h declares IDataTransferManagerInterop only when targeting Windows 8 or later,
 	// and the platform headers target Windows 7. The interface is fixed by its IID, so it is
 	// declared here under a name of its own.
-	struct __declspec(uuid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")) __declspec(novtable)
-		data_transfer_manager_interop : ::IUnknown
+	struct __declspec(uuid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")) __declspec(novtable) data_transfer_manager_interop :
+		::IUnknown
 	{
 		virtual HRESULT __stdcall GetForWindow(HWND app_window, REFIID riid, void** manager) = 0;
 		virtual HRESULT __stdcall ShowShareUIForWindow(HWND app_window) = 0;
@@ -97,11 +97,12 @@ bool platform::can_share_files()
 	// Desktop apps reach the share sheet through IDataTransferManagerInterop, from Windows 10 on.
 	static const auto release = windows_release();
 	return release == platform::os_release::windows_10 || release == platform::os_release::windows_11 ||
-		release == platform::os_release::windows_later;
+	       release == platform::os_release::windows_later;
 }
 
 bool platform::share_files(const std::vector<core::file_path>& files, const std::string_view title)
 {
+	if (detail::agent_skips("the share sheet")) return false;
 	core::assert_true(platform::is_ui_thread());
 
 	if (files.empty() || !can_share_files()) return false;
@@ -117,8 +118,8 @@ bool platform::share_files(const std::vector<core::file_path>& files, const std:
 	try
 	{
 		const auto window = app_wnd();
-		const auto interop = winrt::get_activation_factory<data_transfer::DataTransferManager,
-		                                                   data_transfer_manager_interop>();
+		const auto interop =
+			winrt::get_activation_factory<data_transfer::DataTransferManager, data_transfer_manager_interop>();
 
 		data_transfer::DataTransferManager manager{nullptr};
 		winrt::check_hresult(interop->GetForWindow(window, winrt::guid_of<data_transfer::DataTransferManager>(),
@@ -128,15 +129,16 @@ bool platform::share_files(const std::vector<core::file_path>& files, const std:
 		if (requested_token) manager.DataRequested(std::exchange(requested_token, {}));
 
 		requested_token = manager.DataRequested(
-			[paths = std::move(paths), title = winrt::to_hstring(title)](
-			const data_transfer::DataTransferManager& sender, const data_transfer::DataRequestedEventArgs& args)
-			{
-				fill_request(args.Request(), paths, title);
+			[paths = std::move(paths),
+		     title = winrt::to_hstring(title)](const data_transfer::DataTransferManager& sender,
+		                                       const data_transfer::DataRequestedEventArgs& args)
+		{
+			fill_request(args.Request(), paths, title);
 
-				// One showing, one request. Revoked once answered, so a later showing - including one the
-				// system raises on its own - never offers these files again.
-				sender.DataRequested(std::exchange(requested_token, {}));
-			});
+			// One showing, one request. Revoked once answered, so a later showing - including one the
+			// system raises on its own - never offers these files again.
+			sender.DataRequested(std::exchange(requested_token, {}));
+		});
 
 		winrt::check_hresult(interop->ShowShareUIForWindow(window));
 		return true;

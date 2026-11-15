@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UI palette, themes, and animation styling.
 
@@ -99,28 +98,15 @@ namespace ui
 		float _target = 0.0f;
 
 	public:
-		animate_alpha()
-		{
-		}
+		animate_alpha() {}
 
-		animate_alpha(const float v) : _val(v), _target(v)
-		{
-		}
+		animate_alpha(const float v) : _val(v), _target(v) {}
 
-		float val() const
-		{
-			return _val;
-		};
+		float val() const { return _val; };
 
-		float target() const
-		{
-			return _target;
-		}
+		float target() const { return _target; }
 
-		void reset(const float v)
-		{
-			_target = _val = v;
-		}
+		void reset(const float v) { _target = _val = v; }
 
 		void reset(const float v, const float t)
 		{
@@ -128,10 +114,7 @@ namespace ui
 			_val = render::animations_enabled ? v : t;
 		}
 
-		void val(const float v)
-		{
-			_val = v;
-		}
+		void val(const float v) { _val = v; }
 
 		void target(const float v)
 		{

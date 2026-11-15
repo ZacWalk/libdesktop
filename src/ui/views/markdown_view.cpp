@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Layout and paint the source-preserving Markdown document control.
 
@@ -18,7 +17,6 @@
 
 namespace
 {
-
 
 	int safe_columns(const int width, const int char_width) noexcept
 	{
@@ -80,15 +78,14 @@ namespace
 namespace ui
 {
 	markdown_view::markdown_view(view_host& host, const view_theme& th, view_context* context,
-		                               text_clipboard* clipboard)
-		: read_only_doc_view(host, th, context, clipboard)
+	                             text_clipboard* clipboard) : read_only_doc_view(host, th, context, clipboard)
 	{
 		_sel_margin = false;
 		_word_wrap = true;
 	}
 
-	markdown_view::markdown_view(const view_theme& th, view_context* context, text_clipboard* clipboard)
-		: read_only_doc_view(th, context, clipboard)
+	markdown_view::markdown_view(const view_theme& th, view_context* context, text_clipboard* clipboard) :
+		read_only_doc_view(th, context, clipboard)
 	{
 		_sel_margin = false;
 		_word_wrap = true;
@@ -141,6 +138,7 @@ namespace ui
 
 	void markdown_view::set_buffer(const text_buffer_ptr& document, highlight_fn highlight)
 	{
+		cancel_column_drag();
 		_tables.clear();
 		_lines.clear();
 		_total_content_height = 0;
@@ -166,6 +164,7 @@ namespace ui
 		_wrap_breaks.clear();
 		_wrap_offsets.clear();
 		_wrap_line_y.clear();
+		auto previous_tables = std::move(_tables);
 		_tables.clear();
 		_lines.clear();
 		_total_visual_rows = 0;
@@ -194,9 +193,18 @@ namespace ui
 
 			if (!in_fence && is_table_row(_line_buf))
 			{
-				const auto table = find_table(i, table_columns);
+				auto table = find_table(i, table_columns);
 				if (table.start_line >= 0 && table.start_line <= i)
 				{
+					for (auto& previous : previous_tables)
+					{
+						if (previous.start_line == table.start_line)
+						{
+							table.sizing = std::move(previous.sizing);
+							break;
+						}
+					}
+					table_layout::size_table(table, table_columns);
 					const auto table_index = static_cast<int>(_tables.size());
 					_tables.push_back(table);
 
@@ -207,7 +215,8 @@ namespace ui
 						metrics.row_height = base_height;
 						metrics.char_width = std::max(1, _font_extent.cx);
 						metrics.table = table_index;
-						metrics.rows = table_line == table.separator_line ? 1 : table_row_visual_rows(table_line, table);
+						metrics.rows = table_line == table.separator_line ? 1
+						                                                  : table_row_visual_rows(table_line, table);
 						metrics.height = metrics.rows * base_height;
 
 						_wrap_offsets[table_line] = static_cast<int>(_wrap_breaks.size());
@@ -294,7 +303,7 @@ namespace ui
 		if (count <= 0) return 0;
 
 		const auto it = std::ranges::upper_bound(_lines.begin(), _lines.begin() + count, content_y_of(point.y), {},
-		                                        &line_metrics::y);
+		                                         &line_metrics::y);
 		const auto index = static_cast<int>(it - _lines.begin()) - 1;
 		return std::clamp(index, 0, count - 1);
 	}
@@ -316,13 +325,13 @@ namespace ui
 		const std::string_view line_view(_render_buf);
 
 		const auto breaks = markdown_line_breaks(line_index);
-		const auto row = std::clamp(markdown_char_to_sub_row(line_index, point.x), 0,
-		                           static_cast<int>(breaks.size()));
+		const auto row = std::clamp(markdown_char_to_sub_row(line_index, point.x), 0, static_cast<int>(breaks.size()));
 		const auto row_start = row == 0 ? 0 : clamp_offset(breaks[row - 1], line_view);
 		const auto indent = row > 0 ? metrics.indent : 0;
 
 		core::pointi point_out;
-		point_out.y = top_content_padding() + metrics.y + metrics.lead + row * metrics.row_height - _scroll_offset.y + text_top();
+		point_out.y = top_content_padding() + metrics.y + metrics.lead + row * metrics.row_height - _scroll_offset.y +
+		              text_top();
 		point_out.x = left_pad() + (indent + column_of(line_view, row_start, point.x)) * metrics.char_width;
 		return point_out;
 	}
@@ -337,20 +346,35 @@ namespace ui
 		const auto bottom = top + _lines[line_index].height;
 		const auto visible_height = _view_extent.cy - text_top();
 
-		if (bottom > _scroll_offset.y + visible_height)
-			set_scroll_pixel(bottom - visible_height);
-		else if (top < _scroll_offset.y)
-			set_scroll_pixel(top);
+		if (bottom > _scroll_offset.y + visible_height) set_scroll_pixel(bottom - visible_height);
+		else if (top < _scroll_offset.y) set_scroll_pixel(top);
 	}
 
 	void markdown_view::on_mouse_down(const core::pointi point, const platform::key_state keys)
 	{
 		_press_point = point;
+		const auto [table, column] = divider_at(point);
+		if (table >= 0 && _column_drag.begin(_tables[table].sizing, column, point.x / std::max(1, _font_extent.cx)))
+		{
+			_resizing_table = table;
+			take_focus(false);
+			if (host()) host()->capture_pointer(true);
+			return;
+		}
 		read_only_doc_view::on_mouse_down(point, keys);
 	}
 
 	void markdown_view::on_mouse_up(const core::pointi point, const platform::key_state keys)
 	{
+		if (_column_drag.active())
+		{
+			if (_column_drag.update(_tables[_resizing_table].sizing, point.x / std::max(1, _font_extent.cx)))
+				columns_changed();
+			_column_drag.finish();
+			_resizing_table = -1;
+			if (host()) host()->capture_pointer(false);
+			return;
+		}
 		const auto on_scrollbar = _vscroll._tracking || _hscroll._tracking;
 		const auto slop = std::max(2, _font_extent.cx / 2);
 		const auto moved = std::abs(point.x - _press_point.x) > slop || std::abs(point.y - _press_point.y) > slop;
@@ -363,11 +387,19 @@ namespace ui
 
 	void markdown_view::on_mouse_move(const core::pointi point, const bool captured)
 	{
+		if (_column_drag.active())
+		{
+			if (!captured) cancel_column_drag();
+			else if (_column_drag.update(_tables[_resizing_table].sizing, point.x / std::max(1, _font_extent.cx)))
+				columns_changed();
+			return;
+		}
 		read_only_doc_view::on_mouse_move(point, captured);
 	}
 
 	platform::cursor markdown_view::cursor_at(const core::pointi point) const
 	{
+		if (_column_drag.active() || divider_at(point).second >= 0) return platform::cursor::left_right;
 		if (_on_link && !_drag_selection)
 		{
 			const auto scrollbar = scrollbar_rect();
@@ -458,22 +490,22 @@ namespace ui
 		                            static_cast<int>(breaks.size()));
 		const auto row_start = row == 0 ? 0 : clamp_offset(breaks[row - 1], line_view);
 		const auto row_end = row < static_cast<int>(breaks.size())
-			                    ? std::max(row_start, clamp_offset(breaks[row], line_view))
-			                    : line_size;
+		                         ? std::max(row_start, clamp_offset(breaks[row], line_view))
+		                         : line_size;
 
 		const auto indent = row > 0 ? metrics.indent : 0;
 		const auto row_left = left_pad() + indent * metrics.char_width;
 		const auto column = std::max(0, (point.x - row_left) / metrics.char_width);
 
 		location.x = metrics.table >= 0 ? (point.x < _view_extent.cx / 2 ? 0 : line_size)
-		                               : offset_at_column(line_view, row_start, row_end, column);
+		                                : offset_at_column(line_view, row_start, row_end, column);
 
 		if (on_text)
 		{
 			const auto rows_bottom = metrics.lead + metrics.rows * metrics.row_height;
 			const auto on_row = point.y >= text_top() && y_in_line >= metrics.lead && y_in_line < rows_bottom;
 			const auto on_column = point.x >= row_left && location.x < row_end &&
-			                      column_of(line_view, row_start, location.x) >= column;
+			                       column_of(line_view, row_start, location.x) >= column;
 			*on_text = metrics.table < 0 && on_row && on_column;
 		}
 
@@ -525,7 +557,8 @@ namespace ui
 		case md::block::bullet:
 		case md::block::numbered:
 		case md::block::quote:
-			return core::utf8_codepoint_count(text.substr(0, std::min(static_cast<size_t>(parsed.content_start), text.size())));
+			return core::utf8_codepoint_count(
+				text.substr(0, std::min(static_cast<size_t>(parsed.content_start), text.size())));
 		default: return 0;
 		}
 	}
@@ -550,8 +583,7 @@ namespace ui
 		case text_style::md_marker:
 		case text_style::md_bullet:
 		case text_style::md_link_url:
-		case text_style::md_code:
-			return false;
+		case text_style::md_code: return false;
 		default: return true;
 		}
 	}
@@ -562,11 +594,11 @@ namespace ui
 		const auto len = static_cast<int>(text.size());
 		_byte_style.assign(len, static_cast<uint8_t>(text_style::md_marker));
 
-		const auto fill = [&](const int start, const int length, const text_style style)
+		const auto fill = [&](const int start, const int length, const text_style ts)
 		{
 			const auto from = std::clamp(start, 0, len);
 			const auto to = std::clamp(start + length, from, len);
-			std::fill(_byte_style.begin() + from, _byte_style.begin() + to, static_cast<uint8_t>(style));
+			std::fill(_byte_style.begin() + from, _byte_style.begin() + to, static_cast<uint8_t>(ts));
 		};
 
 		if (parsed.kind == md::block::bullet || parsed.kind == md::block::numbered)
@@ -595,11 +627,11 @@ namespace ui
 		}
 	}
 
-	void markdown_view::build_text_runs(const std::string_view text, const text_style style,
+	void markdown_view::build_text_runs(const std::string_view text, const text_style base_style,
 	                                    const core::color32 base_color) const
 	{
 		_runs.clear();
-		const auto enabled = _doc && _doc->spell_check() && spell_check_style(style);
+		const auto spell_enabled = _doc && _doc->spell_check() && spell_check_style(base_style);
 		const auto error_color = _theme.style_color(text_style::error_text);
 
 		const auto push_run = [&](const int start, const int length, const core::color32 color)
@@ -623,7 +655,7 @@ namespace ui
 			if (spell::is_word_byte(text[position]))
 			{
 				while (next < len && spell::is_word_byte(text[next])) ++next;
-				if (enabled && !spell::check_word(text.substr(position, next - position))) color = error_color;
+				if (spell_enabled && !spell::check_word(text.substr(position, next - position))) color = error_color;
 			}
 			else
 			{
@@ -636,9 +668,9 @@ namespace ui
 	}
 
 	void markdown_view::draw_run(render::draw_context& draw, const core::recti& rect, core::pointi& origin,
-	                             const std::string_view text, const int absolute_start,
-	                             const render::font_face font, const int font_cx, const core::color32 color,
-	                             const core::color32 bg_color, const int selection_begin, const int selection_end,
+	                             const std::string_view text, const int absolute_start, const render::font_face font,
+	                             const int font_cx, const core::color32 color, const core::color32 bg_color,
+	                             const int selection_begin, const int selection_end,
 	                             const core::color32 selection_text_color, const core::color32 selection_bg_color) const
 	{
 		const auto run_length = static_cast<int>(text.size());
@@ -646,14 +678,14 @@ namespace ui
 		const auto selection_end_in_run = std::clamp(selection_end - absolute_start, 0, run_length);
 		auto clip = rect;
 
-		const auto put = [&](const std::string_view part, const core::color32 foreground,
-		                     const core::color32 background)
+		const auto put =
+			[&](const std::string_view part, const core::color32 foreground, const core::color32 background)
 		{
 			if (part.empty() || origin.x >= rect.right) return;
 			clip.left = origin.x;
 			draw.draw_rect(clip, core::color(background));
-			draw.draw_text(part, {origin.x, origin.y, clip.right, clip.bottom}, font,
-			               render::text_style::single_line, core::color(foreground), {});
+			draw.draw_text(part, {origin.x, origin.y, clip.right, clip.bottom}, font, render::text_style::single_line,
+			               core::color(foreground), {});
 			origin.x += font_cx * core::utf8_codepoint_count(part);
 		};
 
@@ -699,8 +731,8 @@ namespace ui
 		{
 			const auto row_start = row == 0 ? 0 : clamp_offset(breaks[row - 1], text);
 			const auto row_end = row < static_cast<int>(breaks.size())
-			                    ? std::max(row_start, clamp_offset(breaks[row], text))
-			                    : length;
+			                         ? std::max(row_start, clamp_offset(breaks[row], text))
+			                         : length;
 			const auto row_left = left_pad() + (row > 0 ? metrics.indent * metrics.char_width : 0);
 			const core::recti rect(row_left, y, right, y + metrics.row_height);
 			core::pointi origin(rect.left, rect.top);
@@ -716,8 +748,8 @@ namespace ui
 
 				for (const auto& piece : _runs)
 					draw_run(draw, rect, origin, part.substr(piece.start, piece.length), from + piece.start, font,
-					         metrics.char_width, piece.color, bg, selection_begin, selection_end,
-					         selection_text_color, selection_bg_color);
+					         metrics.char_width, piece.color, bg, selection_begin, selection_end, selection_text_color,
+					         selection_bg_color);
 			}
 
 			y += metrics.row_height;
@@ -745,10 +777,8 @@ namespace ui
 
 	void markdown_view::cell_breaks_fn(std::vector<int>& out, const std::string_view text, const int col_width)
 	{
-		calc_word_breaks_into(out, text, col_width, [&](const int i, int) -> int
-		{
-			return core::is_utf8_continuation(text[i]) ? 0 : 1;
-		});
+		calc_word_breaks_into(out, text, col_width,
+		                      [&](const int i, int) -> int { return core::is_utf8_continuation(text[i]) ? 0 : 1; });
 	}
 
 	table_layout::table_block markdown_view::find_table(const int line_hint, const int available_columns) const
@@ -799,8 +829,76 @@ namespace ui
 			}
 		}
 
-		table_layout::cap_col_widths(result.col_widths, available_columns);
+		(void)available_columns;
 		return result;
+	}
+
+	std::pair<int, int> markdown_view::divider_at(const core::pointi point) const
+	{
+		if (_vscroll.hit_test(point, scrollbar_rect())) return {-1, -1};
+		for (int i = 0; i < static_cast<int>(_tables.size()); ++i)
+		{
+			const auto& table = _tables[i];
+			const auto header = table_layout::table_header_band(table, left_pad(),
+			                                                    line_offset(table.start_line) - _scroll_offset.y +
+			                                                        text_top(),
+			                                                    _font_extent.cx, _lines[table.start_line].height)
+			                        .intersection(client_rect());
+			const auto column = table_layout::table_divider_at(table, point, header, _font_extent.cx);
+			if (column >= 0) return {i, column};
+		}
+		return {-1, -1};
+	}
+
+	void markdown_view::columns_changed()
+	{
+		layout();
+		invalidate();
+		_host.invalidate_view();
+	}
+
+	bool markdown_view::cancel_column_drag()
+	{
+		if (!_column_drag.active()) return false;
+		if (_resizing_table >= 0 && _resizing_table < static_cast<int>(_tables.size()))
+			_column_drag.cancel(_tables[_resizing_table].sizing);
+		else _column_drag.finish();
+		_resizing_table = -1;
+		if (host()) host()->capture_pointer(false);
+		columns_changed();
+		return true;
+	}
+
+	void markdown_view::on_capture_lost()
+	{
+		cancel_column_drag();
+		read_only_doc_view::on_capture_lost();
+	}
+
+	void markdown_view::on_double_click(const core::pointi point, const platform::key_state keys)
+	{
+		const auto [table, column] = divider_at(point);
+		if (column >= 0)
+		{
+			_column_drag.finish();
+			_resizing_table = -1;
+			if (host()) host()->capture_pointer(false);
+			if (_tables[table].sizing.fit(column)) columns_changed();
+			return;
+		}
+		read_only_doc_view::on_double_click(point, keys);
+	}
+
+	bool markdown_view::on_key(const char32_t key, const platform::key_state keys)
+	{
+		if (key == platform::keys::ESCAPE && cancel_column_drag()) return true;
+		return read_only_doc_view::on_key(key, keys);
+	}
+
+	void markdown_view::on_focus(const bool focused, const bool select_all)
+	{
+		if (!focused) cancel_column_drag();
+		read_only_doc_view::on_focus(focused, select_all);
 	}
 
 	int markdown_view::table_row_visual_rows(const int line_index, const table_layout::table_block& table) const
@@ -812,15 +910,15 @@ namespace ui
 		for (size_t column = 0; column < table.col_widths.size() && column < _cells.size(); ++column)
 		{
 			const auto visual_rows = table_layout::cell_visual_rows(table_layout::trim_cell(_cells[column]),
-			                                                       table.col_widths[column], _cell_breaks,
-			                                                       cell_breaks_fn);
+			                                                        table.col_widths[column], _cell_breaks,
+			                                                        cell_breaks_fn);
 			if (visual_rows > rows) rows = visual_rows;
 		}
 		return rows;
 	}
 
-	int markdown_view::draw_table_line(render::draw_context& draw, const int y, const int right,
-	                                   const int line_index, const table_layout::table_block& table) const
+	int markdown_view::draw_table_line(render::draw_context& draw, const int y, const int right, const int line_index,
+	                                   const table_layout::table_block& table) const
 	{
 		const auto font = body_font();
 		const auto selected = line_fully_selected(line_index, static_cast<int>(_line_buf.size()));
@@ -829,27 +927,26 @@ namespace ui
 
 		if (line_index == table.separator_line)
 		{
-			table_layout::draw_separator_row(draw, y, left_pad(), right, table, font,
-			                                 _font_extent.cx, _font_extent.cy, bg, marker);
+			table_layout::draw_separator_row(draw, y, left_pad(), right, table, font, _font_extent.cx, _font_extent.cy,
+			                                 bg, marker);
 			return 1;
 		}
 
 		const auto is_header = line_index == table.start_line;
-		const auto text_color = _theme.style_color(selected ? text_style::sel_text
-		                                                  : is_header ? text_style::md_bold : text_style::normal_text);
+		const auto text_color = _theme.style_color(selected    ? text_style::sel_text
+		                                           : is_header ? text_style::md_bold
+		                                                       : text_style::normal_text);
 
 		table_layout::split_pipe_cells(_cells, _line_buf);
-		return table_layout::draw_table_row(draw, y, left_pad(), right, _cells, table, font,
-		                                    _font_extent.cx, _font_extent.cy, is_header, bg, marker,
-		                                    text_color, _cell_breaks, cell_breaks_fn);
+		return table_layout::draw_table_row(draw, y, left_pad(), right, _cells, table, font, _font_extent.cx,
+		                                    _font_extent.cy, is_header, bg, marker, text_color, _cell_breaks,
+		                                    cell_breaks_fn);
 	}
 
 	void markdown_view::wrap_line_into(std::vector<int>& breaks, const std::string_view text, const int columns)
 	{
-		calc_word_breaks_into(breaks, text, columns, [&](const int i, int) -> int
-		{
-			return core::is_utf8_continuation(text[i]) ? 0 : 1;
-		});
+		calc_word_breaks_into(breaks, text, columns,
+		                      [&](const int i, int) -> int { return core::is_utf8_continuation(text[i]) ? 0 : 1; });
 	}
 
 	int markdown_view::offset_at_column(const std::string_view text, const int start, const int end, const int column)
@@ -879,8 +976,7 @@ namespace ui
 		if (_wrap_offsets.empty() || line_index < 0 || line_index >= static_cast<int>(_wrap_offsets.size()) - 1)
 			return {};
 
-		return {_wrap_breaks.data() + _wrap_offsets[line_index],
-		        _wrap_breaks.data() + _wrap_offsets[line_index + 1]};
+		return {_wrap_breaks.data() + _wrap_offsets[line_index], _wrap_breaks.data() + _wrap_offsets[line_index + 1]};
 	}
 
 	int markdown_view::markdown_char_to_sub_row(const int line_index, const int byte_offset) const

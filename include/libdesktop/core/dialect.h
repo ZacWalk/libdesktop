@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Compiler and C runtime dialect differences between MSVC and GCC/Clang, so that
 // portable code can keep using one spelling. This declares no operating system facilities:
@@ -78,8 +77,7 @@ namespace core::compat
 			const auto digit = static_cast<unsigned>(value % static_cast<UnsignedT>(radix));
 			digits[count++] = static_cast<char>(digit < 10 ? '0' + digit : 'a' + digit - 10);
 			value /= static_cast<UnsignedT>(radix);
-		}
-		while (value != 0);
+		} while (value != 0);
 
 		const size_t needed = count + (negative ? 1u : 0u) + 1u;
 
@@ -100,18 +98,14 @@ namespace core::compat
 inline int _itoa_s(const int value, char* buffer, const size_t size, const int radix)
 {
 	const bool negative = value < 0 && radix == 10;
-	const auto magnitude = negative
-		                       ? 0u - static_cast<unsigned int>(value)
-		                       : static_cast<unsigned int>(value);
+	const auto magnitude = negative ? 0u - static_cast<unsigned int>(value) : static_cast<unsigned int>(value);
 	return core::compat::to_chars_radix(magnitude, negative, buffer, size, radix);
 }
 
 inline int _ltoa_s(const long value, char* buffer, const size_t size, const int radix)
 {
 	const bool negative = value < 0 && radix == 10;
-	const auto magnitude = negative
-		                       ? 0ul - static_cast<unsigned long>(value)
-		                       : static_cast<unsigned long>(value);
+	const auto magnitude = negative ? 0ul - static_cast<unsigned long>(value) : static_cast<unsigned long>(value);
 	return core::compat::to_chars_radix(magnitude, negative, buffer, size, radix);
 }
 
@@ -123,9 +117,7 @@ inline int _ultoa_s(const unsigned long value, char* buffer, const size_t size, 
 inline int _i64toa_s(const int64_t value, char* buffer, const size_t size, const int radix)
 {
 	const bool negative = value < 0 && radix == 10;
-	const auto magnitude = negative
-		                       ? 0ull - static_cast<uint64_t>(value)
-		                       : static_cast<uint64_t>(value);
+	const auto magnitude = negative ? 0ull - static_cast<uint64_t>(value) : static_cast<uint64_t>(value);
 	return core::compat::to_chars_radix(magnitude, negative, buffer, size, radix);
 }
 
@@ -170,15 +162,16 @@ namespace core::detail
 {
 	// Every value scanf actually assigns through is a pointer, so a by-value argument in the pack can
 	// only be one of MSVC's buffer sizes. Dropping them is what makes the call match glibc's sscanf.
-	inline std::tuple<> keep_scanf_args() { return {}; }
+	inline std::tuple<> keep_scanf_args()
+	{
+		return {};
+	}
 
-	template <typename FirstT, typename... RestT>
-	auto keep_scanf_args(FirstT first, RestT... rest)
+	template <typename FirstT, typename... RestT> auto keep_scanf_args(FirstT first, RestT... rest)
 	{
 		if constexpr (std::is_pointer_v<FirstT>)
 			return std::tuple_cat(std::tuple<FirstT>(first), keep_scanf_args(rest...));
-		else
-			return keep_scanf_args(rest...);
+		else return keep_scanf_args(rest...);
 	}
 
 	// Those sizes were the only bound on %s and %[, which run until a delimiter. Once they are gone
@@ -204,8 +197,7 @@ namespace core::detail
 
 // sscanf bounded to the first `count` characters, accepting MSVC's buffer size after every %s, %c
 // and %[ conversion.
-template <typename... ArgsT>
-int _snscanf_s(const char* buffer, const size_t count, const char* format, ArgsT... args)
+template <typename... ArgsT> int _snscanf_s(const char* buffer, const size_t count, const char* format, ArgsT... args)
 {
 	if (!core::detail::scanf_conversions_bounded(format)) return EOF;
 
@@ -228,8 +220,7 @@ inline int vsprintf_s(char* buffer, const size_t size, const char* format, va_li
 	return std::vsnprintf(buffer, size, format, args);
 }
 
-template <size_t N, typename... ArgsT>
-int sprintf_s(char (&buffer)[N], const char* format, ArgsT... args)
+template <size_t N, typename... ArgsT> int sprintf_s(char (&buffer)[N], const char* format, ArgsT... args)
 {
 	return std::snprintf(buffer, N, format, args...);
 }

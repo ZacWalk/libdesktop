@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: platform's umbrella; desktop services and application-facing facilities.
 
@@ -12,7 +11,10 @@
 
 #include "libdesktop/core.h"
 
-namespace platform { using namespace std::literals; }
+namespace platform
+{
+	using namespace std::literals;
+}
 #include "libdesktop/platform/environment.h"
 #include "libdesktop/platform/services.h"
 #include "libdesktop/platform/file.h"

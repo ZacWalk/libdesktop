@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: JSON parsing and generation. Provides simple JSON document
 // reading and writing for configuration and API responses.
@@ -14,7 +13,6 @@
 #define RAPIDJSON_HAS_STDSTRING 1
 
 #include <rapidjson/document.h>
-
 
 namespace core::json
 {
@@ -27,9 +25,8 @@ namespace core::json
 		if (!json.IsObject()) return {};
 
 		const auto found = json.FindMember(name);
-		return found != json.MemberEnd() && found->value.IsString()
-			       ? core::safe_string(found->value.GetString())
-			       : std::string{};
+		return found != json.MemberEnd() && found->value.IsString() ? core::safe_string(found->value.GetString())
+		                                                            : std::string{};
 	}
 
 	// Returns an empty object rather than asserting when the member is missing or not an object.

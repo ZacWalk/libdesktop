@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Keyboard, pointer, cursor, and input-state abstractions.
 
@@ -151,6 +150,9 @@ namespace platform
 		bool alt = false;
 		// A key-down the keyboard repeated while the key was held, rather than a fresh press.
 		bool repeat = false;
+		// The key types a character with the layout's AltGr: text, not a shortcut, though Windows reports
+		// AltGr as Ctrl+Alt and so control and alt are set too.
+		bool alt_graph = false;
 	};
 
 	enum class wheel_axis

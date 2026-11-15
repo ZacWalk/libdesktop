@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Bounded platform image decoding and compound-document previews.
 
@@ -64,15 +63,15 @@ namespace platform
 	// resources and bundled files). The forms taking options also refuse a source over 100,000 pixels on
 	// a side, apply the option limits, cancellation and progress, and say why a load failed.
 	core::surface_ptr load_image_file(const core::file_path& path);
-	image_load_result load_image_file(const core::file_path& path, image_load_options options);
+	image_load_result load_image_file(const core::file_path& path, const image_load_options& options);
 	std::optional<image_probe> probe_image_file(const core::file_path& path);
 
 	core::surface_ptr load_image_memory(std::span<const uint8_t> data);
-	image_load_result load_image_memory(std::span<const uint8_t> data, image_load_options options);
+	image_load_result load_image_memory(std::span<const uint8_t> data, const image_load_options& options);
 	std::optional<image_probe> probe_image_memory(std::span<const uint8_t> data);
 	std::vector<std::string> installed_image_extensions();
 
 	// Extract and rasterise an OLE SummaryInformation PIDSI_THUMBNAIL metafile preview. Source
 	// dimensions retain the stored logical extent, just as a regular image result does.
-	image_load_result load_compound_preview(std::span<const uint8_t> data, image_load_options options = {});
+	image_load_result load_compound_preview(std::span<const uint8_t> data, const image_load_options& options = {});
 }

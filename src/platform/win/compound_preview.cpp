@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows OLE compound-document metafile preview loading.
 
@@ -62,8 +61,7 @@ namespace
 
 	std::string hresult_diagnostic(const char* operation, const HRESULT result)
 	{
-		return std::format("{} failed (0x{:08x}).", operation,
-		                   static_cast<std::uint32_t>(result));
+		return std::format("{} failed (0x{:08x}).", operation, static_cast<std::uint32_t>(result));
 	}
 
 	struct global_memory
@@ -153,8 +151,7 @@ namespace
 
 		bool create(const int width, const int height)
 		{
-			if (dc_ || width <= 0 || height <= 0 ||
-				static_cast<std::uint64_t>(width) * height > 2000ull * 2000ull)
+			if (dc_ || width <= 0 || height <= 0 || static_cast<std::uint64_t>(width) * height > 2000ull * 2000ull)
 				return false;
 			width_ = width;
 			height_ = height;
@@ -183,19 +180,14 @@ namespace
 
 		[[nodiscard]] HDC dc() const { return dc_; }
 
-		void fill_white()
-		{
-			std::fill_n(pixels_, static_cast<size_t>(width_) * height_, 0xffffffffu);
-		}
+		void fill_white() { std::fill_n(pixels_, static_cast<size_t>(width_) * height_, 0xffffffffu); }
 
 		bool play(const HMETAFILE source, const int logical_width, const int logical_height)
 		{
 			if (!source || logical_width <= 0 || logical_height <= 0) return false;
 			fill_white();
-			if (!SetMapMode(dc_, MM_ANISOTROPIC) ||
-				!SetWindowExtEx(dc_, logical_width, logical_height, nullptr) ||
-				!SetViewportExtEx(dc_, width_, height_, nullptr) ||
-				!PlayMetaFile(dc_, source))
+			if (!SetMapMode(dc_, MM_ANISOTROPIC) || !SetWindowExtEx(dc_, logical_width, logical_height, nullptr) ||
+			    !SetViewportExtEx(dc_, width_, height_, nullptr) || !PlayMetaFile(dc_, source))
 				return false;
 			return GdiFlush() != FALSE;
 		}
@@ -211,8 +203,7 @@ namespace
 
 		std::vector<std::uint32_t> copy_pixels() const
 		{
-			std::vector<std::uint32_t> result(
-				pixels_, pixels_ + static_cast<size_t>(width_) * height_);
+			std::vector<std::uint32_t> result(pixels_, pixels_ + static_cast<size_t>(width_) * height_);
 			for (auto& pixel : result) pixel |= 0xff000000u;
 			return result;
 		}
@@ -228,8 +219,8 @@ namespace
 
 	core::surface_ptr make_surface(const int width, const int height, std::vector<uint32_t> pixels)
 	{
-		if (width <= 0 || height <= 0 || static_cast<uint64_t>(width) * height >
-			static_cast<uint64_t>((std::numeric_limits<int>::max)()))
+		if (width <= 0 || height <= 0 ||
+		    static_cast<uint64_t>(width) * height > static_cast<uint64_t>((std::numeric_limits<int>::max)()))
 			return {};
 		try
 		{
@@ -305,9 +296,8 @@ namespace
 	std::uint32_t clamp_source_dimension(const std::int64_t value)
 	{
 		if (value <= 0) return 0;
-		return value > std::numeric_limits<std::uint32_t>::max()
-			? std::numeric_limits<std::uint32_t>::max()
-			: static_cast<std::uint32_t>(value);
+		return value > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
+		                                                         : static_cast<std::uint32_t>(value);
 	}
 
 	int extent_for_render(const std::uint32_t value)
@@ -315,8 +305,8 @@ namespace
 		return static_cast<int>((std::min)(value, static_cast<std::uint32_t>(max_metafile_extent)));
 	}
 
-	bool mul_div_positive(const std::int64_t value, const std::int64_t multiplier,
-	                      const std::int64_t divisor, std::int64_t& result)
+	bool mul_div_positive(const std::int64_t value, const std::int64_t multiplier, const std::int64_t divisor,
+	                      std::int64_t& result)
 	{
 		if (value <= 0 || multiplier <= 0 || divisor <= 0) return false;
 		if (value > (std::numeric_limits<std::int64_t>::max)() / multiplier) return false;
@@ -330,9 +320,7 @@ namespace
 	bool describe_aldus(const std::span<const std::uint8_t> bytes, metafile_source& result)
 	{
 		aldus_header header{};
-		if (!read_aldus_header(bytes, header) || header.inch == 0 ||
-			bytes.size() <= sizeof(header))
-			return false;
+		if (!read_aldus_header(bytes, header) || header.inch == 0 || bytes.size() <= sizeof(header)) return false;
 
 		screen_dc dc;
 		if (!dc.handle) return false;
@@ -340,21 +328,17 @@ namespace
 		const int horz_size = GetDeviceCaps(dc.handle, HORZSIZE);
 		const int vert_resolution = GetDeviceCaps(dc.handle, VERTRES);
 		const int vert_size = GetDeviceCaps(dc.handle, VERTSIZE);
-		if (horz_resolution <= 0 || horz_size <= 0 || vert_resolution <= 0 || vert_size <= 0)
-			return false;
+		if (horz_resolution <= 0 || horz_size <= 0 || vert_resolution <= 0 || vert_size <= 0) return false;
 
 		const auto width_units = static_cast<std::int64_t>(header.right) - header.left;
 		const auto height_units = static_cast<std::int64_t>(header.bottom) - header.top;
 		std::int64_t x_ext = 0, y_ext = 0, width = 0, height = 0;
 		if (!mul_div_positive(width_units, 2540, header.inch, x_ext) ||
-			!mul_div_positive(height_units, 2540, header.inch, y_ext) ||
-			!mul_div_positive(x_ext, horz_resolution,
-			                 static_cast<std::int64_t>(horz_size) * 100, width) ||
-			!mul_div_positive(y_ext, vert_resolution,
-			                 static_cast<std::int64_t>(vert_size) * 100, height))
+		    !mul_div_positive(height_units, 2540, header.inch, y_ext) ||
+		    !mul_div_positive(x_ext, horz_resolution, static_cast<std::int64_t>(horz_size) * 100, width) ||
+		    !mul_div_positive(y_ext, vert_resolution, static_cast<std::int64_t>(vert_size) * 100, height))
 			return false;
-		if (x_ext > std::numeric_limits<int>::max() || y_ext > std::numeric_limits<int>::max())
-			return false;
+		if (x_ext > std::numeric_limits<int>::max() || y_ext > std::numeric_limits<int>::max()) return false;
 
 		result.kind = metafile_kind::aldus_wmf;
 		result.bytes = bytes.data() + sizeof(header);
@@ -365,35 +349,29 @@ namespace
 		result.original_height = clamp_source_dimension(height);
 		result.render_width = extent_for_render(result.original_width);
 		result.render_height = extent_for_render(result.original_height);
-		return result.original_width != 0 && result.original_height != 0 &&
-			result.render_width != 0 && result.render_height != 0;
+		return result.original_width != 0 && result.original_height != 0 && result.render_width != 0 &&
+		       result.render_height != 0;
 	}
 
 	bool describe_emf(const std::span<const std::uint8_t> bytes, metafile_source& result)
 	{
-		if (bytes.size() < sizeof(ENHMETAHEADER) || bytes.size() > UINT_MAX)
-			return false;
+		if (bytes.size() < sizeof(ENHMETAHEADER) || bytes.size() > UINT_MAX) return false;
 		ENHMETAHEADER header{};
 		std::memcpy(&header, bytes.data(), sizeof(header));
 		if (header.dSignature != ENHMETA_SIGNATURE) return false;
 
 		std::int64_t width = 640, height = 480;
-		const auto frame_width = static_cast<std::int64_t>(header.rclFrame.right) -
-			header.rclFrame.left;
-		const auto frame_height = static_cast<std::int64_t>(header.rclFrame.bottom) -
-			header.rclFrame.top;
-		if (frame_width > 0 && frame_height > 0 && header.szlDevice.cx > 0 &&
-			header.szlDevice.cy > 0 && header.szlMillimeters.cx > 0 &&
-			header.szlMillimeters.cy > 0)
+		const auto frame_width = static_cast<std::int64_t>(header.rclFrame.right) - header.rclFrame.left;
+		const auto frame_height = static_cast<std::int64_t>(header.rclFrame.bottom) - header.rclFrame.top;
+		if (frame_width > 0 && frame_height > 0 && header.szlDevice.cx > 0 && header.szlDevice.cy > 0 &&
+		    header.szlMillimeters.cx > 0 && header.szlMillimeters.cy > 0)
 		{
 			std::int64_t computed_width = 0, computed_height = 0;
 			if (mul_div_positive(frame_width, header.szlDevice.cx,
-			                    static_cast<std::int64_t>(header.szlMillimeters.cx) * 100,
-			                    computed_width))
+			                     static_cast<std::int64_t>(header.szlMillimeters.cx) * 100, computed_width))
 				width = computed_width;
 			if (mul_div_positive(frame_height, header.szlDevice.cy,
-			                     static_cast<std::int64_t>(header.szlMillimeters.cy) * 100,
-			                     computed_height))
+			                     static_cast<std::int64_t>(header.szlMillimeters.cy) * 100, computed_height))
 				height = computed_height;
 		}
 
@@ -406,8 +384,8 @@ namespace
 		result.original_height = clamp_source_dimension(height);
 		result.render_width = extent_for_render(result.original_width);
 		result.render_height = extent_for_render(result.original_height);
-		return result.original_width != 0 && result.original_height != 0 &&
-			result.render_width != 0 && result.render_height != 0;
+		return result.original_width != 0 && result.original_height != 0 && result.render_width != 0 &&
+		       result.render_height != 0;
 	}
 
 	bool describe_metafile(const std::span<const std::uint8_t> bytes, metafile_source& result)
@@ -427,8 +405,8 @@ namespace
 		return true;
 	}
 
-	bool target_size(const metafile_source& source, const platform::image_load_options& options,
-	                 int& width, int& height)
+	bool target_size(const metafile_source& source, const platform::image_load_options& options, int& width,
+	                 int& height)
 	{
 		width = source.render_width;
 		height = source.render_height;
@@ -436,31 +414,31 @@ namespace
 		{
 			if (options.thumbnail)
 			{
-				const auto scale = (std::min)(1.0,
-					(std::min)(static_cast<double>(options.target_width) / source.original_width,
-					           static_cast<double>(options.target_height) / source.original_height));
-				width = (std::max)(1, static_cast<int>((std::min)(
-					static_cast<double>(max_metafile_extent), source.original_width * scale)));
-				height = (std::max)(1, static_cast<int>((std::min)(
-					static_cast<double>(max_metafile_extent), source.original_height * scale)));
+				const auto scale = (std::min)(1.0, (std::min)(static_cast<double>(options.target_width) /
+				                                                  source.original_width,
+				                                              static_cast<double>(options.target_height) /
+				                                                  source.original_height));
+				width = (std::max)(1, static_cast<int>((std::min)(static_cast<double>(max_metafile_extent),
+				                                                  source.original_width * scale)));
+				height = (std::max)(1, static_cast<int>((std::min)(static_cast<double>(max_metafile_extent),
+				                                                   source.original_height * scale)));
 			}
 			else
 			{
-				const auto fit = (std::min)(
-					static_cast<double>(options.target_width) / source.original_width,
-					static_cast<double>(options.target_height) / source.original_height);
+				const auto fit = (std::min)(static_cast<double>(options.target_width) / source.original_width,
+				                            static_cast<double>(options.target_height) / source.original_height);
 				const auto divisor = fit <= .25 ? 4u : fit <= .5 ? 2u : 1u;
 				width = static_cast<int>((source.render_width + divisor - 1) / divisor);
 				height = static_cast<int>((source.render_height + divisor - 1) / divisor);
 			}
 		}
 		return width > 0 && height > 0 &&
-			static_cast<std::uint64_t>(width) * height <=
-				static_cast<std::uint64_t>(max_metafile_extent) * max_metafile_extent;
+		       static_cast<std::uint64_t>(width) * height <=
+		           static_cast<std::uint64_t>(max_metafile_extent) * max_metafile_extent;
 	}
 
-	bool extract_metafile(const std::span<const std::uint8_t> data,
-	                      std::vector<std::uint8_t>& metafile_bytes, std::string& diagnostic)
+	bool extract_metafile(const std::span<const std::uint8_t> data, std::vector<std::uint8_t>& metafile_bytes,
+	                      std::string& diagnostic)
 	{
 		if (data.empty())
 		{
@@ -498,8 +476,7 @@ namespace
 		memory.handle = nullptr;
 
 		ComPtr<IStorage> storage;
-		hr = StgOpenStorageOnILockBytes(lock_bytes.Get(), nullptr,
-		                                STGM_DIRECT | STGM_READ | STGM_SHARE_EXCLUSIVE,
+		hr = StgOpenStorageOnILockBytes(lock_bytes.Get(), nullptr, STGM_DIRECT | STGM_READ | STGM_SHARE_EXCLUSIVE,
 		                                nullptr, 0, &storage);
 		if (FAILED(hr))
 		{
@@ -515,8 +492,7 @@ namespace
 			return false;
 		}
 		ComPtr<IPropertyStorage> properties;
-		hr = property_sets->Open(FMTID_SummaryInformation,
-		                         STGM_READ | STGM_SHARE_EXCLUSIVE, &properties);
+		hr = property_sets->Open(FMTID_SummaryInformation, STGM_READ | STGM_SHARE_EXCLUSIVE, &properties);
 		if (FAILED(hr))
 		{
 			diagnostic = hresult_diagnostic("IPropertySetStorage::Open", hr);
@@ -534,13 +510,13 @@ namespace
 			return false;
 		}
 		if (value.value.vt != VT_CF || !value.value.pclipdata ||
-			value.value.pclipdata->cbSize < sizeof(value.value.pclipdata->ulClipFmt))
+		    value.value.pclipdata->cbSize < sizeof(value.value.pclipdata->ulClipFmt))
 		{
 			diagnostic = "The compound document has no metafile thumbnail.";
 			return false;
 		}
-		const auto clip_size = static_cast<size_t>(
-			value.value.pclipdata->cbSize - sizeof(value.value.pclipdata->ulClipFmt));
+		const auto clip_size = static_cast<size_t>(value.value.pclipdata->cbSize -
+		                                           sizeof(value.value.pclipdata->ulClipFmt));
 		constexpr size_t metafile_offset = sizeof(packed_meta_header) + sizeof(std::uint32_t);
 		if (!value.value.pclipdata->pClipData || clip_size <= metafile_offset)
 		{
@@ -567,68 +543,62 @@ namespace
 		else
 		{
 			metafile wmf{SetMetaFileBitsEx(static_cast<UINT>(source.size), source.bytes)};
-			if (!wmf.handle || !surface.play(wmf.handle, source.logical_width, source.logical_height))
-				return false;
+			if (!wmf.handle || !surface.play(wmf.handle, source.logical_width, source.logical_height)) return false;
 		}
 		pixels = surface.copy_pixels();
 		return true;
 	}
 }
 
-platform::image_load_result platform::load_compound_preview(
-	std::span<const std::uint8_t> data, const platform::image_load_options options)
+platform::image_load_result platform::load_compound_preview(std::span<const std::uint8_t> data,
+                                                            const platform::image_load_options& options)
 {
 	com_apartment apartment;
 	if (!apartment.ready())
 		return failure(platform::image_load_error::unavailable,
-			std::format("COM initialization failed (0x{:08x}).",
-			            static_cast<std::uint32_t>(apartment.result())));
-	if (data.empty())
-		return failure(platform::image_load_error::invalid_data,
-			"The compound document is empty.");
+		               std::format("COM initialization failed (0x{:08x}).",
+		                           static_cast<std::uint32_t>(apartment.result())));
+	if (data.empty()) return failure(platform::image_load_error::invalid_data, "The compound document is empty.");
 	if (options.cancelled && options.cancelled())
-		return failure(platform::image_load_error::cancelled,
-			"Compound preview decoding was cancelled.");
+		return failure(platform::image_load_error::cancelled, "Compound preview decoding was cancelled.");
 
 	std::vector<std::uint8_t> metafile_bytes;
 	std::string diagnostic;
 	try
 	{
 		if (!extract_metafile(data, metafile_bytes, diagnostic))
-			return failure(data.size() > INT_MAX ? platform::image_load_error::too_large :
-				platform::image_load_error::invalid_data, std::move(diagnostic));
+			return failure(data.size() > INT_MAX ? platform::image_load_error::too_large
+			                                     : platform::image_load_error::invalid_data,
+			               std::move(diagnostic));
 
 		metafile_source source;
 		if (!describe_metafile(metafile_bytes, source))
 			return failure(platform::image_load_error::invalid_data,
-				"The compound document thumbnail is not a valid metafile.");
+			               "The compound document thumbnail is not a valid metafile.");
 		if (options.max_pixels &&
-			static_cast<std::uint64_t>(source.original_width) * source.original_height >
-				options.max_pixels)
+		    static_cast<std::uint64_t>(source.original_width) * source.original_height > options.max_pixels)
 			return failure(platform::image_load_error::too_large,
-				"The compound preview exceeds the source pixel limit.");
+			               "The compound preview exceeds the source pixel limit.");
 
 		int width = 0, height = 0;
 		if (!target_size(source, options, width, height))
 			return failure(platform::image_load_error::too_large,
-				"The compound preview exceeds the configured extent.");
+			               "The compound preview exceeds the configured extent.");
 		const auto decoded_bytes = static_cast<std::uint64_t>(width) * height * sizeof(std::uint32_t);
 		if (options.max_decoded_bytes && decoded_bytes > options.max_decoded_bytes)
 			return failure(platform::image_load_error::too_large,
-				"The compound preview exceeds the decoded-memory limit.");
+			               "The compound preview exceeds the decoded-memory limit.");
 		if (options.progress) options.progress(0, decoded_bytes);
 		if (options.cancelled && options.cancelled())
-			return failure(platform::image_load_error::cancelled,
-				"Compound preview decoding was cancelled.");
+			return failure(platform::image_load_error::cancelled, "Compound preview decoding was cancelled.");
 
 		std::vector<std::uint32_t> pixels;
 		if (!render_metafile(source, width, height, pixels))
 			return failure(platform::image_load_error::invalid_data,
-				"The compound document thumbnail could not be rasterised.");
+			               "The compound document thumbnail could not be rasterised.");
 		if (options.progress) options.progress(decoded_bytes, decoded_bytes);
 		if (options.cancelled && options.cancelled())
-			return failure(platform::image_load_error::cancelled,
-				"Compound preview decoding was cancelled.");
+			return failure(platform::image_load_error::cancelled, "Compound preview decoding was cancelled.");
 
 		platform::image_load_result result;
 		result.source_width = source.original_width;
@@ -637,12 +607,11 @@ platform::image_load_result platform::load_compound_preview(
 		result.image = make_surface(width, height, std::move(pixels));
 		if (!result.image)
 			return failure(platform::image_load_error::too_large,
-				"The compound preview exceeds the decoded-memory limit.");
+			               "The compound preview exceeds the decoded-memory limit.");
 		return result;
 	}
 	catch (const std::bad_alloc&)
 	{
-		return failure(platform::image_load_error::too_large,
-			"The compound preview exceeds the decoded-memory limit.");
+		return failure(platform::image_load_error::too_large, "The compound preview exceeds the decoded-memory limit.");
 	}
 }

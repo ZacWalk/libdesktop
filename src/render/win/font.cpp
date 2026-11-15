@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: DirectWrite font rendering. Handles text layout, font loading,
 // glyph rendering, and text measurement using DirectWrite API.
@@ -14,11 +13,9 @@
 #include "libdesktop/platform/win32.h"
 #include "libdesktop/render/win32.h"
 
-template <typename InterfaceType>
-InterfaceType* SafeAcquire(InterfaceType* newObject)
+template <typename InterfaceType> InterfaceType* SafeAcquire(InterfaceType* newObject)
 {
-	if (newObject != nullptr)
-		newObject->AddRef();
+	if (newObject != nullptr) newObject->AddRef();
 
 	return newObject;
 }
@@ -48,8 +45,8 @@ void render::set_icon_font_family(const std::string_view family)
 	ComPtr<IDWriteFactory> factory;
 	ComPtr<IDWriteFontCollection> system_fonts;
 	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-		reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) || !factory ||
-		FAILED(factory->GetSystemFontCollection(system_fonts.GetAddressOf())) || !system_fonts)
+	                               reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) ||
+	    !factory || FAILED(factory->GetSystemFontCollection(system_fonts.GetAddressOf())) || !system_fonts)
 	{
 		return;
 	}
@@ -62,7 +59,7 @@ void render::set_icon_font_family(const std::string_view family)
 	};
 
 	if (!installed(icon_font_installed_family.c_str()) && icon_font_installed_family == L"Segoe Fluent Icons" &&
-		installed(L"Segoe MDL2 Assets"))
+	    installed(L"Segoe MDL2 Assets"))
 	{
 		icon_font_installed_family = L"Segoe MDL2 Assets";
 	}
@@ -71,9 +68,7 @@ void render::set_icon_font_family(const std::string_view family)
 class memory_font_file_stream final : public IDWriteFontFileStream
 {
 public:
-	explicit memory_font_file_stream(const core::cspan bytes) : refCount_(0), _bytes(bytes)
-	{
-	}
+	explicit memory_font_file_stream(const core::cspan bytes) : refCount_(0), _bytes(bytes) {}
 
 	virtual ~memory_font_file_stream() = default;
 
@@ -81,8 +76,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
-		if (riid == IID_IUnknown ||
-			riid == __uuidof(IDWriteFontFileStream))
+		if (riid == IID_IUnknown || riid == __uuidof(IDWriteFontFileStream))
 		{
 			*ppvObject = this;
 			AddRef();
@@ -92,27 +86,20 @@ public:
 		return E_NOINTERFACE;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override
-	{
-		return InterlockedIncrement(&refCount_);
-	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refCount_); }
 
 	ULONG STDMETHODCALLTYPE Release() override
 	{
 		const ULONG newCount = InterlockedDecrement(&refCount_);
-		if (newCount == 0)
-			delete this;
+		if (newCount == 0) delete this;
 
 		return newCount;
 	}
 
 	// IDWriteFontFileStream methods
-	HRESULT STDMETHODCALLTYPE ReadFileFragment(
-		const void** fragmentStart, // [fragmentSize] in bytes
-		UINT64 fileOffset,
-		UINT64 fragmentSize,
-		OUT void** fragmentContext
-	) override;
+	HRESULT STDMETHODCALLTYPE ReadFileFragment(const void** fragmentStart, // [fragmentSize] in bytes
+	                                           UINT64 fileOffset, UINT64 fragmentSize,
+	                                           OUT void** fragmentContext) override;
 
 	void STDMETHODCALLTYPE ReleaseFileFragment(void* fragmentContext) override;
 
@@ -120,10 +107,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE GetLastWriteTime(OUT UINT64* lastWriteTime) override;
 
-	bool is_initialized() const
-	{
-		return !_bytes.empty();
-	}
+	bool is_initialized() const { return !_bytes.empty(); }
 
 private:
 	ULONG refCount_;
@@ -133,16 +117,12 @@ private:
 // IDWriteFontFileStream methods
 HRESULT STDMETHODCALLTYPE memory_font_file_stream::ReadFileFragment(
 	const void** fragmentStart, // [fragmentSize] in bytes
-	const UINT64 fileOffset,
-	const UINT64 fragmentSize,
-	OUT void** fragmentContext
-)
+	const UINT64 fileOffset, const UINT64 fragmentSize, OUT void** fragmentContext)
 {
 	const auto size = static_cast<UINT64>(_bytes.size);
 	// The loader is responsible for doing a bounds check.
-	if (_bytes.data && fileOffset <= size &&
-		fragmentSize <= size &&
-		fileOffset <= size - fragmentSize) // Prevent overflow
+	if (_bytes.data && fileOffset <= size && fragmentSize <= size &&
+	    fileOffset <= size - fragmentSize) // Prevent overflow
 	{
 		*fragmentStart = _bytes.data + static_cast<size_t>(fileOffset);
 		*fragmentContext = nullptr;
@@ -153,7 +133,7 @@ HRESULT STDMETHODCALLTYPE memory_font_file_stream::ReadFileFragment(
 	return E_FAIL;
 }
 
-void STDMETHODCALLTYPE memory_font_file_stream::ReleaseFileFragment(void* fragmentContext)
+void STDMETHODCALLTYPE memory_font_file_stream::ReleaseFileFragment(void* /*fragmentContext*/)
 {
 }
 
@@ -173,9 +153,7 @@ HRESULT STDMETHODCALLTYPE memory_font_file_stream::GetLastWriteTime(OUT UINT64* 
 class resource_font_file_loader final : public IDWriteFontFileLoader
 {
 public:
-	resource_font_file_loader() : refCount_(0)
-	{
-	}
+	resource_font_file_loader() : refCount_(0) {}
 
 	virtual ~resource_font_file_loader() = default;
 
@@ -183,8 +161,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
-		if (riid == __uuidof(IUnknown) ||
-			riid == __uuidof(IDWriteFontFileLoader))
+		if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWriteFontFileLoader))
 		{
 			AddRef();
 			*ppvObject = static_cast<IDWriteFontFileLoader*>(this);
@@ -197,10 +174,7 @@ public:
 		return E_NOINTERFACE;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override
-	{
-		return InterlockedIncrement(&refCount_);
-	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refCount_); }
 
 	ULONG STDMETHODCALLTYPE Release() override
 	{
@@ -209,22 +183,18 @@ public:
 		return newCount;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreateStreamFromKey(
-		const void* fontFileReferenceKey, // [fontFileReferenceKeySize] in bytes
-		const UINT32 fontFileReferenceKeySize,
-		OUT IDWriteFontFileStream** fontFileStream
-	) override
+	HRESULT STDMETHODCALLTYPE
+	CreateStreamFromKey(const void* fontFileReferenceKey, // [fontFileReferenceKeySize] in bytes
+	                    const UINT32 fontFileReferenceKeySize, OUT IDWriteFontFileStream** fontFileStream) override
 	{
 		*fontFileStream = nullptr;
 
-		if (fontFileReferenceKeySize != sizeof(uint32_t))
-			return E_INVALIDARG;
+		if (fontFileReferenceKeySize != sizeof(uint32_t)) return E_INVALIDARG;
 		(void)fontFileReferenceKey;
 
-		auto* const stream = new(std::nothrow) memory_font_file_stream(icon_font_bytes);
+		auto* const stream = new (std::nothrow) memory_font_file_stream(icon_font_bytes);
 
-		if (stream == nullptr)
-			return E_OUTOFMEMORY;
+		if (stream == nullptr) return E_OUTOFMEMORY;
 
 		if (!stream->is_initialized())
 		{
@@ -249,17 +219,15 @@ static resource_font_file_loader& font_loader = *new resource_font_file_loader()
 class resource_font_file_enumerator final : public IDWriteFontFileEnumerator
 {
 public:
-	resource_font_file_enumerator() : refCount_(0), _index(0), _factory(nullptr), _collection_key(nullptr),
-	                                  _collection_key_size(0)
+	resource_font_file_enumerator() :
+		refCount_(0), _index(0), _factory(nullptr), _collection_key(nullptr), _collection_key_size(0)
 	{
 	}
 
-	explicit resource_font_file_enumerator(IDWriteFactory* factory,
-	                                       const void* collectionKey,
-	                                       const UINT32 collectionKeySize) : refCount_(0), _index(0),
-	                                                                         _factory(factory),
-	                                                                         _collection_key(collectionKey),
-	                                                                         _collection_key_size(collectionKeySize)
+	explicit resource_font_file_enumerator(IDWriteFactory* factory, const void* collectionKey,
+	                                       const UINT32 collectionKeySize) :
+		refCount_(0), _index(0), _factory(factory), _collection_key(collectionKey),
+		_collection_key_size(collectionKeySize)
 	{
 	}
 
@@ -273,8 +241,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
-		if (riid == __uuidof(IUnknown) ||
-			riid == __uuidof(IDWriteFontFileEnumerator))
+		if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWriteFontFileEnumerator))
 		{
 			AddRef();
 			*ppvObject = static_cast<IDWriteFontFileEnumerator*>(this);
@@ -285,16 +252,12 @@ public:
 		return E_NOINTERFACE;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override
-	{
-		return InterlockedIncrement(&refCount_);
-	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refCount_); }
 
 	ULONG STDMETHODCALLTYPE Release() override
 	{
 		const ULONG newCount = InterlockedDecrement(&refCount_);
-		if (newCount == 0)
-			delete this;
+		if (newCount == 0) delete this;
 		return newCount;
 	}
 
@@ -312,11 +275,9 @@ public:
 		{
 			ComPtr<IDWriteFontFile> current;
 
-			const auto hr = _factory->CreateCustomFontFileReference(
-				&icon_font_collection_id,
-				sizeof(icon_font_collection_id),
-				&font_loader,
-				&current);
+			const auto hr = _factory->CreateCustomFontFileReference(&icon_font_collection_id,
+			                                                        sizeof(icon_font_collection_id), &font_loader,
+			                                                        &current);
 
 			core::log(__FUNCTION__, std::format("CreateCustomFontFileReference {:x}", static_cast<uint32_t>(hr)));
 
@@ -342,9 +303,7 @@ public:
 class resource_font_collection_loader final : public IDWriteFontCollectionLoader
 {
 public:
-	resource_font_collection_loader() : refCount_(0)
-	{
-	}
+	resource_font_collection_loader() : refCount_(0) {}
 
 	virtual ~resource_font_collection_loader() = default;
 
@@ -352,8 +311,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
-		if (riid == __uuidof(IUnknown) ||
-			riid == __uuidof(IDWriteFontCollectionLoader))
+		if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWriteFontCollectionLoader))
 		{
 			AddRef();
 			*ppvObject = static_cast<IDWriteFontCollectionLoader*>(this);
@@ -364,10 +322,7 @@ public:
 		return E_NOINTERFACE;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override
-	{
-		return InterlockedIncrement(&refCount_);
-	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refCount_); }
 
 	ULONG STDMETHODCALLTYPE Release() override
 	{
@@ -377,15 +332,13 @@ public:
 	}
 
 	// IDWriteFontCollectionLoader methods
-	HRESULT STDMETHODCALLTYPE CreateEnumeratorFromKey(
-		IDWriteFactory* factory,
-		const void* collectionKey, // [collectionKeySize] in bytes
-		const UINT32 collectionKeySize,
-		OUT IDWriteFontFileEnumerator** fontFileEnumerator
-	) override
+	HRESULT STDMETHODCALLTYPE CreateEnumeratorFromKey(IDWriteFactory* factory,
+	                                                  const void* collectionKey, // [collectionKeySize] in bytes
+	                                                  const UINT32 collectionKeySize,
+	                                                  OUT IDWriteFontFileEnumerator** fontFileEnumerator) override
 	{
-		auto* const enumerator = new(std::nothrow) resource_font_file_enumerator(
-			factory, collectionKey, collectionKeySize);
+		auto* const enumerator = new (std::nothrow)
+			resource_font_file_enumerator(factory, collectionKey, collectionKeySize);
 		if (enumerator == nullptr)
 		{
 			*fontFileEnumerator = nullptr;
@@ -399,7 +352,6 @@ public:
 // Immortal singleton (see font_loader above): heap-allocated once and never freed so it
 // cannot be destroyed before the DWrite objects that depend on it during process teardown.
 static resource_font_collection_loader& font_collection_loader = *new resource_font_collection_loader();
-
 
 static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFontCollection* font_collection,
                                               const wchar_t* font_name, int font_height, int weight = 400,
@@ -420,14 +372,14 @@ static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFon
 	if (FAILED(hr))
 	{
 		core::log(__FUNCTION__, std::format("Failed to find font family {} - FindFamilyName failed: {:x}",
-		                                  core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
+		                                    core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
 		return nullptr;
 	}
 
 	if (!exists)
 	{
 		core::log(__FUNCTION__, std::format("Failed to create font {} - font family not found in collection",
-		                                  core::utf16_to_utf8(font_name)));
+		                                    core::utf16_to_utf8(font_name)));
 		return nullptr;
 	}
 
@@ -435,7 +387,7 @@ static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFon
 	if (FAILED(hr))
 	{
 		core::log(__FUNCTION__, std::format("Failed to create font {} - GetFontFamily failed: {:x}",
-		                                  core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
+		                                    core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
 		return nullptr;
 	}
 
@@ -443,7 +395,7 @@ static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFon
 	if (FAILED(hr))
 	{
 		core::log(__FUNCTION__, std::format("Failed to create font {} - GetFirstMatchingFont failed: {:x}",
-		                                  core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
+		                                    core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
 		return nullptr;
 	}
 
@@ -451,7 +403,7 @@ static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFon
 	if (FAILED(hr))
 	{
 		core::log(__FUNCTION__, std::format("Failed to create font {} - CreateFontFace failed: {:x}",
-		                                  core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
+		                                    core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
 		return nullptr;
 	}
 
@@ -467,27 +419,21 @@ static font_renderer_ptr create_font_renderer(IDWriteFactory* dwrite, IDWriteFon
 		}
 	}
 
-	hr = dwrite->CreateTextFormat(
-		font_name,
-		font_collection,
-		dwrite_weight,
-		dwrite_style,
-		DWRITE_FONT_STRETCH_NORMAL,
-		static_cast<float>(actual_font_height),
-		L"", //locale
-		&text_format);
+	hr = dwrite->CreateTextFormat(font_name, font_collection, dwrite_weight, dwrite_style, DWRITE_FONT_STRETCH_NORMAL,
+	                              static_cast<float>(actual_font_height),
+	                              L"", // locale
+	                              &text_format);
 
 	if (FAILED(hr))
 	{
 		core::log(__FUNCTION__, std::format("Failed to create font {} - CreateTextFormat failed: {:x}",
-		                                  core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
+		                                    core::utf16_to_utf8(font_name), static_cast<uint32_t>(hr)));
 		return nullptr;
 	}
 
 	core::log(__FUNCTION__, std::format("Created font {}", core::utf16_to_utf8(font_name)));
 	return std::make_shared<font_renderer>(dwrite, font_face, text_format, actual_font_height, underline, strikeout);
 }
-
 
 font_renderer_ptr factories::create_icon_font_face(const int font_height)
 {
@@ -501,11 +447,8 @@ font_renderer_ptr factories::create_icon_font_face(const int font_height)
 	{
 		ComPtr<IDWriteFontCollection> custom_collection;
 
-		const auto hr = dwrite->CreateCustomFontCollection(
-			&font_collection_loader,
-			&icon_font_collection_id,
-			sizeof(icon_font_collection_id),
-			&custom_collection);
+		const auto hr = dwrite->CreateCustomFontCollection(&font_collection_loader, &icon_font_collection_id,
+		                                                   sizeof(icon_font_collection_id), &custom_collection);
 		if (SUCCEEDED(hr))
 		{
 			result = create_font_renderer(dwrite.Get(), custom_collection.Get(), icon_font_name, font_height);
@@ -530,8 +473,8 @@ font_renderer_ptr factories::create_icon_font_face(const int font_height)
 }
 
 font_renderer_ptr factories::create_font_face(const wchar_t* font_name, const int font_height, const int weight,
-                                             const bool italic, const bool underline, const bool strikeout,
-                                             const bool cell_size) const
+                                              const bool italic, const bool underline, const bool strikeout,
+                                              const bool cell_size) const
 {
 	return create_font_renderer(dwrite.Get(), font_collection.Get(), font_name, font_height, weight, italic, underline,
 	                            strikeout, cell_size);
@@ -585,15 +528,16 @@ void factories::unregister_fonts() const
 }
 
 render::glyph_fallback_probe render::probe_glyph_fallback(const std::string_view primary_family,
-                                                              const std::string_view fallback_family,
-                                                              const char32_t code_point)
+                                                          const std::string_view fallback_family,
+                                                          const char32_t code_point)
 {
 	render::glyph_fallback_probe result;
 
 	ComPtr<IDWriteFactory> factory;
 
 	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-		reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) || !factory)
+	                               reinterpret_cast<IUnknown**>(factory.GetAddressOf()))) ||
+	    !factory)
 	{
 		return result;
 	}
@@ -615,8 +559,8 @@ render::glyph_fallback_probe render::probe_glyph_fallback(const std::string_view
 			ComPtr<IDWriteFont> font;
 
 			if (SUCCEEDED(system_fonts->GetFontFamily(index, font_family.GetAddressOf())) &&
-				SUCCEEDED(font_family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-					DWRITE_FONT_STYLE_NORMAL, font.GetAddressOf())))
+			    SUCCEEDED(font_family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+			                                                DWRITE_FONT_STYLE_NORMAL, font.GetAddressOf())))
 			{
 				font->CreateFontFace(face.GetAddressOf());
 			}
@@ -634,16 +578,14 @@ render::glyph_fallback_probe render::probe_glyph_fallback(const std::string_view
 	fallback->GetGlyphIndices(&cp, 1, &result.fallback_glyph);
 
 	DWRITE_GLYPH_METRICS from_fallback{};
-	result.fallback_metrics_ok = SUCCEEDED(
-		fallback->GetDesignGlyphMetrics(&result.fallback_glyph, 1, &from_fallback));
+	result.fallback_metrics_ok = SUCCEEDED(fallback->GetDesignGlyphMetrics(&result.fallback_glyph, 1, &from_fallback));
 
 	// The latent render_glyph bug: metrics read from the primary face for a glyph index
 	// that belongs to the fallback face describe a different glyph, or fail outright.
 	DWRITE_GLYPH_METRICS from_primary{};
 	const auto primary_hr = primary->GetDesignGlyphMetrics(&result.fallback_glyph, 1, &from_primary);
-	result.primary_metrics_differ = FAILED(primary_hr) ||
-		from_primary.advanceWidth != from_fallback.advanceWidth ||
-		from_primary.verticalOriginY != from_fallback.verticalOriginY;
+	result.primary_metrics_differ = FAILED(primary_hr) || from_primary.advanceWidth != from_fallback.advanceWidth ||
+	                                from_primary.verticalOriginY != from_fallback.verticalOriginY;
 
 	result.available = true;
 	return result;
@@ -654,10 +596,9 @@ font_renderer_ptr factories::font_face(const render::font_face type, const int b
 	// Named faces vary with the context's base size; a custom face already carries its pixel size.
 	render::font_desc custom;
 	const auto is_custom = render::detail::custom_font_description(type, custom);
-	const auto key = is_custom
-		                 ? (uint64_t{1} << 63) | static_cast<uint32_t>(type)
-		                 : static_cast<uint64_t>(static_cast<uint32_t>(type)) |
-		                   static_cast<uint64_t>(static_cast<uint32_t>(base_font_size)) << 32;
+	const auto key = is_custom ? (uint64_t{1} << 63) | static_cast<uint32_t>(type)
+	                           : static_cast<uint64_t>(static_cast<uint32_t>(type)) |
+	                                 static_cast<uint64_t>(static_cast<uint32_t>(base_font_size)) << 32;
 	const auto found = font_renderers.find(key);
 
 	if (found != font_renderers.end()) return found->second;
@@ -691,26 +632,18 @@ font_renderer_ptr factories::font_face(const render::font_face type, const int b
 	{
 		switch (type)
 		{
-		case render::font_face::dialog:
-			result = create_font_face(L"Calibri", base_font_size);
-			break;
-		case render::font_face::code:
-			result = create_font_face(L"Consolas", base_font_size * 4 / 5);
-			break;
+		case render::font_face::dialog: result = create_font_face(L"Calibri", base_font_size); break;
+		case render::font_face::code: result = create_font_face(L"Consolas", base_font_size * 4 / 5); break;
 		case render::font_face::icons:
 			result = create_icon_font_face(core::mul_div(base_font_size, icon_font_scale_num, icon_font_scale_den));
 			break;
 		case render::font_face::small_icons:
-			result = create_icon_font_face(core::mul_div(base_font_size, icon_font_scale_num * 10, icon_font_scale_den * 16));
+			result = create_icon_font_face(
+				core::mul_div(base_font_size, icon_font_scale_num * 10, icon_font_scale_den * 16));
 			break;
-		case render::font_face::title:
-			result = create_font_face(L"Calibri", base_font_size * 3 / 2);
-			break;
-		case render::font_face::mega:
-			result = create_font_face(L"Calibri", base_font_size * 9 / 4);
-			break;
-		default:
-			break;
+		case render::font_face::title: result = create_font_face(L"Calibri", base_font_size * 3 / 2); break;
+		case render::font_face::mega: result = create_font_face(L"Calibri", base_font_size * 9 / 4); break;
+		default: break;
 		}
 	}
 
@@ -723,8 +656,12 @@ font_renderer_ptr factories::font_face(const render::font_face type, const int b
 		const auto underline = is_custom && custom.underline;
 		const auto strikeout = is_custom && custom.strikeout;
 		result = create_font_face(L"Arial", size, weight, italic, underline, strikeout, is_custom && custom.cell_size);
-		if (!result) result = create_font_face(L"Tahoma", size, weight, italic, underline, strikeout, is_custom && custom.cell_size);
+		if (!result)
+			result = create_font_face(L"Tahoma", size, weight, italic, underline, strikeout,
+			                          is_custom && custom.cell_size);
 	}
+
+	if (result) result->_ui_thread_only = !standalone;
 
 	// diffractor#232: cache the outcome for this key - including a null result - so a
 	// known-bad key (requested font and all fallbacks unavailable) is never retried.
@@ -743,7 +680,8 @@ render::font_cache_probe render::probe_font_cache(const int base_font_size)
 	factories f;
 
 	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-		reinterpret_cast<IUnknown**>(f.dwrite.GetAddressOf()))) || !f.dwrite)
+	                               reinterpret_cast<IUnknown**>(f.dwrite.GetAddressOf()))) ||
+	    !f.dwrite)
 	{
 		return result;
 	}
@@ -758,7 +696,7 @@ render::font_cache_probe render::probe_font_cache(const int base_font_size)
 	// diffractor#232: the repeat must come from the cache, so no family lookup and no log line.
 	const auto repeat = f.font_face(face, base_font_size);
 	result.same_request_is_cached = repeat == first &&
-		static_cast<int>(f.font_renderers.size()) == result.entries_after_first;
+	                                static_cast<int>(f.font_renderers.size()) == result.entries_after_first;
 
 	// diffractor#189: the size is part of the key, so a Large Font toggle cannot hand back the
 	// old-size face (and with it the glyph cache built at that size).
@@ -776,9 +714,9 @@ render::font_cache_probe render::probe_font_cache(const int base_font_size)
 }
 
 font_renderer::font_renderer(const ComPtr<IDWriteFactory>& factory, const ComPtr<IDWriteFontFace>& face,
-                             ComPtr<IDWriteTextFormat> text_format, const int font_size,
-                             const bool underline, const bool strikeout) : _factory(factory),
-	_face(face), _text_format(std::move(text_format)), _font_size(font_size), _underline(underline),
+                             ComPtr<IDWriteTextFormat> text_format, const int font_size, const bool underline,
+                             const bool strikeout) :
+	_factory(factory), _face(face), _text_format(std::move(text_format)), _font_size(font_size), _underline(underline),
 	_strikeout(strikeout)
 {
 	_face->GetMetrics(&_metrics);
@@ -817,7 +755,7 @@ render_char_result font_renderer::render_glyph(const uint16_t glyph_index, const
 	render_char_result result{};
 
 	const auto line_height = core::mul_div(_metrics.ascent + _metrics.descent + _metrics.lineGap, _font_size,
-	                                     _metrics.designUnitsPerEm);
+	                                       _metrics.designUnitsPerEm);
 	const auto base_line_height = core::mul_div(_metrics.ascent, _font_size, _metrics.designUnitsPerEm);
 
 	DWRITE_GLYPH_METRICS glyph_metrics{};
@@ -849,15 +787,8 @@ render_char_result font_renderer::render_glyph(const uint16_t glyph_index, const
 		run.bidiLevel = 0;
 
 		ComPtr<IDWriteGlyphRunAnalysis> analysis;
-		if (SUCCEEDED(_factory->CreateGlyphRunAnalysis(
-			&run,
-			1.0f,
-			nullptr,
-			DWRITE_RENDERING_MODE_NATURAL,
-			DWRITE_MEASURING_MODE_NATURAL,
-			0,
-			0,
-			&analysis)))
+		if (SUCCEEDED(_factory->CreateGlyphRunAnalysis(&run, 1.0f, nullptr, DWRITE_RENDERING_MODE_NATURAL,
+		                                               DWRITE_MEASURING_MODE_NATURAL, 0, 0, &analysis)))
 		{
 			RECT bbox{};
 
@@ -870,7 +801,8 @@ render_char_result font_renderer::render_glyph(const uint16_t glyph_index, const
 				bbox2.bottom = bbox2.top + line_height;
 
 				const auto char_width = bbox2.right - bbox2.left;
-				const auto char_top = core::mul_div(glyph_metrics.verticalOriginY, _font_size, _metrics.designUnitsPerEm);
+				const auto char_top = core::mul_div(glyph_metrics.verticalOriginY, _font_size,
+				                                    _metrics.designUnitsPerEm);
 				const auto buffer_len = char_width * line_height * 3;
 
 				if (buffer_len > 0)
@@ -881,9 +813,8 @@ render_char_result font_renderer::render_glyph(const uint16_t glyph_index, const
 					{
 						memset(buffer.get(), 0, buffer_len);
 
-						if (SUCCEEDED(
-							analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bbox2, buffer.get(), buffer_len
-							)))
+						if (SUCCEEDED(analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bbox2, buffer.get(),
+						                                           buffer_len)))
 						{
 							result.pixels.resize(char_width * line_height);
 							result.cx = char_width;
@@ -902,7 +833,7 @@ render_char_result font_renderer::render_glyph(const uint16_t glyph_index, const
 								{
 									// Bounds check to prevent buffer overrun
 									if (dest + x < result.pixels.data() + result.pixels.size() &&
-										src + 2 < buffer.get() + buffer_len)
+									    src + 2 < buffer.get() + buffer_len)
 									{
 										dest[x] = (*src + *(src + 1) + *(src + 2)) / 3;
 									}
@@ -928,20 +859,14 @@ static void configure_layout(const ComPtr<IDWriteTextLayout>& layout, const rend
 	{
 	case render::text_style::none: break;
 	case render::text_style::single_line: break;
-	case render::text_style::single_line_center:
-		text_alignment = DWRITE_TEXT_ALIGNMENT_CENTER;
-		break;
-	case render::text_style::single_line_far:
-		text_alignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
-		break;
-	case render::text_style::multiline:
-		word_wrapping = DWRITE_WORD_WRAPPING_WRAP;
-		break;
+	case render::text_style::single_line_center: text_alignment = DWRITE_TEXT_ALIGNMENT_CENTER; break;
+	case render::text_style::single_line_far: text_alignment = DWRITE_TEXT_ALIGNMENT_TRAILING; break;
+	case render::text_style::multiline: word_wrapping = DWRITE_WORD_WRAPPING_WRAP; break;
 	case render::text_style::multiline_center:
 		text_alignment = DWRITE_TEXT_ALIGNMENT_CENTER;
 		word_wrapping = DWRITE_WORD_WRAPPING_WRAP;
 		break;
-	default: ;
+	default:;
 	}
 
 	layout->SetWordWrapping(word_wrapping);
@@ -1058,9 +983,8 @@ std::vector<int> text_layout_impl::offset_xs(const std::vector<size_t>& utf8_off
 	for (const auto offset : utf8_offsets)
 	{
 		const auto found = std::ranges::lower_bound(_utf8_offsets, offset);
-		const auto index = found == _utf8_offsets.end()
-			                   ? _utf16_positions.size() - 1
-			                   : static_cast<size_t>(found - _utf8_offsets.begin());
+		const auto index = found == _utf8_offsets.end() ? _utf16_positions.size() - 1
+		                                                : static_cast<size_t>(found - _utf8_offsets.begin());
 		positions.emplace_back(_utf16_positions[index]);
 	}
 
@@ -1069,8 +993,7 @@ std::vector<int> text_layout_impl::offset_xs(const std::vector<size_t>& utf8_off
 
 void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, const std::wstring_view text,
                          const core::recti bounds, const render::text_style style, const core::color color,
-                         const core::color bg,
-                         const std::vector<render::text_highlight_t>& highlights)
+                         const core::color bg, const std::vector<render::text_highlight_t>& /*highlights*/)
 {
 	if (text.empty() || text.size() > INT_MAX)
 	{
@@ -1079,8 +1002,7 @@ void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, cons
 
 	ComPtr<IDWriteTextLayout> layout;
 	const auto hr = _factory->CreateTextLayout(text.data(), static_cast<int>(text.size()), _text_format.Get(), 0.0f,
-	                                           0.0f,
-	                                           &layout);
+	                                           0.0f, &layout);
 
 	if (SUCCEEDED(hr))
 	{
@@ -1090,8 +1012,8 @@ void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, cons
 	}
 }
 
-void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, IDWriteTextLayout* layout, const core::recti bounds,
-                         const core::color color, const core::color bg)
+void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, IDWriteTextLayout* layout,
+                         const core::recti bounds, const core::color /*color*/, const core::color bg)
 {
 	if (!layout)
 	{
@@ -1114,9 +1036,7 @@ void font_renderer::draw(render::draw_context* dc, IDWriteTextRenderer* tr, IDWr
 		}
 	}
 
-	layout->Draw(nullptr, tr,
-	             static_cast<float>(bounds.left),
-	             static_cast<float>(bounds.top));
+	layout->Draw(nullptr, tr, static_cast<float>(bounds.left), static_cast<float>(bounds.top));
 }
 
 void font_renderer::trim_layout_cache()
@@ -1137,7 +1057,7 @@ void font_renderer::trim_layout_cache()
 IDWriteTextLayout* font_renderer::cached_layout(const std::string_view text, const render::text_style style,
                                                 const bool for_draw)
 {
-	core::assert_true(platform::is_ui_thread());
+	core::assert_true(!_ui_thread_only || platform::is_ui_thread());
 
 	// The returned pointer is only valid until the next lookup, which may evict it. Nothing reached
 	// from layout->Draw draws text, so a layout cannot be evicted while it is being drawn.
@@ -1159,7 +1079,8 @@ IDWriteTextLayout* font_renderer::cached_layout(const std::string_view text, con
 	ComPtr<IDWriteTextLayout> layout;
 
 	if (FAILED(_factory->CreateTextLayout(textw.data(), static_cast<int>(textw.size()), _text_format.Get(), 0.0f, 0.0f,
-	                                      &layout)) || !layout)
+	                                      &layout)) ||
+	    !layout)
 	{
 		return nullptr;
 	}
@@ -1172,8 +1093,7 @@ IDWriteTextLayout* font_renderer::cached_layout(const std::string_view text, con
 	{
 		// Matches the wstring measure overload: wrapping only, so a measured extent keeps meaning
 		// what it did before the cache existed.
-		const auto no_wrap = style != render::text_style::multiline &&
-			style != render::text_style::multiline_center;
+		const auto no_wrap = style != render::text_style::multiline && style != render::text_style::multiline_center;
 		layout->SetWordWrapping(no_wrap ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
 	}
 	configure_decorations(layout.Get(), static_cast<uint32_t>(textw.size()));
@@ -1190,7 +1110,7 @@ IDWriteTextLayout* font_renderer::cached_layout(const std::string_view text, con
 }
 
 core::sizei font_renderer::measure(const std::string_view text, const render::text_style style, const int width,
-                             int height)
+                                   int height)
 {
 	if (height == 0) height = 1000;
 

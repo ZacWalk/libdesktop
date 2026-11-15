@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Headless tests for the document control's layout, selection, wrapping and editing seams.
 
@@ -51,8 +50,8 @@ namespace
 		layout(view, measure, {400, 320});
 		view.layout();
 
-		for (const auto location : {ui::text_location{0, 0}, ui::text_location{6, 0},
-		                            ui::text_location{3, 1}, ui::text_location{5, 2}})
+		for (const auto location :
+		     {ui::text_location{0, 0}, ui::text_location{6, 0}, ui::text_location{3, 1}, ui::text_location{5, 2}})
 		{
 			const auto point = view.text_to_client(location);
 			const auto back = view.text_at(point);
@@ -140,8 +139,8 @@ namespace
 		ui::test::fake_draw_context draw({0, 0, 400, 320});
 		view.paint(draw, false);
 
-		assert_equal(true, draw.drawn_text().find("visible text") != std::string::npos,
-		             "painted text", "document drawing");
+		assert_equal(true, draw.drawn_text().find("visible text") != std::string::npos, "painted text",
+		             "document drawing");
 		assert_equal(true, !draw.fills.empty(), "paint fills", "document drawing");
 	}
 	void should_not_cut_when_the_clipboard_refuses()
@@ -235,8 +234,60 @@ namespace
 
 }
 
+namespace
+{
+	void should_keep_document_panels_consistent()
+	{
+		ui::test::recording_view_host host;
+		const ui::view_theme theme;
+		ui::test::fake_measure_context mc;
+		core::recti expected;
+		const std::vector<std::shared_ptr<ui::doc_view>> contents{std::make_shared<ui::read_only_doc_view>(host, theme),
+		                                                          std::make_shared<ui::markdown_view>(host, theme),
+		                                                          std::make_shared<ui::hex_view>(host, theme)};
+		for (const auto& content : contents)
+		{
+			auto buffer = std::make_shared<ui::text_buffer>(host);
+			buffer->set_text("document");
+			content->set_buffer(buffer, {});
+			ui::document_panel panel(content);
+			const auto extent = panel.measure(mc, 300);
+			assert_equal(300, extent.cx, "each document panel fills its column");
+			assert_equal(ui::panel_element::content_padding * 2, extent.cy,
+			             "each document viewport has the same inset");
+			panel.layout(mc, {20, 30, 320, 94});
+			assert_equal(true, content->bounds == core::recti(28, 38, 312, 86), "flex applies the common panel inset");
+			if (content == contents.front()) expected = content->bounds;
+			else assert_equal(true, expected == content->bounds, "text, Markdown and hex share panel geometry");
+			int visited = 0;
+			panel.visit_children([&](const ui::element_ptr& child)
+			{
+				if (child == content) ++visited;
+			});
+			assert_equal(1, visited, "panel exposes document input to the element tree");
+			ui::test::fake_draw_context dc({0, 0, 500, 300});
+			dc.colors.background = 0x808080;
+			dc.colors.bg_alpha = 0;
+			panel.render(dc, {5, 7});
+			assert_equal(true, !dc.texts.empty(), "panel renders its document content");
+			assert_equal(true,
+			             std::ranges::any_of(dc.fills, [&](const auto& fill)
+			{ return fill.rect == panel.bounds.offset(5, 7) && fill.color.a > 0.1f; }),
+			             "the document's own panel remains visible independently of overlay background alpha");
+			content->select_all_text();
+			assert_equal_strict("document", content->select_text(), "panel leaves source selection and copy intact");
+		}
+		mc.scale_factor = 2.0;
+		auto content = std::make_shared<ui::read_only_doc_view>(host, theme);
+		ui::document_panel panel(content);
+		panel.layout(mc, {0, 0, 300, 100});
+		assert_equal(ui::panel_element::content_padding * 2, content->bounds.left, "panel padding scales exactly once");
+	}
+}
+
 void register_ui_doc_view_tests(test_registry& tests)
 {
+	tests.add(std::string("Should keep document panels consistent"), should_keep_document_panels_consistent);
 	tests.add("Should round-trip document hit testing"s, should_round_trip_document_locations);
 	tests.add("Should wrap without changing document text"s, should_wrap_without_changing_the_buffer);
 	tests.add("Should select and copy document text"s, should_select_and_copy_document_text);

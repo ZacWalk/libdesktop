@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UI frame hosts, windows, modal bubbles, and focus snapshots.
 
@@ -26,49 +25,33 @@ namespace ui
 		virtual void on_window_layout(render::measure_context& mc, core::sizei extent, bool is_minimized) = 0;
 		virtual void on_window_paint(render::draw_context& dc) = 0;
 
-		virtual void on_window_destroy()
-		{
-		}
+		virtual void on_window_destroy() {}
 
-		virtual void on_mouse_move(const core::pointi loc, bool is_tracking)
-		{
-		}
+		virtual void on_mouse_move(const core::pointi /*loc*/, bool /*is_tracking*/) {}
 
-		virtual void on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys)
-		{
-		}
+		virtual void on_mouse_left_button_down(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
 
-		virtual void on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys)
-		{
-		}
+		virtual void on_mouse_left_button_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
 
-		virtual void on_mouse_middle_button_down(const core::pointi loc, const platform::key_state keys)
-		{
-		}
+		virtual void on_mouse_middle_button_down(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
 
-		virtual void on_mouse_middle_button_up(const core::pointi loc, const platform::key_state keys)
-		{
-		}
+		virtual void on_mouse_middle_button_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
 
 		// The right button's press and release, for a host that uses the button itself (an emulated
 		// mouse). A host's context menu still comes from menu(), which the platform raises separately.
-		virtual void on_mouse_right_button_down(const core::pointi loc, const platform::key_state keys)
+		virtual void on_mouse_right_button_down(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
+
+		virtual void on_mouse_right_button_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) {}
+
+		virtual void on_mouse_leave(const core::pointi /*loc*/) {}
+
+		virtual void on_mouse_wheel(const core::pointi /*loc*/, const int /*delta*/, const platform::key_state /*keys*/,
+		                            bool& /*was_handled*/)
 		{
 		}
 
-		virtual void on_mouse_right_button_up(const core::pointi loc, const platform::key_state keys)
-		{
-		}
-
-		virtual void on_mouse_leave(const core::pointi loc)
-		{
-		}
-
-		virtual void on_mouse_wheel(const core::pointi loc, const int delta, const platform::key_state keys, bool& was_handled)
-		{
-		}
-
-		virtual void on_mouse_hwheel(const core::pointi loc, const int delta, const platform::key_state keys, bool& was_handled)
+		virtual void on_mouse_hwheel(const core::pointi /*loc*/, const int /*delta*/,
+		                             const platform::key_state /*keys*/, bool& /*was_handled*/)
 		{
 		}
 
@@ -76,115 +59,79 @@ namespace ui
 		// the modifier then had to be disambiguated by what the pointer was over, and over a grid it
 		// meant something else entirely. `begins` opens a gesture, so the accumulator carrying its
 		// sub-detent remainder belongs to that gesture rather than to the window.
-		virtual void on_pinch(const core::pointi loc, const int delta, const bool begins, bool& was_handled)
+		virtual void on_pinch(const core::pointi /*loc*/, const int /*delta*/, const bool /*begins*/,
+		                      bool& /*was_handled*/)
 		{
 		}
 
-		virtual void on_mouse_left_button_double_click(const core::pointi loc, const platform::key_state keys)
+		virtual void on_mouse_left_button_double_click(const core::pointi /*loc*/, const platform::key_state /*keys*/)
 		{
 		}
 
-		virtual void on_mouse_other_button_up(
-			const platform::other_mouse_button& button, const core::pointi loc, const platform::key_state keys)
+		virtual void on_mouse_other_button_up(const platform::other_mouse_button& /*button*/,
+		                                      const core::pointi /*loc*/, const platform::key_state /*keys*/)
 		{
 		}
 
-		virtual void pan_start(const core::pointi start_loc)
-		{
-		}
+		virtual void pan_start(const core::pointi /*start_loc*/) {}
 
-		virtual void pan(const core::pointi start_loc, const core::pointi current_loc)
-		{
-		}
+		virtual void pan(const core::pointi /*start_loc*/, const core::pointi /*current_loc*/) {}
 
-		virtual void pan_end(const core::pointi start_loc, const core::pointi final_loc)
-		{
-		}
+		virtual void pan_end(const core::pointi /*start_loc*/, const core::pointi /*final_loc*/) {}
 
 		// Returns false when the tap has no touch-specific meaning, so the caller runs the normal double-click.
-		virtual bool touch_double_tap(const core::pointi location)
-		{
-			return false;
-		}
+		virtual bool touch_double_tap(const core::pointi /*location*/) { return false; }
 
 		// Told of the keyboard coming to or leaving one of its controls.
-		virtual void focus_changed(const bool has_focus, const control_ptr& child)
-		{
-		}
+		virtual void focus_changed(const bool /*has_focus*/, const control_ptr& /*child*/) {}
 
 		// Told of the keyboard coming to or leaving a pane, a frame of its own; as any other change of
 		// focus unless the host needs to know which.
-		virtual void pane_focus_changed(const bool has_focus, const frame_ptr& pane)
+		virtual void pane_focus_changed(const bool has_focus, const frame_ptr& /*pane*/)
 		{
 			focus_changed(has_focus, nullptr);
 		}
 
-		virtual void tick()
-		{
-		}
+		virtual void tick() {}
 
-		virtual void activate(bool is_active)
-		{
-		}
+		virtual void activate(bool /*is_active*/) {}
 
-		virtual bool key_down(const int c, const platform::key_state keys)
-		{
-			return false;
-		}
+		virtual bool key_down(const char32_t /*c*/, const platform::key_state /*keys*/) { return false; }
 
-		virtual void command_hover(const command_ptr& c, const core::recti window_bounds)
-		{
-		}
+		virtual void command_hover(const command_ptr& /*c*/, const core::recti /*window_bounds*/) {}
 
-		virtual std::vector<command_ptr> menu(const core::pointi loc)
-		{
-			return {};
-		}
+		virtual std::vector<command_ptr> menu(const core::pointi /*loc*/) { return {}; }
 
-		virtual platform::drop_effect drag_over(const platform::clipboard_data& data, const platform::key_state keys,
-		                                        const core::pointi loc)
+		virtual platform::drop_effect drag_over(const platform::clipboard_data& /*data*/,
+		                                        const platform::key_state /*keys*/, const core::pointi /*loc*/)
 		{
 			return platform::drop_effect::none;
 		}
 
-		virtual platform::drop_effect drag_drop(platform::clipboard_data& data, const platform::key_state keys, const core::pointi loc)
+		virtual platform::drop_effect drag_drop(platform::clipboard_data& /*data*/, const platform::key_state /*keys*/,
+		                                        const core::pointi /*loc*/)
 		{
 			return platform::drop_effect::none;
 		}
 
-		virtual void drag_leave()
-		{
-		}
+		virtual void drag_leave() {}
 
-		virtual bool is_control_area(const core::pointi loc)
-		{
-			return true;
-		}
+		virtual bool is_control_area(const core::pointi /*loc*/) { return true; }
 
-		virtual bool is_caption_area(const core::pointi loc) const
-		{
-			return false;
-		}
+		virtual bool is_caption_area(const core::pointi /*loc*/) const { return false; }
 
 		// Whether a press at loc on the frame's own ground - not on a control - gives the frame itself the
 		// keyboard, where its style says a press does: a region of controls drawn beside the frame's content
 		// answers false, so a press between its controls leaves the keyboard with them.
-		virtual bool takes_keyboard_at(const core::pointi loc) const
-		{
-			return true;
-		}
+		virtual bool takes_keyboard_at(const core::pointi /*loc*/) const { return true; }
 
-		virtual void dpi_changed()
-		{
-		}
+		virtual void dpi_changed() {}
 
 		// The elements this host draws, each with where its content coordinates sit in the frame - a
 		// scrolled region's offset included. The frame finds what it serves among them, and their
 		// descendants: the drawn controls, which take the pointer under them, the keyboard when focused
 		// and Tab in this order, and the frame elements, whose frames it places after each layout.
-		virtual void visit_elements(const std::function<void(const element_ptr&, core::pointi offset)>& visit)
-		{
-		}
+		virtual void visit_elements(const std::function<void(const element_ptr&, core::pointi offset)>& /*visit*/) {}
 	};
 
 	struct frame_style
@@ -216,11 +163,12 @@ namespace ui
 		// faster frames sets platform::set_frame_delay and does its work in frame_tick.
 		int timer_milliseconds = 0;
 
-		render::color_style colors = {
-			style::colors.dialog_background, style::colors.dialog_text, style::colors.dialog_selected_background
-		};
-	};
+		render::color_style colors = {style::colors.dialog_background, style::colors.dialog_text,
+		                              style::colors.dialog_selected_background};
 
+		// A child pane composed into its parent's surface, without a native window or device.
+		bool embedded = false;
+	};
 
 	// The radio buttons a frame shows check one per group. An application with more than one set in a
 	// frame gives each its own id.
@@ -246,12 +194,17 @@ namespace ui
 		virtual bool has_focus() const = 0;
 		virtual core::recti window_bounds() const = 0;
 		virtual void window_bounds(core::recti bounds, bool visible) = 0;
+		// Native child-window bounds are parent-relative; client points need the full desktop transform.
+		virtual core::pointi client_to_screen(core::pointi loc) const = 0;
 		virtual void show(bool show) = 0;
 		virtual void options_changed() = 0;
 
 		virtual void invalidate(core::recti bounds = {}, bool erase = false) = 0;
 		virtual void layout() = 0;
-		virtual void redraw() = 0;
+		// Presents what the frame last painted again, without painting it: a texture or vertices it draws changed
+		// in place - a video frame, a visualisation. Only bounds, in the frame's client pixels, is repainted,
+		// where the renderer can limit it; empty is the whole frame.
+		virtual void redraw(core::recti bounds = {}) = 0;
 		virtual void redraw_now() = 0;
 		virtual void scroll(int dx, int dy, core::recti bounds) = 0;
 		virtual void track_menu(core::recti button_bounds, const std::vector<command_ptr>& buttons) = 0;
@@ -326,12 +279,13 @@ namespace ui
 		bool has_focus() const override { return false; }
 		core::recti window_bounds() const override { return {}; }
 		void window_bounds(core::recti, bool) override {}
+		core::pointi client_to_screen(const core::pointi loc) const override { return loc; }
 		void show(bool) override {}
 		void options_changed() override {}
 
 		void invalidate(core::recti = {}, bool = false) override {}
 		void layout() override {}
-		void redraw() override {}
+		void redraw(core::recti = {}) override {}
 		void redraw_now() override {}
 		void scroll(int, int, core::recti) override {}
 		void track_menu(core::recti, const std::vector<command_ptr>&) override {}
@@ -390,4 +344,32 @@ namespace ui
 
 	focus_snapshot save_focus();
 	void restore_focus(const focus_snapshot& snapshot);
+
+	// Input given to a frame as its window's own events would give it, for an agent or a test working the window from
+	// outside: it takes real input's path - hit testing, the drawn controls' focus, pointer capture and keys, then the
+	// frame's host - and a modal loop it opens, a dialog's or a menu's, runs inside the call. A press gives its window
+	// the keyboard as activating it would, an offscreen one included. While a menu is open its loop has the input
+	// first, as it has the platform's: a press outside the menu closes it, keys go to it, and typed text goes nowhere.
+	// It is the user's activity as real input is, holding off what waits for the user to go idle
+	// (platform::ticks_since_last_user_action). loc is in the frame's own client pixels. Each answers false where the
+	// frame has no window to take it, or its window takes no input while a dialog holds it.
+	enum class pointer_input
+	{
+		move,
+		down,
+		up,
+		double_click,
+		leave
+	};
+
+	bool send_pointer(const frame_ptr& frame, pointer_input input, platform::pointer_button button, core::pointi loc,
+	                  platform::key_state keys = {});
+	// delta is in the platform's wheel units, 120 to a detent; a positive one turns the wheel away from the user.
+	bool send_wheel(const frame_ptr& frame, core::pointi loc, int delta, platform::key_state keys = {});
+	// The context menu the platform raises at loc once the right button is let go there.
+	bool send_context_menu(const frame_ptr& frame, core::pointi loc);
+	// A key pressed and let go, and typed text, given to whichever of the application's frames holds the keyboard -
+	// or, where none does, to frame. send_text answers false while a menu is open.
+	bool send_key(const frame_ptr& frame, char32_t key, platform::key_state keys = {});
+	bool send_text(const frame_ptr& frame, std::string_view utf8);
 }

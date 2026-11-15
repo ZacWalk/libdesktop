@@ -21,6 +21,8 @@ set(libdesktop_platform_headers
 
 add_library(libdesktop-platform STATIC
     ${libdesktop_platform_headers}
+    src/platform/agent.h
+    src/platform/agent.cpp
     src/platform/platform_common.cpp
     src/platform/keys.cpp
     src/platform/resources.cpp
@@ -34,7 +36,7 @@ target_include_directories(libdesktop-platform PUBLIC "${CMAKE_CURRENT_SOURCE_DI
 target_precompile_headers(libdesktop-platform PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/libdesktop/platform.h")
 
 if(MSVC)
-    target_compile_options(libdesktop-platform PUBLIC /utf-8 PRIVATE /bigobj /W3 /sdl)
+    target_compile_options(libdesktop-platform PUBLIC /utf-8 PRIVATE /bigobj /W4 /sdl)
     libdesktop_enable_msvc_exceptions(libdesktop-platform)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(libdesktop-platform PRIVATE -Wall -Wno-unknown-pragmas -Wno-multichar)

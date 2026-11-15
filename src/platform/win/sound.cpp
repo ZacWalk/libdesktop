@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows audio output. platform::audio_output is the os:: services' WASAPI endpoint, the one
 // engine libdesktop's own sounds and streams play through as well; this wraps it in the platform::
@@ -46,9 +45,7 @@ namespace
 		const os::audio_output_ptr _native;
 
 	public:
-		explicit os_audio_output(os::audio_output_ptr native) : _native(std::move(native))
-		{
-		}
+		explicit os_audio_output(os::audio_output_ptr native) : _native(std::move(native)) {}
 
 		std::string id() override { return _native->id(); }
 		platform::audio_output_format format() override { return to_platform(_native->format()); }

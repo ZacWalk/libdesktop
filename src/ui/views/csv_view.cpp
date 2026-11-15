@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Implement the source-preserving CSV table control
 
@@ -48,8 +47,7 @@ namespace
 				last_break = -1;
 				columns_at_break = 0;
 			}
-			else
-				column += advance;
+			else column += advance;
 		}
 	}
 
@@ -61,8 +59,8 @@ namespace
 
 namespace ui
 {
-	csv_view::csv_view(view_host& host, const view_theme& theme, view_context* context, text_clipboard* clipboard)
-		: read_only_doc_view(host, theme, context, clipboard)
+	csv_view::csv_view(view_host& host, const view_theme& theme, view_context* context, text_clipboard* clipboard) :
+		read_only_doc_view(host, theme, context, clipboard)
 	{
 		_sel_margin = false;
 		_word_wrap = true;
@@ -70,8 +68,16 @@ namespace ui
 
 	csv_view::~csv_view() = default;
 
+	csv_view::csv_view(const view_theme& theme, view_context* context, text_clipboard* clipboard) :
+		read_only_doc_view(theme, context, clipboard)
+	{
+		_sel_margin = false;
+		_word_wrap = true;
+	}
+
 	void csv_view::set_buffer(const text_buffer_ptr& document, highlight_fn highlight)
 	{
+		cancel_column_drag();
 		_table = {};
 		read_only_doc_view::set_buffer(document, std::move(highlight));
 		rebuild_table();
@@ -136,8 +142,8 @@ namespace ui
 			const auto font_cy = _font_extent.cy;
 			const auto line_count = static_cast<int>(_doc->size());
 			const auto first_visual_row = font_cy > 0
-			                              ? std::max(0, (_scroll_offset.y - top_content_padding()) / font_cy)
-			                              : 0;
+			                                  ? std::max(0, (_scroll_offset.y - top_content_padding()) / font_cy)
+			                                  : 0;
 			int line_index = _wrap_line_y.empty() ? 0 : visual_row_to_line_index(first_visual_row);
 			line_index = std::clamp(line_index, 0, std::max(0, line_count - 1));
 			int y = line_offset(line_index) - _scroll_offset.y + text_top();
@@ -150,15 +156,16 @@ namespace ui
 				const auto row_background = selected ? _theme.style_color(text_style::sel_bkgnd) : background;
 				const auto pipe = _theme.style_color(selected ? text_style::sel_text : text_style::md_marker);
 				const auto text_color = _theme.style_color(selected ? text_style::sel_text
-			                                             : header ? text_style::md_bold : text_style::normal_text);
-				y += table_layout::draw_table_row(draw, y, left_pad(), client.right, _cells, _table, font,
-				                                  font_cx, font_cy, header, row_background, pipe, text_color,
-				                                  _cell_breaks, cell_breaks_fn) * font_cy;
+				                                           : header ? text_style::md_bold
+				                                                    : text_style::normal_text);
+				y += table_layout::draw_table_row(draw, y, left_pad(), client.right, _cells, _table, font, font_cx,
+				                                  font_cy, header, row_background, pipe, text_color, _cell_breaks,
+				                                  cell_breaks_fn) *
+				     font_cy;
 				if (header && line_count > 1 && y < client.bottom)
 				{
-					table_layout::draw_separator_row(draw, y, left_pad(), client.right, _table, font,
-					                                  font_cx, font_cy, background,
-					                                  _theme.style_color(text_style::md_marker));
+					table_layout::draw_separator_row(draw, y, left_pad(), client.right, _table, font, font_cx, font_cy,
+					                                 background, _theme.style_color(text_style::md_marker));
 					y += font_cy;
 				}
 				++line_index;
@@ -170,10 +177,8 @@ namespace ui
 
 	void csv_view::cell_breaks_fn(std::vector<int>& out, const std::string_view text, const int col_width)
 	{
-		calc_word_breaks_into(out, text, col_width, [&](const int i, int) -> int
-		{
-			return core::is_utf8_continuation(text[i]) ? 0 : 1;
-		});
+		calc_word_breaks_into(out, text, col_width,
+		                      [&](const int i, int) -> int { return core::is_utf8_continuation(text[i]) ? 0 : 1; });
 	}
 
 	int csv_view::record_visual_rows(const int line_index) const
@@ -184,8 +189,7 @@ namespace ui
 		for (size_t column = 0; column < _table.col_widths.size() && column < _cells.size(); ++column)
 		{
 			const auto visual = table_layout::cell_visual_rows(table_layout::trim_cell(_cells[column]),
-			                                                 _table.col_widths[column], _cell_breaks,
-			                                                 cell_breaks_fn);
+			                                                   _table.col_widths[column], _cell_breaks, cell_breaks_fn);
 			rows = std::max(rows, visual);
 		}
 		return rows;
@@ -193,7 +197,9 @@ namespace ui
 
 	void csv_view::rebuild_table()
 	{
+		auto sizing = std::move(_table.sizing);
 		_table = {};
+		_table.sizing = std::move(sizing);
 		if (!_doc || _doc->empty()) return;
 		const auto line_count = static_cast<int>(_doc->size());
 		const auto available_width = std::max(1, _view_extent.cx - left_pad());
@@ -212,6 +218,101 @@ namespace ui
 				_table.col_widths[column] = std::max(_table.col_widths[column], width);
 			}
 		}
-		table_layout::cap_col_widths(_table.col_widths, available_columns);
+		table_layout::size_table(_table, available_columns);
+	}
+
+	int csv_view::divider_at(const core::pointi point) const
+	{
+		if (!_doc || _doc->empty() || _vscroll.hit_test(point, scrollbar_rect())) return -1;
+		const auto header = table_layout::table_header_band(_table, left_pad(),
+		                                                    line_offset(0) - _scroll_offset.y + text_top(),
+		                                                    _font_extent.cx, record_visual_rows(0) * _font_extent.cy)
+		                        .intersection(client_rect());
+		return table_layout::table_divider_at(_table, point, header, _font_extent.cx);
+	}
+
+	void csv_view::columns_changed()
+	{
+		layout();
+		invalidate();
+		_host.invalidate_view();
+	}
+
+	bool csv_view::cancel_column_drag()
+	{
+		if (!_column_drag.cancel(_table.sizing)) return false;
+		if (host()) host()->capture_pointer(false);
+		columns_changed();
+		return true;
+	}
+
+	void csv_view::on_mouse_down(const core::pointi point, const platform::key_state keys)
+	{
+		if (_column_drag.begin(_table.sizing, divider_at(point), point.x / std::max(1, _font_extent.cx)))
+		{
+			take_focus(false);
+			if (host()) host()->capture_pointer(true);
+			return;
+		}
+		read_only_doc_view::on_mouse_down(point, keys);
+	}
+
+	void csv_view::on_mouse_move(const core::pointi point, const bool captured)
+	{
+		if (_column_drag.active())
+		{
+			if (!captured) cancel_column_drag();
+			else if (_column_drag.update(_table.sizing, point.x / std::max(1, _font_extent.cx))) columns_changed();
+			return;
+		}
+		read_only_doc_view::on_mouse_move(point, captured);
+	}
+
+	void csv_view::on_mouse_up(const core::pointi point, const platform::key_state keys)
+	{
+		if (_column_drag.active())
+		{
+			if (_column_drag.update(_table.sizing, point.x / std::max(1, _font_extent.cx))) columns_changed();
+			_column_drag.finish();
+			if (host()) host()->capture_pointer(false);
+			return;
+		}
+		read_only_doc_view::on_mouse_up(point, keys);
+	}
+
+	void csv_view::on_double_click(const core::pointi point, const platform::key_state keys)
+	{
+		if (const auto column = divider_at(point); column >= 0)
+		{
+			_column_drag.finish();
+			if (host()) host()->capture_pointer(false);
+			if (_table.sizing.fit(column)) columns_changed();
+			return;
+		}
+		read_only_doc_view::on_double_click(point, keys);
+	}
+
+	bool csv_view::on_key(const char32_t key, const platform::key_state keys)
+	{
+		if (key == platform::keys::ESCAPE && cancel_column_drag()) return true;
+		return read_only_doc_view::on_key(key, keys);
+	}
+
+	void csv_view::on_capture_lost()
+	{
+		cancel_column_drag();
+		read_only_doc_view::on_capture_lost();
+	}
+
+	void csv_view::on_focus(const bool focused, const bool select_all)
+	{
+		if (!focused) cancel_column_drag();
+		read_only_doc_view::on_focus(focused, select_all);
+	}
+
+	platform::cursor csv_view::cursor_at(const core::pointi point) const
+	{
+		if (_column_drag.active() || divider_at(point) >= 0) return platform::cursor::left_right;
+		return read_only_doc_view::cursor_at(point);
 	}
 }

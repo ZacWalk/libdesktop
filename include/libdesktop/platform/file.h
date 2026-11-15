@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Atomic file replacement, path operations and buffered file helpers.
 
@@ -61,7 +60,6 @@ namespace platform
 
 	void test_set_atomic_file_failure(atomic_file_test_failure failure);
 
-
 	inline bool is_int32(const int64_t n)
 	{
 		return n >= 0 && n <= INT32_MAX;
@@ -76,10 +74,7 @@ namespace platform
 	public:
 		buffered_file() = default;
 
-		buffered_file(platform::file_ptr h) : _h(std::move(h))
-		{
-			_h->seek(0, platform::file::whence::begin);
-		}
+		buffered_file(platform::file_ptr h) : _h(std::move(h)) { _h->seek(0, platform::file::whence::begin); }
 
 		~buffered_file() override
 		{
@@ -89,9 +84,8 @@ namespace platform
 
 		bool open_read(const core::file_path path, const bool sequential_scan = false)
 		{
-			_h = platform::open_file(path, sequential_scan
-				                     ? platform::file_open_mode::sequential_scan
-				                     : platform::file_open_mode::read);
+			_h = platform::open_file(path, sequential_scan ? platform::file_open_mode::sequential_scan
+			                                               : platform::file_open_mode::read);
 			return _h != nullptr;
 		}
 
@@ -147,15 +141,9 @@ namespace platform
 			return read > 0;
 		}
 
-		const uint8_t* buffer() const
-		{
-			return _buffer.get();
-		}
+		const uint8_t* buffer() const { return _buffer.get(); }
 
-		size_t buffer_data_size() const
-		{
-			return _buffer_data_size;
-		}
+		size_t buffer_data_size() const { return _buffer_data_size; }
 
 		core::blob read_blob(const size_t size) const
 		{
@@ -170,7 +158,7 @@ namespace platform
 		{
 			const auto size = file_size();
 			if (!_h || start < 0 || replace < 0 || dataSize < 0 || start > static_cast<int64_t>(size) ||
-				replace > static_cast<int64_t>(size) - start || (dataSize > 0 && data == nullptr))
+			    replace > static_cast<int64_t>(size) - start || (dataSize > 0 && data == nullptr))
 			{
 				return false;
 			}
@@ -190,9 +178,8 @@ namespace platform
 				{
 					const auto blockSize = std::min(remaining, buffer_size);
 
-					if (!seek_from_begin(read_pos) || !read(buffer.get(), blockSize) ||
-						!seek_from_begin(write_pos) ||
-						!write(buffer.get(), blockSize))
+					if (!seek_from_begin(read_pos) || !read(buffer.get(), blockSize) || !seek_from_begin(write_pos) ||
+					    !write(buffer.get(), blockSize))
 					{
 						core::assert_true(false);
 						return false;
@@ -215,10 +202,8 @@ namespace platform
 				{
 					const auto block_size = std::min(remaining, buffer_size);
 
-					if (!seek_from_begin(pos - block_size) ||
-						!read(buffer.get(), block_size) ||
-						!seek_from_begin(pos + delta - block_size) ||
-						!write(buffer.get(), block_size))
+					if (!seek_from_begin(pos - block_size) || !read(buffer.get(), block_size) ||
+					    !seek_from_begin(pos + delta - block_size) || !write(buffer.get(), block_size))
 					{
 						core::assert_true(false);
 						return false;
@@ -237,10 +222,7 @@ namespace platform
 			return _h->seek(offset, platform::file::whence::begin) == static_cast<uint64_t>(offset);
 		}
 
-		uint64_t file_size() const
-		{
-			return _h->size();
-		}
+		uint64_t file_size() const { return _h->size(); }
 	};
 	// Whole-file and staged blob operations are platform file services.
 	core::blob blob_from_file(core::file_path path);

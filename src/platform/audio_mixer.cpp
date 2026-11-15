@@ -1,15 +1,13 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Portable WAV mixer and output-engine lifecycle for platform sound services.
 
 #include "libdesktop/platform.h"
-
 
 #include <algorithm>
 #include <atomic>
@@ -25,8 +23,8 @@ namespace
 {
 	constexpr uint32_t four_cc(const char a, const char b, const char c, const char d)
 	{
-		return static_cast<uint8_t>(a) | static_cast<uint8_t>(b) << 8 |
-			static_cast<uint8_t>(c) << 16 | static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24;
+		return static_cast<uint8_t>(a) | static_cast<uint8_t>(b) << 8 | static_cast<uint8_t>(c) << 16 |
+		       static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24;
 	}
 
 	uint16_t read_u16(const uint8_t* p)
@@ -45,9 +43,8 @@ namespace
 
 	// KSDATAFORMAT_SUBTYPE_PCM and _IEEE_FLOAT begin with the format tag they stand for; these are the
 	// fourteen bytes that follow it in both.
-	constexpr uint8_t ks_subtype_tail[14] = {
-		0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71
-	};
+	constexpr uint8_t ks_subtype_tail[14] = {0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80,
+	                                         0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
 
 	// The bounds XAudio2 put on a voice's frequency ratio, which pitching has always been held to.
 	constexpr double min_ratio = 1.0 / 1024.0;
@@ -117,11 +114,11 @@ namespace
 		case 16: return static_cast<int16_t>(read_u16(p)) / 32768.0f;
 		case 24:
 			return static_cast<int32_t>(static_cast<uint32_t>(p[0]) << 8 | static_cast<uint32_t>(p[1]) << 16 |
-				static_cast<uint32_t>(p[2]) << 24) / 2147483648.0f;
+			                            static_cast<uint32_t>(p[2]) << 24) /
+			       2147483648.0f;
 		default:
-			return is_float
-				       ? std::bit_cast<float>(read_u32(p))
-				       : static_cast<float>(static_cast<int32_t>(read_u32(p)) / 2147483648.0);
+			return is_float ? std::bit_cast<float>(read_u32(p))
+			                : static_cast<float>(static_cast<int32_t>(read_u32(p)) / 2147483648.0);
 		}
 	}
 
@@ -134,7 +131,7 @@ namespace
 		const uint32_t _frames;
 
 		// Guarded by the mixer's mutex.
-		double _position = 0.0; // source frames into the sample, while playing
+		double _position = 0.0;    // source frames into the sample, while playing
 		uint32_t _start_frame = 0; // where the next play() begins
 		double _ratio = 1.0;
 		float _gain = 1.0f;
@@ -145,16 +142,13 @@ namespace
 		bool _playing = false;
 
 	public:
-		buffer_voice(std::shared_ptr<void> owner, mixer_ptr mixer, wav_sound sound)
-			: _owner(std::move(owner)), _mixer(std::move(mixer)), _sound(std::move(sound)), _frames(_sound.frames())
+		buffer_voice(std::shared_ptr<void> owner, mixer_ptr mixer, wav_sound sound) :
+			_owner(std::move(owner)), _mixer(std::move(mixer)), _sound(std::move(sound)), _frames(_sound.frames())
 		{
 			_mixer->add(this);
 		}
 
-		~buffer_voice() override
-		{
-			_mixer->remove(this);
-		}
+		~buffer_voice() override { _mixer->remove(this); }
 
 		buffer_voice(const buffer_voice&) = delete;
 		buffer_voice& operator=(const buffer_voice&) = delete;
@@ -339,24 +333,21 @@ namespace
 
 		[[nodiscard]] bool is_silent() const
 		{
-			return _blocks.empty() && _previous[0] == 0.0f && _previous[1] == 0.0f &&
-				_current[0] == 0.0f && _current[1] == 0.0f;
+			return _blocks.empty() && _previous[0] == 0.0f && _previous[1] == 0.0f && _current[0] == 0.0f &&
+			       _current[1] == 0.0f;
 		}
 
 	public:
-		stream_voice(std::shared_ptr<void> owner, mixer_ptr mixer, const uint32_t rate,
-		             const uint32_t channels, const size_t max_blocks)
-			: _owner(std::move(owner)), _mixer(std::move(mixer)), _rate(rate), _channels(channels),
-			  _max_blocks(max_blocks)
+		stream_voice(std::shared_ptr<void> owner, mixer_ptr mixer, const uint32_t rate, const uint32_t channels,
+		             const size_t max_blocks) :
+			_owner(std::move(owner)), _mixer(std::move(mixer)), _rate(rate), _channels(channels),
+			_max_blocks(max_blocks)
 		{
 			_spare.reserve(max_blocks + 1);
 			_mixer->add(this);
 		}
 
-		~stream_voice() override
-		{
-			_mixer->remove(this);
-		}
+		~stream_voice() override { _mixer->remove(this); }
 
 		stream_voice(const stream_voice&) = delete;
 		stream_voice& operator=(const stream_voice&) = delete;
@@ -462,12 +453,9 @@ namespace
 
 		switch (format.sample_format)
 		{
-		case platform::audio_sample_format::float32: result.format = sample_format::float32;
-			return result;
-		case platform::audio_sample_format::int16: result.format = sample_format::int16;
-			return result;
-		case platform::audio_sample_format::int32: result.format = sample_format::int32;
-			return result;
+		case platform::audio_sample_format::float32: result.format = sample_format::float32; return result;
+		case platform::audio_sample_format::int16: result.format = sample_format::int16; return result;
+		case platform::audio_sample_format::int32: result.format = sample_format::int32; return result;
 		case platform::audio_sample_format::none: break;
 		}
 
@@ -495,6 +483,9 @@ namespace
 
 		void run(const std::shared_ptr<std::promise<bool>>& opened)
 		{
+			// The endpoint is the OS's, driven from this thread, which joins COM on Windows. A GUI application's
+			// own threads are single-threaded apartments, so there is no multithreaded one to borrow.
+			const platform::thread_init com;
 			std::optional<output_format> format;
 			auto endpoint = open(format);
 			opened->set_value(endpoint != nullptr);
@@ -530,7 +521,8 @@ namespace
 
 				if (!pending.empty())
 				{
-					const auto written = endpoint->write({pending.data() + pending_offset, pending.size() - pending_offset});
+					const auto written = endpoint->write(
+						{pending.data() + pending_offset, pending.size() - pending_offset});
 					if (written > 0)
 					{
 						pending_offset += written;
@@ -558,10 +550,7 @@ namespace
 			if (_thread.joinable()) _thread.join();
 		}
 
-		[[nodiscard]] const mixer_ptr& mixer() const
-		{
-			return _mixer;
-		}
+		[[nodiscard]] const mixer_ptr& mixer() const { return _mixer; }
 
 		// False, and no thread left running, when there is no endpoint to play through.
 		bool start()
@@ -581,141 +570,141 @@ namespace
 	// it made closes it.
 	std::shared_ptr<engine> s_engine;
 
-std::optional<wav_sound> read_wav(const std::span<const uint8_t> wav)
-{
-	if (wav.size() < 12) return std::nullopt;
-
-	const uint32_t riff_length = read_u32(wav.data() + 4);
-
-	if (read_u32(wav.data()) != four_cc('R', 'I', 'F', 'F') || read_u32(wav.data() + 8) != four_cc('W', 'A', 'V', 'E'))
-		return std::nullopt;
-	if (riff_length < 4 || riff_length > wav.size() - 8)
-		return std::nullopt;
-
-	// Every length is checked against the declared RIFF size, so malformed input cannot read past the end.
-	const uint8_t* format = nullptr;
-	uint32_t format_length = 0;
-	const uint8_t* data = nullptr;
-	uint32_t data_size = 0;
-	const size_t end = static_cast<size_t>(riff_length) + 8;
-	size_t offset = 12;
-
-	while (offset + 8 <= end && !(format && data))
+	std::optional<wav_sound> read_wav(const std::span<const uint8_t> wav)
 	{
-		const uint32_t type = read_u32(wav.data() + offset);
-		const uint32_t length = read_u32(wav.data() + offset + 4);
-		offset += 8;
-		if (length > end - offset) return std::nullopt;
+		if (wav.size() < 12) return std::nullopt;
 
-		if (type == four_cc('f', 'm', 't', ' ') && !format)
+		const uint32_t riff_length = read_u32(wav.data() + 4);
+
+		if (read_u32(wav.data()) != four_cc('R', 'I', 'F', 'F') ||
+		    read_u32(wav.data() + 8) != four_cc('W', 'A', 'V', 'E'))
+			return std::nullopt;
+		if (riff_length < 4 || riff_length > wav.size() - 8) return std::nullopt;
+
+		// Every length is checked against the declared RIFF size, so malformed input cannot read past the end.
+		const uint8_t* format = nullptr;
+		uint32_t format_length = 0;
+		const uint8_t* data = nullptr;
+		uint32_t data_size = 0;
+		const size_t end = static_cast<size_t>(riff_length) + 8;
+		size_t offset = 12;
+
+		while (offset + 8 <= end && !(format && data))
 		{
-			if (length < 16) return std::nullopt;
-			format = wav.data() + offset;
-			format_length = length;
-		}
-		else if (type == four_cc('d', 'a', 't', 'a') && !data)
-		{
-			data = wav.data() + offset;
-			data_size = length;
-		}
+			const uint32_t type = read_u32(wav.data() + offset);
+			const uint32_t length = read_u32(wav.data() + offset + 4);
+			offset += 8;
+			if (length > end - offset) return std::nullopt;
 
-		if (format && data) break;
-
-		const size_t padded = static_cast<size_t>(length) + (length & 1u);
-		if (padded > end - offset) return std::nullopt;
-		offset += padded;
-	}
-
-	if (!format || !data) return std::nullopt;
-
-	const auto tag = read_u16(format);
-	const auto channels = read_u16(format + 2);
-	const auto sample_rate = read_u32(format + 4);
-	const auto block_align = read_u16(format + 12);
-	const auto bits = read_u16(format + 14);
-
-	auto kind = tag;
-
-	if (tag == wave_format_extensible)
-	{
-		// cbSize, then the valid bits, the channel mask and the sub-format: 40 bytes in all.
-		if (format_length < 40 || read_u16(format + 16) < 22) return std::nullopt;
-
-		const auto* const sub_format = format + 24;
-		if (memcmp(sub_format + 2, ks_subtype_tail, sizeof(ks_subtype_tail)) != 0) return std::nullopt;
-		kind = read_u16(sub_format);
-	}
-
-	const auto is_float = kind == wave_format_ieee_float && bits == 32;
-	const auto is_pcm = kind == wave_format_pcm && (bits == 8 || bits == 16 || bits == 24 || bits == 32);
-	if (!is_float && !is_pcm) return std::nullopt;
-	if (channels < 1 || channels > 2 || sample_rate == 0) return std::nullopt;
-
-	const uint32_t sample_bytes = bits / 8u;
-	if (block_align != channels * sample_bytes) return std::nullopt;
-
-	const auto frames = data_size / block_align;
-	if (frames == 0) return std::nullopt;
-
-	wav_sound result;
-	result.sample_rate = sample_rate;
-	result.channels = channels;
-	result.block_align = block_align;
-	result.samples.resize(static_cast<size_t>(frames) * channels);
-
-	for (size_t i = 0; i < result.samples.size(); ++i)
-	{
-		result.samples[i] = decode_sample(data + i * sample_bytes, bits, is_float);
-	}
-
-	return result;
-}
-
-void mixer::add(voice* const v)
-{
-	std::lock_guard lock(_mutex);
-	_voices.push_back(v);
-}
-
-void mixer::remove(voice* const v)
-{
-	std::lock_guard lock(_mutex);
-	std::erase(_voices, v);
-}
-
-void mixer::render(const std::span<uint8_t> out, const output_format& format)
-{
-	const auto frame_bytes = format.frame_bytes();
-	if (frame_bytes == 0) return;
-
-	const auto frames = static_cast<uint32_t>(out.size() / frame_bytes);
-	const auto bus_channels = std::min<uint32_t>(format.channels, 2);
-
-	std::lock_guard lock(_mutex);
-	_bus.assign(static_cast<size_t>(frames) * bus_channels, 0.0f);
-
-	for (auto* const v : _voices)
-	{
-		v->mix(_bus.data(), frames, bus_channels, format.sample_rate);
-	}
-
-	auto* p = out.data();
-
-	for (uint32_t i = 0; i < frames; ++i)
-	{
-		for (uint32_t c = 0; c < format.channels; ++c)
-		{
-			auto x = c < bus_channels ? _bus[static_cast<size_t>(i) * bus_channels + c] : 0.0f;
-			x = std::isnan(x) ? 0.0f : std::clamp(x, -1.0f, 1.0f);
-
-			switch (format.format)
+			if (type == four_cc('f', 'm', 't', ' ') && !format)
 			{
-			case sample_format::float32:
-				memcpy(p, &x, sizeof(x));
-				p += sizeof(x);
-				break;
+				if (length < 16) return std::nullopt;
+				format = wav.data() + offset;
+				format_length = length;
+			}
+			else if (type == four_cc('d', 'a', 't', 'a') && !data)
+			{
+				data = wav.data() + offset;
+				data_size = length;
+			}
 
-			case sample_format::int16:
+			if (format && data) break;
+
+			const size_t padded = static_cast<size_t>(length) + (length & 1u);
+			if (padded > end - offset) return std::nullopt;
+			offset += padded;
+		}
+
+		if (!format || !data) return std::nullopt;
+
+		const auto tag = read_u16(format);
+		const auto channels = read_u16(format + 2);
+		const auto sample_rate = read_u32(format + 4);
+		const auto block_align = read_u16(format + 12);
+		const auto bits = read_u16(format + 14);
+
+		auto kind = tag;
+
+		if (tag == wave_format_extensible)
+		{
+			// cbSize, then the valid bits, the channel mask and the sub-format: 40 bytes in all.
+			if (format_length < 40 || read_u16(format + 16) < 22) return std::nullopt;
+
+			const auto* const sub_format = format + 24;
+			if (memcmp(sub_format + 2, ks_subtype_tail, sizeof(ks_subtype_tail)) != 0) return std::nullopt;
+			kind = read_u16(sub_format);
+		}
+
+		const auto is_float = kind == wave_format_ieee_float && bits == 32;
+		const auto is_pcm = kind == wave_format_pcm && (bits == 8 || bits == 16 || bits == 24 || bits == 32);
+		if (!is_float && !is_pcm) return std::nullopt;
+		if (channels < 1 || channels > 2 || sample_rate == 0) return std::nullopt;
+
+		const uint32_t sample_bytes = bits / 8u;
+		if (block_align != channels * sample_bytes) return std::nullopt;
+
+		const auto frames = data_size / block_align;
+		if (frames == 0) return std::nullopt;
+
+		wav_sound result;
+		result.sample_rate = sample_rate;
+		result.channels = channels;
+		result.block_align = block_align;
+		result.samples.resize(static_cast<size_t>(frames) * channels);
+
+		for (size_t i = 0; i < result.samples.size(); ++i)
+		{
+			result.samples[i] = decode_sample(data + i * sample_bytes, bits, is_float);
+		}
+
+		return result;
+	}
+
+	void mixer::add(voice* const v)
+	{
+		std::lock_guard lock(_mutex);
+		_voices.push_back(v);
+	}
+
+	void mixer::remove(voice* const v)
+	{
+		std::lock_guard lock(_mutex);
+		std::erase(_voices, v);
+	}
+
+	void mixer::render(const std::span<uint8_t> out, const output_format& format)
+	{
+		const auto frame_bytes = format.frame_bytes();
+		if (frame_bytes == 0) return;
+
+		const auto frames = static_cast<uint32_t>(out.size() / frame_bytes);
+		const auto bus_channels = std::min<uint32_t>(format.channels, 2);
+
+		std::lock_guard lock(_mutex);
+		_bus.assign(static_cast<size_t>(frames) * bus_channels, 0.0f);
+
+		for (auto* const v : _voices)
+		{
+			v->mix(_bus.data(), frames, bus_channels, format.sample_rate);
+		}
+
+		auto* p = out.data();
+
+		for (uint32_t i = 0; i < frames; ++i)
+		{
+			for (uint32_t c = 0; c < format.channels; ++c)
+			{
+				auto x = c < bus_channels ? _bus[static_cast<size_t>(i) * bus_channels + c] : 0.0f;
+				x = std::isnan(x) ? 0.0f : std::clamp(x, -1.0f, 1.0f);
+
+				switch (format.format)
+				{
+				case sample_format::float32:
+					memcpy(p, &x, sizeof(x));
+					p += sizeof(x);
+					break;
+
+				case sample_format::int16:
 				{
 					const auto s = static_cast<int16_t>(std::lrint(x * 32767.0f));
 					memcpy(p, &s, sizeof(s));
@@ -723,7 +712,7 @@ void mixer::render(const std::span<uint8_t> out, const output_format& format)
 					break;
 				}
 
-			case sample_format::int32:
+				case sample_format::int32:
 				{
 					const auto s = static_cast<int32_t>(std::llrint(x * 2147483647.0));
 					memcpy(p, &s, sizeof(s));
@@ -731,29 +720,28 @@ void mixer::render(const std::span<uint8_t> out, const output_format& format)
 					break;
 				}
 
-			case sample_format::none:
-				break;
+				case sample_format::none: break;
+				}
 			}
 		}
 	}
-}
 
-platform::sound_buffer_ptr create_buffer_voice(const mixer_ptr& mixer, const std::span<const uint8_t> wav,
-                                                    std::shared_ptr<void> owner)
-{
-	auto sound = read_wav(wav);
-	if (!mixer || !sound) return nullptr;
-	return std::make_shared<buffer_voice>(std::move(owner), mixer, std::move(*sound));
-}
+	platform::sound_buffer_ptr create_buffer_voice(const mixer_ptr& mixer, const std::span<const uint8_t> wav,
+	                                               std::shared_ptr<void> owner)
+	{
+		auto sound = read_wav(wav);
+		if (!mixer || !sound) return nullptr;
+		return std::make_shared<buffer_voice>(std::move(owner), mixer, std::move(*sound));
+	}
 
-platform::audio_stream_ptr create_stream_voice(const mixer_ptr& mixer, const uint32_t sample_rate,
-                                                    const int channels, const int max_blocks,
-                                                    std::shared_ptr<void> owner)
-{
-	if (!mixer || sample_rate == 0 || channels < 1 || channels > 2 || max_blocks < 1) return nullptr;
-	return std::make_shared<stream_voice>(std::move(owner), mixer, sample_rate, static_cast<uint32_t>(channels),
-	                                      static_cast<size_t>(max_blocks));
-}
+	platform::audio_stream_ptr create_stream_voice(const mixer_ptr& mixer, const uint32_t sample_rate,
+	                                               const int channels, const int max_blocks,
+	                                               std::shared_ptr<void> owner)
+	{
+		if (!mixer || sample_rate == 0 || channels < 1 || channels > 2 || max_blocks < 1) return nullptr;
+		return std::make_shared<stream_voice>(std::move(owner), mixer, sample_rate, static_cast<uint32_t>(channels),
+		                                      static_cast<size_t>(max_blocks));
+	}
 
 }
 
@@ -780,7 +768,8 @@ platform::sound_buffer_ptr platform::create_sound_buffer(const std::span<const u
 	return create_buffer_voice(s_engine->mixer(), wav, s_engine);
 }
 
-platform::audio_stream_ptr platform::create_audio_stream(const uint32_t sample_rate, const int channels, const int max_blocks)
+platform::audio_stream_ptr platform::create_audio_stream(const uint32_t sample_rate, const int channels,
+                                                         const int max_blocks)
 {
 	if (!s_engine) return nullptr;
 	return create_stream_voice(s_engine->mixer(), sample_rate, channels, max_blocks, s_engine);

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Tests for platform media services and core pixel blending.
 
@@ -77,19 +76,25 @@ namespace
 		fixture_word(bytes, offset + 2, static_cast<uint16_t>(value >> 16));
 	}
 
-	constexpr std::array<uint32_t, 6> wic_fixture_colors{
-		0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00, 0xff00ffff, 0xffff00ff};
+	constexpr std::array<uint32_t, 6> wic_fixture_colors{0xffff0000, 0xff00ff00, 0xff0000ff,
+	                                                     0xffffff00, 0xff00ffff, 0xffff00ff};
 
 	std::vector<uint8_t> wic_tiff_fixture(const uint16_t orientation)
 	{
 		// A single-strip, uncompressed 2x3 RGB TIFF with an EXIF orientation tag.
 		constexpr uint32_t samples_offset = 8 + 2 + 11 * 12 + 4;
 		constexpr uint32_t pixels_offset = samples_offset + 6;
-		const std::array<std::array<uint32_t, 4>, 11> fields{{
-			{256, 3, 1, 2}, {257, 3, 1, 3}, {258, 3, 3, samples_offset},
-			{259, 3, 1, 1}, {262, 3, 1, 2}, {273, 4, 1, pixels_offset},
-			{274, 3, 1, orientation}, {277, 3, 1, 3}, {278, 4, 1, 3},
-			{279, 4, 1, 18}, {284, 3, 1, 1}}};
+		const std::array<std::array<uint32_t, 4>, 11> fields{{{256, 3, 1, 2},
+		                                                      {257, 3, 1, 3},
+		                                                      {258, 3, 3, samples_offset},
+		                                                      {259, 3, 1, 1},
+		                                                      {262, 3, 1, 2},
+		                                                      {273, 4, 1, pixels_offset},
+		                                                      {274, 3, 1, orientation},
+		                                                      {277, 3, 1, 3},
+		                                                      {278, 4, 1, 3},
+		                                                      {279, 4, 1, 18},
+		                                                      {284, 3, 1, 1}}};
 		std::vector<uint8_t> bytes(pixels_offset + wic_fixture_colors.size() * 3);
 		bytes[0] = bytes[1] = 'I';
 		fixture_word(bytes, 2, 42);
@@ -122,15 +127,14 @@ namespace
 		ComPtr<ILockBytes> bytes;
 		if (FAILED(CreateILockBytesOnHGlobal(nullptr, TRUE, &bytes))) return {};
 		ComPtr<IStorage> storage;
-		if (FAILED(StgCreateDocfileOnILockBytes(bytes.Get(),
-		                                      STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0,
-		                                      &storage)))
+		if (FAILED(StgCreateDocfileOnILockBytes(bytes.Get(), STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0,
+		                                        &storage)))
 			return {};
 		ComPtr<IPropertySetStorage> sets;
 		if (FAILED(storage.As(&sets))) return {};
 		ComPtr<IPropertyStorage> properties;
 		if (FAILED(sets->Create(FMTID_SummaryInformation, nullptr, PROPSETFLAG_DEFAULT,
-		                       STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &properties)))
+		                        STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &properties)))
 			return {};
 
 		const HDC dc = CreateMetaFileW(nullptr);
@@ -165,8 +169,7 @@ namespace
 		storage.Reset();
 
 		STATSTG stat{};
-		if (FAILED(bytes->Stat(&stat, STATFLAG_NONAME)) ||
-			stat.cbSize.QuadPart > static_cast<ULONGLONG>(SIZE_MAX))
+		if (FAILED(bytes->Stat(&stat, STATFLAG_NONAME)) || stat.cbSize.QuadPart > static_cast<ULONGLONG>(SIZE_MAX))
 			return {};
 		HGLOBAL memory{};
 		if (FAILED(GetHGlobalFromILockBytes(bytes.Get(), &memory))) return {};
@@ -244,7 +247,8 @@ namespace
 		core::interpolate_bgra(first, second, scalar_interpolation, 93, core::pixel_backend::scalar);
 		core::interpolate_bgra(first, second, automatic_interpolation, 93);
 		for (size_t i = 0; i < scalar_interpolation.size(); ++i)
-			assert_equal(scalar_interpolation[i], automatic_interpolation[i], "automatic interpolation", "backend result");
+			assert_equal(scalar_interpolation[i], automatic_interpolation[i], "automatic interpolation",
+			             "backend result");
 		if (core::has_sse2())
 		{
 			std::array<uint32_t, 17> sse2{};
@@ -261,8 +265,7 @@ namespace
 		}
 		std::array<uint32_t, 19> bounded;
 		bounded.fill(0xdeadbeefu);
-		core::interpolate_bgra(first, second, std::span<uint32_t>(bounded).first(17), 93,
-		                       core::pixel_backend::scalar);
+		core::interpolate_bgra(first, second, std::span<uint32_t>(bounded).first(17), 93, core::pixel_backend::scalar);
 		assert_equal(0xdeadbeefu, bounded[17], "interpolation tail", "destination bounds");
 		assert_equal(0xdeadbeefu, bounded[18], "interpolation tail", "destination bounds");
 
@@ -281,7 +284,8 @@ namespace
 	void should_keep_sound_creation_honest()
 	{
 		platform::sound_shutdown();
-		assert_equal(true, platform::create_sound_buffer(std::span<const uint8_t>{}) == nullptr, "sound before init", "lifecycle");
+		assert_equal(true, platform::create_sound_buffer(std::span<const uint8_t>{}) == nullptr, "sound before init",
+		             "lifecycle");
 		assert_equal(true, platform::create_audio_stream(0, 1) == nullptr, "invalid stream rate", "validation");
 
 		const auto wav = wav_fixture();
@@ -381,11 +385,11 @@ namespace
 	{
 		const auto result = platform::load_compound_preview(std::span<const uint8_t>{});
 #ifdef _WIN32
-		assert_equal(true, result.error == platform::image_load_error::invalid_data,
-		             "empty compound preview", "input validation");
+		assert_equal(true, result.error == platform::image_load_error::invalid_data, "empty compound preview",
+		             "input validation");
 #else
-		assert_equal(true, result.error == platform::image_load_error::unavailable,
-		             "Linux compound preview", "honest unavailable service");
+		assert_equal(true, result.error == platform::image_load_error::unavailable, "Linux compound preview",
+		             "honest unavailable service");
 #endif
 	}
 
@@ -407,8 +411,9 @@ namespace
 						promise.set_value(false);
 						return;
 					}
-					const auto loaded = platform::load_image_memory(
-						std::span<const uint8_t>(bytes.data(), bytes.size()), {});
+					const auto loaded = platform::load_image_memory(std::span<const uint8_t>(bytes.data(),
+					                                                                         bytes.size()),
+					                                                {});
 					APTTYPE type{};
 					APTTYPEQUALIFIER qualifier{};
 					const bool survives = SUCCEEDED(CoGetApartmentType(&type, &qualifier));
@@ -430,11 +435,14 @@ namespace
 		{
 			try
 			{
-				const auto loaded = platform::load_image_memory(
-					std::span<const uint8_t>(bytes.data(), bytes.size()), {});
+				const auto loaded = platform::load_image_memory(std::span<const uint8_t>(bytes.data(), bytes.size()),
+				                                                {});
 				APTTYPE type{};
 				APTTYPEQUALIFIER qualifier{};
-				const bool still_initialized = SUCCEEDED(CoGetApartmentType(&type, &qualifier));
+				// A thread that never joined COM is in the process's implicit MTA when one exists - as it does
+				// while the sound engine plays through WASAPI - and in no apartment otherwise.
+				const auto apartment = CoGetApartmentType(&type, &qualifier);
+				const bool still_initialized = SUCCEEDED(apartment) && qualifier != APTTYPEQUALIFIER_IMPLICIT_MTA;
 				promise.set_value(loaded.success() && !still_initialized);
 			}
 			catch (...)
@@ -444,10 +452,8 @@ namespace
 		});
 		fresh.join();
 		assert_equal(true, fresh_result.get(), "fresh COM apartment", "WIC lifecycle");
-		assert_equal(true, run_existing_apartment(COINIT_APARTMENTTHREADED),
-		             "existing STA apartment", "WIC lifecycle");
-		assert_equal(true, run_existing_apartment(COINIT_MULTITHREADED),
-		             "existing MTA apartment", "WIC lifecycle");
+		assert_equal(true, run_existing_apartment(COINIT_APARTMENTTHREADED), "existing STA apartment", "WIC lifecycle");
+		assert_equal(true, run_existing_apartment(COINIT_MULTITHREADED), "existing MTA apartment", "WIC lifecycle");
 #else
 		assert_equal(true, true, "Linux COM lifecycle", "not applicable");
 #endif
@@ -486,8 +492,8 @@ namespace
 		platform::image_load_options limited;
 		limited.max_decoded_bytes = 640ull * 480 * sizeof(uint32_t) - 1;
 		const auto refused = platform::load_compound_preview(encoded, limited);
-		assert_equal(true, refused.error == platform::image_load_error::too_large,
-		             "compound decoded-byte limit", "bounded preview service");
+		assert_equal(true, refused.error == platform::image_load_error::too_large, "compound decoded-byte limit",
+		             "bounded preview service");
 
 		limited = {};
 		limited.target_width = limited.target_height = 64;
@@ -501,15 +507,18 @@ namespace
 			assert_equal(48, dimensions.cy, "thumbnail height", "bounded preview service");
 		}
 
-		limited.cancelled = [] { return true; };
+		limited.cancelled = []
+		{
+			return true;
+		};
 		const auto stopped = platform::load_compound_preview(encoded, limited);
-		assert_equal(true, stopped.error == platform::image_load_error::cancelled,
-		             "compound cancellation", "bounded preview service");
+		assert_equal(true, stopped.error == platform::image_load_error::cancelled, "compound cancellation",
+		             "bounded preview service");
 #else
 		const std::array<uint8_t, 1> bytes{0};
 		const auto unavailable = platform::load_compound_preview(bytes);
-		assert_equal(true, unavailable.error == platform::image_load_error::unavailable,
-		             "Linux compound preview", "honest unavailable service");
+		assert_equal(true, unavailable.error == platform::image_load_error::unavailable, "Linux compound preview",
+		             "honest unavailable service");
 #endif
 	}
 
@@ -519,8 +528,8 @@ namespace
 		const std::span<const uint8_t> encoded(bytes.data(), bytes.size());
 #ifndef _WIN32
 		const auto unavailable = platform::load_image_memory(encoded, {});
-		assert_equal(true, unavailable.error == platform::image_load_error::unavailable,
-		             "Linux image decoder", "honest unavailable service");
+		assert_equal(true, unavailable.error == platform::image_load_error::unavailable, "Linux image decoder",
+		             "honest unavailable service");
 		assert_equal(true, platform::installed_image_extensions().empty(), "Linux image extensions",
 		             "honest unavailable service");
 #else
@@ -534,10 +543,14 @@ namespace
 		}
 
 #ifdef _WIN32
-		const std::array<std::array<size_t, 6>, 8> source_indexes{{
-			{0, 1, 2, 3, 4, 5}, {1, 0, 3, 2, 5, 4}, {5, 4, 3, 2, 1, 0},
-			{4, 5, 2, 3, 0, 1}, {0, 2, 4, 1, 3, 5}, {4, 2, 0, 5, 3, 1},
-			{5, 3, 1, 4, 2, 0}, {1, 3, 5, 0, 2, 4}}};
+		const std::array<std::array<size_t, 6>, 8> source_indexes{{{0, 1, 2, 3, 4, 5},
+		                                                           {1, 0, 3, 2, 5, 4},
+		                                                           {5, 4, 3, 2, 1, 0},
+		                                                           {4, 5, 2, 3, 0, 1},
+		                                                           {0, 2, 4, 1, 3, 5},
+		                                                           {4, 2, 0, 5, 3, 1},
+		                                                           {5, 3, 1, 4, 2, 0},
+		                                                           {1, 3, 5, 0, 2, 4}}};
 		for (uint16_t orientation = 1; orientation <= 8; ++orientation)
 		{
 			const auto oriented_bytes = wic_tiff_fixture(orientation);
@@ -563,14 +576,15 @@ namespace
 				const auto expected_height = orientation >= 5 ? 2 : 3;
 				assert_equal(expected_width, dimensions.cx, "upright TIFF width", "WIC transform");
 				assert_equal(expected_height, dimensions.cy, "upright TIFF height", "WIC transform");
-				assert_equal(static_cast<uint16_t>(1), upright.stored_orientation, "upright orientation", "WIC transform");
+				assert_equal(static_cast<uint16_t>(1), upright.stored_orientation, "upright orientation",
+				             "WIC transform");
 				for (size_t i = 0; i < 6; ++i)
 				{
 					const auto y = static_cast<int>(i / expected_width);
 					const auto x = static_cast<int>(i % expected_width);
 					const auto* row = reinterpret_cast<const uint32_t*>(upright.image->pixels_line(y));
-					assert_equal(wic_fixture_colors[source_indexes[orientation - 1][i]], row[x],
-					             "upright TIFF pixels", "WIC transform");
+					assert_equal(wic_fixture_colors[source_indexes[orientation - 1][i]], row[x], "upright TIFF pixels",
+					             "WIC transform");
 				}
 			}
 		}
@@ -588,8 +602,8 @@ namespace
 		platform::image_load_options limited;
 		limited.max_decoded_bytes = 7;
 		const auto refused = platform::load_image_memory(encoded, limited);
-		assert_equal(true, refused.error == platform::image_load_error::too_large,
-		             "decoded-byte limit", "bounded image service");
+		assert_equal(true, refused.error == platform::image_load_error::too_large, "decoded-byte limit",
+		             "bounded image service");
 
 		platform::image_load_options thumbnail_options;
 		thumbnail_options.thumbnail = true;
@@ -605,10 +619,13 @@ namespace
 		assert_equal(2, static_cast<int>(progress.size()), "image progress callbacks", "bounded image service");
 
 		platform::image_load_options cancelled;
-		cancelled.cancelled = [] { return true; };
+		cancelled.cancelled = []
+		{
+			return true;
+		};
 		const auto stopped = platform::load_image_memory(encoded, cancelled);
-		assert_equal(true, stopped.error == platform::image_load_error::cancelled,
-		             "image cancellation", "bounded image service");
+		assert_equal(true, stopped.error == platform::image_load_error::cancelled, "image cancellation",
+		             "bounded image service");
 #endif
 	}
 }

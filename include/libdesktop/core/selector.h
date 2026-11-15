@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: File selection patterns. Implements item_selector for matching
 // files by path patterns with recursive folder support.
@@ -28,8 +27,7 @@ namespace core
 			assert_true(is_valid());
 		}
 
-		item_selector(const folder_path f, const bool recursive = false,
-		              const std::string_view wildcard = "*.*") :
+		item_selector(const folder_path f, const bool recursive = false, const std::string_view wildcard = "*.*") :
 			_root(f), _wildcard(wildcard), _recursive(recursive)
 		{
 			assert_true(is_valid());
@@ -163,30 +161,15 @@ namespace core
 			return result;
 		}
 
-		item_selector parent() const
-		{
-			return _recursive || has_wildcard() ? _root : _root.parent();
-		}
+		item_selector parent() const { return _recursive || has_wildcard() ? _root : _root.parent(); }
 
-		folder_path folder() const
-		{
-			return _root;
-		}
+		folder_path folder() const { return _root; }
 
-		const std::string& wildcard() const
-		{
-			return _wildcard;
-		}
+		const std::string& wildcard() const { return _wildcard; }
 
-		bool has_wildcard() const
-		{
-			return _wildcard != "*.*";
-		}
+		bool has_wildcard() const { return _wildcard != "*.*"; }
 
-		bool is_recursive() const
-		{
-			return _recursive;
-		}
+		bool is_recursive() const { return _recursive; }
 
 		int compare(const item_selector& other) const
 		{
@@ -196,10 +179,7 @@ namespace core
 			return core::icmp(_wildcard, other._wildcard);
 		}
 
-		bool is_empty() const
-		{
-			return _root.is_empty();
-		}
+		bool is_empty() const { return _root.is_empty(); }
 
 		static bool can_iterate(const std::string_view sv)
 		{
@@ -214,21 +194,13 @@ namespace core
 
 		bool can_iterate() const;
 
-		bool is_valid() const
-		{
-			return _root.is_valid();
-		}
+		bool is_valid() const { return _root.is_valid(); }
 
 		friend bool operator==(const item_selector& lhs, const item_selector& rhs)
 		{
-			return lhs._root == rhs._root
-				&& lhs._wildcard == rhs._wildcard
-				&& lhs._recursive == rhs._recursive;
+			return lhs._root == rhs._root && lhs._wildcard == rhs._wildcard && lhs._recursive == rhs._recursive;
 		}
 
-		friend bool operator!=(const item_selector& lhs, const item_selector& rhs)
-		{
-			return !(lhs == rhs);
-		}
+		friend bool operator!=(const item_selector& lhs, const item_selector& rhs) { return !(lhs == rhs); }
 	};
 }

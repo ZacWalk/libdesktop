@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: WinHTTP asynchronous GET sessions with cancellation and streaming callbacks.
 
@@ -24,8 +23,9 @@
 
 namespace
 {
-	class win_async_request final : public platform::async_http_request,
-	                                public std::enable_shared_from_this<win_async_request>
+	class win_async_request final :
+		public platform::async_http_request,
+		public std::enable_shared_from_this<win_async_request>
 	{
 		std::mutex _mutex;
 		HINTERNET _connect = nullptr;
@@ -92,19 +92,17 @@ namespace
 
 			DWORD status = 0;
 			DWORD status_size = sizeof(status);
-			WinHttpQueryHeaders(request,
-			                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-			                    nullptr, &status, &status_size, nullptr);
+			WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status,
+			                    &status_size, nullptr);
 
 			std::string content_type;
 			DWORD content_type_size = 0;
-			WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_TYPE, nullptr, nullptr,
-			                    &content_type_size, nullptr);
+			WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_TYPE, nullptr, nullptr, &content_type_size, nullptr);
 			if (content_type_size != 0)
 			{
 				std::wstring value((content_type_size + sizeof(wchar_t) - 1) / sizeof(wchar_t), L'\0');
-				if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_TYPE, nullptr, value.data(),
-				                        &content_type_size, nullptr))
+				if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_TYPE, nullptr, value.data(), &content_type_size,
+				                        nullptr))
 				{
 					if (!value.empty() && value.back() == L'\0') value.pop_back();
 					content_type = core::utf16_to_utf8(value);
@@ -113,8 +111,7 @@ namespace
 
 			uint64_t content_length = 0;
 			DWORD content_length_size = 0;
-			WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, nullptr, nullptr,
-			                    &content_length_size, nullptr);
+			WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, nullptr, nullptr, &content_length_size, nullptr);
 			if (content_length_size != 0)
 			{
 				std::wstring value((content_length_size + sizeof(wchar_t) - 1) / sizeof(wchar_t), L'\0');
@@ -122,12 +119,19 @@ namespace
 				                        &content_length_size, nullptr))
 				{
 					while (!value.empty() && value.back() == L'\0') value.pop_back();
-					try { content_length = std::stoull(value); }
-					catch (...) { content_length = 0; }
+					try
+					{
+						content_length = std::stoull(value);
+					}
+					catch (...)
+					{
+						content_length = 0;
+					}
 				}
 			}
 
-			if (callbacks.on_headers) callbacks.on_headers(static_cast<int>(status), std::move(content_type), content_length);
+			if (callbacks.on_headers)
+				callbacks.on_headers(static_cast<int>(status), std::move(content_type), content_length);
 			query_data_available();
 		}
 
@@ -157,8 +161,7 @@ namespace
 				request = _request;
 				_read_buffer.assign(bytes, 0);
 			}
-			if (!request || !WinHttpReadData(request, _read_buffer.data(), bytes, nullptr))
-				fail("read data failed");
+			if (!request || !WinHttpReadData(request, _read_buffer.data(), bytes, nullptr)) fail("read data failed");
 		}
 
 		void read_complete(const DWORD bytes)
@@ -178,50 +181,42 @@ namespace
 			query_data_available();
 		}
 
-		static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status,
-		                             LPVOID info, const DWORD info_length)
+		static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status, LPVOID info,
+		                              const DWORD info_length)
 		{
 			if (context == 0) return;
 			auto* const self = reinterpret_cast<win_async_request*>(context);
 			switch (status)
 			{
-			case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
-				self->send_complete();
-				break;
-			case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
-				self->headers_available();
-				break;
+			case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE: self->send_complete(); break;
+			case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE: self->headers_available(); break;
 			case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
 				self->data_available(info ? *static_cast<DWORD*>(info) : 0);
 				break;
-			case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
-				self->read_complete(info_length);
-				break;
+			case WINHTTP_CALLBACK_STATUS_READ_COMPLETE: self->read_complete(info_length); break;
 			case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
+			{
+				std::string error = "winhttp request error";
+				if (info)
 				{
-					std::string error = "winhttp request error";
-					if (info)
-					{
-						const auto* const result = static_cast<const WINHTTP_ASYNC_RESULT*>(info);
-						error = std::format("winhttp error {} (code {})",
-						                   static_cast<unsigned>(result->dwResult),
-						                   static_cast<unsigned>(result->dwError));
-					}
-					self->fail(std::move(error));
+					const auto* const result = static_cast<const WINHTTP_ASYNC_RESULT*>(info);
+					error = std::format("winhttp error {} (code {})", static_cast<unsigned>(result->dwResult),
+					                    static_cast<unsigned>(result->dwError));
 				}
-				break;
+				self->fail(std::move(error));
+			}
+			break;
 			case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+			{
+				std::shared_ptr<win_async_request> keep;
 				{
-					std::shared_ptr<win_async_request> keep;
-					{
-						std::lock_guard lock(self->_mutex);
-						keep = std::move(self->_self_keep_alive);
-					}
-					(void)keep;
+					std::lock_guard lock(self->_mutex);
+					keep = std::move(self->_self_keep_alive);
 				}
-				break;
-			default:
-				break;
+				(void)keep;
+			}
+			break;
+			default: break;
 			}
 		}
 
@@ -278,8 +273,8 @@ namespace
 			const std::wstring host(components.lpszHostName, components.dwHostNameLength);
 			const auto path_length = static_cast<size_t>(components.dwUrlPathLength) + components.dwExtraInfoLength;
 			std::wstring object = components.lpszUrlPath && path_length != 0
-				                       ? std::wstring(components.lpszUrlPath, path_length)
-				                       : L"/";
+			                          ? std::wstring(components.lpszUrlPath, path_length)
+			                          : L"/";
 			const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS ||
 			                    components.nPort == INTERNET_DEFAULT_HTTPS_PORT ||
 			                    (components.lpszScheme && components.dwSchemeLength == 5 &&
@@ -292,7 +287,7 @@ namespace
 				return false;
 			}
 			const auto request = WinHttpOpenRequest(connect, L"GET", object.c_str(), nullptr, nullptr, nullptr,
-			                                      secure ? WINHTTP_FLAG_SECURE : 0);
+			                                        secure ? WINHTTP_FLAG_SECURE : 0);
 			if (!request)
 			{
 				const auto error = GetLastError();

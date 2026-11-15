@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UI commands, edit and toolbar styles, and chrome icons.
 
@@ -39,7 +38,7 @@ namespace ui
 		bool rounded_corners = false;
 		bool select_all_on_focus = false;
 		render::font_face font = render::font_face::dialog;
-		std::function<bool(int c, platform::key_state keys)> capture_key_down;
+		std::function<bool(char32_t c, platform::key_state keys)> capture_key_down;
 		std::vector<std::string> auto_complete_list;
 		std::string cue;
 	};
@@ -56,13 +55,13 @@ namespace ui
 	public:
 		command() = default;
 
-		command(const icon_index icon, std::any opaque, std::function<void()> invoke)
-			: icon(icon), opaque(std::move(opaque)), invoke(std::move(invoke))
+		command(const icon_index icon, std::any opaque, std::function<void()> invoke) :
+			icon(icon), opaque(std::move(opaque)), invoke(std::move(invoke))
 		{
 		}
 
-		command(const std::string_view t, std::any opaque, std::function<void()> invoke, const bool ch)
-			: text(t), checked(ch), opaque(std::move(opaque)), invoke(std::move(invoke))
+		command(const std::string_view t, std::any opaque, std::function<void()> invoke, const bool ch) :
+			text(t), checked(ch), opaque(std::move(opaque)), invoke(std::move(invoke))
 		{
 		}
 
@@ -141,6 +140,5 @@ namespace ui
 		for (size_t n = 0; n < repeat; ++n) text += single;
 		return text;
 	}
-
 
 }

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Image surface management. Handles bitmap memory allocation,
 // pixel access, scaling, cropping, format conversions, the CPU lookup of the HDR tone-mapping cube,
@@ -21,6 +20,18 @@
 
 void core::surface::clear(const core::color32 clr) const
 {
+	if (!has_addressable_pixels(_format)) return;
+
+	if (is_wide(_format))
+	{
+		for (auto y = 0; y < _dimensions.cy; ++y)
+		{
+			for (int x = 0; x < _dimensions.cx; ++x) set_pixel(x, y, clr);
+		}
+
+		return;
+	}
+
 	for (auto y = 0; y < _dimensions.cy; ++y)
 	{
 		auto* const line = std::bit_cast<core::color32*>(_pixels.get() + y * _stride);
@@ -130,7 +141,8 @@ namespace
 #endif
 }
 
-void core::tone_map_lut::apply_baseline(const uint16_t* const rgb48, const size_t pixels, core::color32* const out) const
+void core::tone_map_lut::apply_baseline(const uint16_t* const rgb48, const size_t pixels,
+                                        core::color32* const out) const
 {
 	if (!is_complete(*this))
 	{
@@ -144,7 +156,10 @@ void core::tone_map_lut::apply_baseline(const uint16_t* const rgb48, const size_
 	const auto step_b = step_g * size;
 	const auto* const samples = rgba.data();
 
-	const auto lerp = [](const float a, const float c, const float t) { return a + (c - a) * t; };
+	const auto lerp = [](const float a, const float c, const float t)
+	{
+		return a + (c - a) * t;
+	};
 
 	for (size_t i = 0; i < pixels; ++i)
 	{
@@ -158,7 +173,10 @@ void core::tone_map_lut::apply_baseline(const uint16_t* const rgb48, const size_
 
 		for (auto channel = 0; channel < 3; ++channel)
 		{
-			const auto at = [c, channel](const ptrdiff_t offset) { return static_cast<float>(c[offset + channel]); };
+			const auto at = [c, channel](const ptrdiff_t offset)
+			{
+				return static_cast<float>(c[offset + channel]);
+			};
 
 			const auto x00 = lerp(at(0), at(4), r.weight);
 			const auto x10 = lerp(at(step_g), at(step_g + 4), r.weight);
@@ -242,8 +260,9 @@ namespace
 				const auto covered = std::clamp((edge - a) / (b - a), 0.0, 1.0);
 				// The final edge is forced rather than rounded: when `last` was clamped to the last
 				// source sample, `b` lies beyond it and the run would otherwise sum to under 256.
-				const auto cumulative = j == last ? 256 : std::clamp(static_cast<int>(std::lround(covered * 256.0)),
-				                                                     previous, 256);
+				const auto cumulative = j == last
+				                            ? 256
+				                            : std::clamp(static_cast<int>(std::lround(covered * 256.0)), previous, 256);
 				result.weights.emplace_back(static_cast<uint16_t>(cumulative - previous));
 				previous = cumulative;
 			}
@@ -334,9 +353,9 @@ namespace
 	template <int channels>
 	void reduce_sample(uint8_t* dst, const uint8_t* src, const uint16_t* weights, const int count)
 	{
+#ifdef DF_X86_SIMD
 		if constexpr (channels == 4)
 		{
-#ifdef DF_X86_SIMD
 			const auto zero = _mm_setzero_si128();
 			auto acc = _mm_setzero_si128();
 			auto k = 0;
@@ -361,28 +380,29 @@ namespace
 			acc = _mm_add_epi16(acc, _mm_srli_si128(acc, 8));
 			acc = _mm_srli_epi16(_mm_add_epi16(acc, _mm_set1_epi16(128)), 8);
 			*std::bit_cast<int32_t*>(dst) = _mm_cvtsi128_si32(_mm_packus_epi16(acc, acc));
-			return;
+		}
+		else
 #endif
-		}
-
-		uint32_t acc[channels] = {};
-
-		for (auto k = 0; k < count; ++k)
 		{
-			const auto weight = weights[k];
-			for (auto c = 0; c < channels; ++c) acc[c] += src[k * channels + c] * weight;
-		}
+			uint32_t acc[channels] = {};
 
-		for (auto c = 0; c < channels; ++c) dst[c] = static_cast<uint8_t>((acc[c] + 128) >> 8);
+			for (auto k = 0; k < count; ++k)
+			{
+				const auto weight = weights[k];
+				for (auto c = 0; c < channels; ++c) acc[c] += src[k * channels + c] * weight;
+			}
+
+			for (auto c = 0; c < channels; ++c) dst[c] = static_cast<uint8_t>((acc[c] + 128) >> 8);
+		}
 	}
 
 	// One 8-bit plane, area averaged. The passes are fused per destination row, so the only buffers
 	// are one accumulator row and one reduced row. A separate full intermediate image would be tens
 	// of megabytes when the display scaler shrinks a photo to a 4K window.
 	template <int channels>
-	void area_downscale_plane_impl(const uint8_t* const src_pixels, const size_t src_stride, const core::sizei src_extent,
-	                               uint8_t* const dst_pixels, const size_t dst_stride, const core::sizei dst_extent,
-	                               const bool avx2)
+	void area_downscale_plane_impl(const uint8_t* const src_pixels, const size_t src_stride,
+	                               const core::sizei src_extent, uint8_t* const dst_pixels, const size_t dst_stride,
+	                               const core::sizei dst_extent, const bool avx2)
 	{
 		const auto horizontal = build_axis_weights(src_extent.cx, dst_extent.cx);
 		const auto vertical = build_axis_weights(src_extent.cy, dst_extent.cy);
@@ -399,8 +419,8 @@ namespace
 
 			for (auto k = 0; k < vertical.count[y]; ++k)
 			{
-				accumulate_row(acc.data(), src_pixels + (vertical.first[y] + k) * src_stride, row_bytes,
-				               row_weights[k], avx2);
+				accumulate_row(acc.data(), src_pixels + (vertical.first[y] + k) * src_stride, row_bytes, row_weights[k],
+				               avx2);
 			}
 
 			normalize_row(reduced.data(), acc.data(), row_bytes, avx2);
@@ -418,8 +438,56 @@ namespace
 	bool is_reduction(const core::sizei src_extent, const core::sizei dst_extent)
 	{
 		// Reductions only: a box filter that enlarges is nearest neighbour.
-		return dst_extent.cx >= 1 && dst_extent.cy >= 1 &&
-			dst_extent.cx <= src_extent.cx && dst_extent.cy <= src_extent.cy;
+		return dst_extent.cx >= 1 && dst_extent.cy >= 1 && dst_extent.cx <= src_extent.cx &&
+		       dst_extent.cy <= src_extent.cy;
+	}
+
+	// The wide formats' reduction: the same weights and fused passes as the packed one, in scalar code with
+	// 32-bit accumulators, since sixteen bits times a run's 256 overflow the 16-bit lanes the SIMD form uses.
+	void area_downscale_wide_impl(const uint8_t* const src_pixels, const size_t src_stride,
+	                              const core::sizei src_extent, uint8_t* const dst_pixels, const size_t dst_stride,
+	                              const core::sizei dst_extent)
+	{
+		const auto horizontal = build_axis_weights(src_extent.cx, dst_extent.cx);
+		const auto vertical = build_axis_weights(src_extent.cy, dst_extent.cy);
+
+		const auto row_samples = static_cast<size_t>(src_extent.cx) * 4;
+		std::vector<uint32_t> acc(row_samples);
+		std::vector<uint16_t> reduced(row_samples);
+
+		for (auto y = 0; y < dst_extent.cy; ++y)
+		{
+			std::ranges::fill(acc, 0u);
+
+			const auto* const row_weights = vertical.weights.data() + vertical.offset[y];
+
+			for (auto k = 0; k < vertical.count[y]; ++k)
+			{
+				const auto* const src = std::bit_cast<const uint16_t*>(src_pixels +
+				                                                       (vertical.first[y] + k) * src_stride);
+				const uint32_t weight = row_weights[k];
+
+				for (size_t i = 0; i < row_samples; ++i) acc[i] += src[i] * weight;
+			}
+
+			for (size_t i = 0; i < row_samples; ++i) reduced[i] = static_cast<uint16_t>((acc[i] + 128u) >> 8);
+
+			auto* const dst_row = std::bit_cast<uint16_t*>(dst_pixels + static_cast<size_t>(y) * dst_stride);
+
+			for (auto x = 0; x < dst_extent.cx; ++x)
+			{
+				const auto* const weights = horizontal.weights.data() + horizontal.offset[x];
+				const auto* const src = reduced.data() + static_cast<size_t>(horizontal.first[x]) * 4;
+				uint32_t sum[4] = {};
+
+				for (auto k = 0; k < horizontal.count[x]; ++k)
+				{
+					for (auto c = 0; c < 4; ++c) sum[c] += src[k * 4 + c] * static_cast<uint32_t>(weights[k]);
+				}
+
+				for (auto c = 0; c < 4; ++c) dst_row[x * 4 + c] = static_cast<uint16_t>((sum[c] + 128u) >> 8);
+			}
+		}
 	}
 
 	bool area_downscale_impl(const core::const_surface_ptr& src, core::surface_ptr& dst, const core::sizei dst_extent,
@@ -429,6 +497,20 @@ namespace
 
 		const auto format = src->format();
 		const auto packed = core::is_packed(format);
+
+		if (core::is_wide(format))
+		{
+			if (!is_reduction(src->dimensions(), dst_extent)) return false;
+
+			auto result = std::make_shared<core::surface>();
+			if (!result->alloc(dst_extent.cx, dst_extent.cy, format, src->orientation())) return false;
+
+			result->color_space(src->color_space());
+			area_downscale_wide_impl(src->pixels(), src->stride(), src->dimensions(), result->pixels(),
+			                         result->stride(), dst_extent);
+			dst = std::move(result);
+			return true;
+		}
 
 		// P010 is 16 bit, which the Q8 accumulators this is built on cannot hold, so it stays with
 		// swscale.
@@ -458,13 +540,11 @@ namespace
 
 		if (packed)
 		{
-			area_downscale_plane_impl<4>(src_pixels, src_stride, src_extent, dst_pixels, dst_stride, dst_extent,
-			                             avx2);
+			area_downscale_plane_impl<4>(src_pixels, src_stride, src_extent, dst_pixels, dst_stride, dst_extent, avx2);
 		}
 		else
 		{
-			area_downscale_plane_impl<1>(src_pixels, src_stride, src_extent, dst_pixels, dst_stride, dst_extent,
-			                             avx2);
+			area_downscale_plane_impl<1>(src_pixels, src_stride, src_extent, dst_pixels, dst_stride, dst_extent, avx2);
 
 			// The chroma plane is U and V interleaved at half resolution, so it reduces as a
 			// two-channel plane of half the extent rather than needing a pass of its own.
@@ -485,7 +565,8 @@ bool core::area_downscale(const core::const_surface_ptr& src, core::surface_ptr&
 	return area_downscale_impl(src, dst, dst_extent, core::has_avx2());
 }
 
-bool core::area_downscale_baseline(const core::const_surface_ptr& src, core::surface_ptr& dst, const core::sizei dst_extent)
+bool core::area_downscale_baseline(const core::const_surface_ptr& src, core::surface_ptr& dst,
+                                   const core::sizei dst_extent)
 {
 	return area_downscale_impl(src, dst, dst_extent, false);
 }
@@ -524,7 +605,10 @@ namespace
 	// trip through its scalar full-chroma converter, so even a scalar direct pass is well ahead.
 	bool bilinear_resize_impl(const core::const_surface_ptr& src, core::surface_ptr& dst, const core::sizei dst_extent)
 	{
-		if (!core::is_valid(src) || !core::is_packed(src->format())) return false;
+		if (!core::is_valid(src)) return false;
+
+		const auto wide = core::is_wide(src->format());
+		if (!wide && !core::is_packed(src->format())) return false;
 
 		const auto src_extent = src->dimensions();
 
@@ -554,6 +638,29 @@ namespace
 			const auto* const row1 = src_pixels + src_stride * y1;
 			auto* const dst_row = result->pixels_line(y);
 
+			if (wide)
+			{
+				const auto* const top_row = std::bit_cast<const uint16_t*>(row0);
+				const auto* const bottom_row = std::bit_cast<const uint16_t*>(row1);
+				auto* const out = std::bit_cast<uint16_t*>(dst_row);
+
+				for (auto x = 0; x < dst_extent.cx; ++x)
+				{
+					const auto x0 = horizontal.first[x] * 4;
+					const auto x1 = std::min(horizontal.first[x] + 1, src_extent.cx - 1) * 4;
+					const int64_t wx = horizontal.weight[x];
+
+					for (auto c = 0; c < 4; ++c)
+					{
+						const auto top = top_row[x0 + c] * (256 - wx) + top_row[x1 + c] * wx;
+						const auto bottom = bottom_row[x0 + c] * (256 - wx) + bottom_row[x1 + c] * wx;
+						out[x * 4 + c] = static_cast<uint16_t>((top * (256 - wy) + bottom * wy + 32768) >> 16);
+					}
+				}
+
+				continue;
+			}
+
 			for (auto x = 0; x < dst_extent.cx; ++x)
 			{
 				const auto x0 = horizontal.first[x] * 4;
@@ -581,109 +688,152 @@ bool core::bilinear_resize(const core::const_surface_ptr& src, core::surface_ptr
 
 core::surface_ptr core::surface::transform(const core::simple_transform t) const
 {
-	core::surface_ptr result;
-
-	if (!core::is_packed(_format)) return result;
-
-	const auto cy = _dimensions.cy;
-	const auto cx = _dimensions.cx;
-
-	if (t == core::simple_transform::rot_90)
+	// One body for both pixel sizes: a packed pixel moves as one 32-bit value, a wide one as one 64-bit value.
+	const auto turn = [this, t]<typename Pixel>() -> core::surface_ptr
 	{
-		result = std::make_shared<core::surface>();
+		const auto cy = _dimensions.cy;
+		const auto cx = _dimensions.cx;
+		const auto line = [](uint8_t* const base, const size_t stride, const int y)
+		{
+			return std::bit_cast<Pixel*>(base + static_cast<size_t>(y) * stride);
+		};
+		const auto source_line = [this](const int y)
+		{
+			return std::bit_cast<const Pixel*>(_pixels.get() + static_cast<size_t>(y) * _stride);
+		};
 
-		if (result->alloc(cy, cx, _format, _orientation, _time))
+		auto result = std::make_shared<core::surface>();
+		const auto quarter_turn = t == core::simple_transform::rot_90 || t == core::simple_transform::rot_270 ||
+		                          t == core::simple_transform::transpose || t == core::simple_transform::transverse;
+
+		if (t == core::simple_transform::none) return {};
+		if (!result->alloc(quarter_turn ? cy : cx, quarter_turn ? cx : cy, _format, _orientation, _time)) return {};
+
+		auto* const out = result->_pixels.get();
+		const auto out_stride = result->_stride;
+
+		if (t == core::simple_transform::rot_90)
 		{
 			for (int y = 0; y < cy; ++y)
 			{
-				const auto* const line_src = std::bit_cast<const core::color32*>(_pixels.get() + y * _stride);
-
-				for (int x = 0; x < cx; ++x)
-				{
-					auto* const line_dst = std::bit_cast<core::color32*>(
-						result->_pixels.get() + (cx - 1 - x) * result->_stride);
-					line_dst[y] = line_src[x];
-				}
+				const auto* const line_src = source_line(y);
+				for (int x = 0; x < cx; ++x) line(out, out_stride, cx - 1 - x)[y] = line_src[x];
 			}
 		}
-	}
-	else if (t == core::simple_transform::rot_270)
-	{
-		result = std::make_shared<core::surface>();
-
-		if (result->alloc(cy, cx, _format, _orientation, _time))
+		else if (t == core::simple_transform::rot_270)
 		{
 			for (int y = 0; y < cy; ++y)
 			{
-				const auto* const line_src = std::bit_cast<const core::color32*>(_pixels.get() + (cy - 1 - y) * _stride);
-
-				for (int x = 0; x < cx; ++x)
-				{
-					auto* const line_dst = std::bit_cast<core::color32*>(result->_pixels.get() + x * result->_stride);
-					line_dst[y] = line_src[x];
-				}
+				const auto* const line_src = source_line(cy - 1 - y);
+				for (int x = 0; x < cx; ++x) line(out, out_stride, x)[y] = line_src[x];
 			}
 		}
-	}
-	else if (t == core::simple_transform::rot_180)
-	{
-		result = std::make_shared<core::surface>();
-
-		if (result->alloc(cx, cy, _format, _orientation, _time))
+		else if (t == core::simple_transform::rot_180)
 		{
 			for (int y = 0; y < cy; ++y)
 			{
-				const auto* const line_src = std::bit_cast<const core::color32*>(_pixels.get() + (cy - 1 - y) * _stride);
-				auto* const line_dst = std::bit_cast<core::color32*>(result->_pixels.get() + y * result->_stride);
-
-				for (int x = 0; x < cx; ++x)
-				{
-					line_dst[x] = line_src[cx - 1 - x];
-				}
+				const auto* const line_src = source_line(cy - 1 - y);
+				auto* const line_dst = line(out, out_stride, y);
+				for (int x = 0; x < cx; ++x) line_dst[x] = line_src[cx - 1 - x];
 			}
 		}
-	}
-	else if (t == core::simple_transform::flip_h || t == core::simple_transform::flip_v)
-	{
-		result = std::make_shared<core::surface>();
-
-		if (result->alloc(cx, cy, _format, _orientation, _time))
+		else if (t == core::simple_transform::flip_h || t == core::simple_transform::flip_v)
 		{
 			const auto mirror_rows = t == core::simple_transform::flip_v;
 
 			for (int y = 0; y < cy; ++y)
 			{
-				const auto* const line_src = std::bit_cast<const core::color32*>(
-					_pixels.get() + (mirror_rows ? cy - 1 - y : y) * _stride);
-				auto* const line_dst = std::bit_cast<core::color32*>(result->_pixels.get() + y * result->_stride);
-
-				for (int x = 0; x < cx; ++x)
-				{
-					line_dst[x] = line_src[mirror_rows ? x : cx - 1 - x];
-				}
+				const auto* const line_src = source_line(mirror_rows ? cy - 1 - y : y);
+				auto* const line_dst = line(out, out_stride, y);
+				for (int x = 0; x < cx; ++x) line_dst[x] = line_src[mirror_rows ? x : cx - 1 - x];
 			}
 		}
-	}
-	else if (t == core::simple_transform::transpose || t == core::simple_transform::transverse)
-	{
-		// Mirrored across a diagonal: the leading one for transpose, the other one for transverse.
-		result = std::make_shared<core::surface>();
-
-		if (result->alloc(cy, cx, _format, _orientation, _time))
+		else
 		{
+			// Mirrored across a diagonal: the leading one for transpose, the other one for transverse.
 			const auto leading = t == core::simple_transform::transpose;
 
 			for (int y = 0; y < cx; ++y)
 			{
-				auto* const line_dst = std::bit_cast<core::color32*>(result->_pixels.get() + y * result->_stride);
+				auto* const line_dst = line(out, out_stride, y);
 				const auto src_x = leading ? y : cx - 1 - y;
 
-				for (int x = 0; x < cy; ++x)
-				{
-					const auto src_y = leading ? x : cy - 1 - x;
-					line_dst[x] = std::bit_cast<const core::color32*>(_pixels.get() + src_y * _stride)[src_x];
-				}
+				for (int x = 0; x < cy; ++x) line_dst[x] = source_line(leading ? x : cy - 1 - x)[src_x];
 			}
+		}
+
+		return result;
+	};
+
+	if (core::is_wide(_format)) return turn.template operator()<uint64_t>();
+	if (core::is_packed(_format)) return turn.template operator()<core::color32>();
+	return {};
+}
+
+namespace
+{
+	uint8_t narrow_channel(const uint32_t v)
+	{
+		return static_cast<uint8_t>((v * 255u + 32767u) / 65535u);
+	}
+}
+
+core::const_surface_ptr core::to_8_bit(const const_surface_ptr& src)
+{
+	if (!is_valid(src)) return {};
+
+	const auto format = src->format();
+	if (is_packed(format)) return src;
+	if (!is_wide(format)) return {};
+
+	auto result = std::make_shared<surface>();
+	if (!result->alloc(src->dimensions(), packed_format(format), src->orientation(), src->time())) return {};
+
+	result->color_space(src->color_space());
+	const auto alpha = has_alpha(format);
+
+	for (auto y = 0; y < static_cast<int>(src->height()); ++y)
+	{
+		const auto* const in = std::bit_cast<const uint16_t*>(src->pixels_line(y));
+		auto* const out = result->pixels_line(y);
+
+		for (auto x = 0; x < static_cast<int>(src->width()); ++x)
+		{
+			out[x * 4 + 0] = narrow_channel(in[x * 4 + 2]);
+			out[x * 4 + 1] = narrow_channel(in[x * 4 + 1]);
+			out[x * 4 + 2] = narrow_channel(in[x * 4 + 0]);
+			out[x * 4 + 3] = alpha ? narrow_channel(in[x * 4 + 3]) : 0xff;
+		}
+	}
+
+	return result;
+}
+
+core::const_surface_ptr core::to_16_bit(const const_surface_ptr& src)
+{
+	if (!is_valid(src)) return {};
+
+	const auto format = src->format();
+	if (is_wide(format)) return src;
+	if (!is_packed(format)) return {};
+
+	auto result = std::make_shared<surface>();
+	if (!result->alloc(src->dimensions(), wide_format(format), src->orientation(), src->time())) return {};
+
+	result->color_space(src->color_space());
+	const auto alpha = has_alpha(format);
+
+	for (auto y = 0; y < static_cast<int>(src->height()); ++y)
+	{
+		const auto* const in = src->pixels_line(y);
+		auto* const out = std::bit_cast<uint16_t*>(result->pixels_line(y));
+
+		for (auto x = 0; x < static_cast<int>(src->width()); ++x)
+		{
+			out[x * 4 + 0] = static_cast<uint16_t>(in[x * 4 + 2] * 257u);
+			out[x * 4 + 1] = static_cast<uint16_t>(in[x * 4 + 1] * 257u);
+			out[x * 4 + 2] = static_cast<uint16_t>(in[x * 4 + 0] * 257u);
+			out[x * 4 + 3] = alpha ? static_cast<uint16_t>(in[x * 4 + 3] * 257u) : 0xffffu;
 		}
 	}
 
@@ -698,13 +848,9 @@ core::sizei core::scale_dimensions(const core::sizei dims, const int limit, cons
 	const auto sy = core::mul_div(limit, denom, dims.cy);
 	const auto s = std::min(sx, sy);
 
-	if (dont_scale_up && s >= denom)
-		return dims;
+	if (dont_scale_up && s >= denom) return dims;
 
-	return {
-		std::max(1, core::mul_div(dims.cx, s, denom)),
-		std::max(1, core::mul_div(dims.cy, s, denom))
-	};
+	return {std::max(1, core::mul_div(dims.cx, s, denom)), std::max(1, core::mul_div(dims.cy, s, denom))};
 }
 
 core::sizei core::scale_dimensions(const core::sizei dims, const core::sizei limit, const bool dont_scale_up) noexcept
@@ -715,13 +861,9 @@ core::sizei core::scale_dimensions(const core::sizei dims, const core::sizei lim
 	const auto sy = core::mul_div(limit.cy, denom, dims.cy);
 	const auto s = std::min(sx, sy);
 
-	if (dont_scale_up && s >= denom)
-		return dims;
+	if (dont_scale_up && s >= denom) return dims;
 
-	return {
-		std::max(1, core::mul_div(dims.cx, s, denom)),
-		std::max(1, core::mul_div(dims.cy, s, denom))
-	};
+	return {std::max(1, core::mul_div(dims.cx, s, denom)), std::max(1, core::mul_div(dims.cy, s, denom))};
 }
 
 core::recti core::scale_dimensions(const core::sizei dims, const core::recti limit, const bool dont_scale_up) noexcept

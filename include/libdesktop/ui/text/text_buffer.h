@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Editable UTF-8 lines, selections, movement, and grouped undo.
 
@@ -29,7 +28,11 @@ namespace ui
 
 	constexpr uint32_t invalid_cookie = UINT32_MAX;
 
-	enum class undo_action { insert, erase };
+	enum class undo_action
+	{
+		insert,
+		erase
+	};
 
 	struct undo_step
 	{
@@ -63,8 +66,7 @@ namespace ui
 		[[nodiscard]] ::ui::text_location char_end_location() const
 		{
 			assert(!_text.empty());
-			if (_text[0] == '\n')
-				return ::ui::text_location(0, _selection._start.y + 1);
+			if (_text[0] == '\n') return ::ui::text_location(0, _selection._start.y + 1);
 			return ::ui::text_location(_selection._start.x + 1, _selection._start.y);
 		}
 	};
@@ -102,7 +104,6 @@ namespace ui
 	};
 
 	// --- Document ---
-
 
 	class text_buffer
 	{
@@ -159,10 +160,7 @@ namespace ui
 		void set_modified(const bool modified) const { _modified = modified; }
 
 		// The host outlives the buffer: it is the view or application that owns it.
-		explicit text_buffer(view_host& host) : _host(host)
-		{
-			append_line("");
-		}
+		explicit text_buffer(view_host& host) : _host(host) { append_line(""); }
 
 		virtual ~text_buffer() = default;
 
@@ -176,40 +174,19 @@ namespace ui
 
 		void clear();
 
-		[[nodiscard]] bool is_modified() const
-		{
-			return _modified;
-		}
+		[[nodiscard]] bool is_modified() const { return _modified; }
 
-		[[nodiscard]] bool is_read_only() const
-		{
-			return _read_only;
-		}
+		[[nodiscard]] bool is_read_only() const { return _read_only; }
 
-		void read_only(const bool ro)
-		{
-			_read_only = ro;
-		}
+		void read_only(const bool ro) { _read_only = ro; }
 
-		[[nodiscard]] bool empty() const
-		{
-			return _lines.empty();
-		}
+		[[nodiscard]] bool empty() const { return _lines.empty(); }
 
-		[[nodiscard]] size_t size() const
-		{
-			return _lines.size();
-		}
+		[[nodiscard]] size_t size() const { return _lines.size(); }
 
-		const text_line& operator[](const int n) const
-		{
-			return _lines[n];
-		}
+		const text_line& operator[](const int n) const { return _lines[n]; }
 
-		text_line& operator[](const int n)
-		{
-			return _lines[n];
-		}
+		text_line& operator[](const int n) { return _lines[n]; }
 
 		std::vector<std::string> text(const ::ui::text_selection& selection) const;
 
@@ -222,24 +199,17 @@ namespace ui
 		::ui::text_location delete_text(undo_group& ug, const ::ui::text_selection& selection);
 		::ui::text_location delete_text(undo_group& ug, const ::ui::text_location& location);
 
-
 		[[nodiscard]] bool can_undo() const;
 		[[nodiscard]] bool can_redo() const;
 		::ui::text_location undo();
 		::ui::text_location redo();
 		void record_undo(undo_item ui);
 
-		[[nodiscard]] const std::vector<text_line>& lines() const
-		{
-			return _lines;
-		}
+		[[nodiscard]] const std::vector<text_line>& lines() const { return _lines; }
 
 		static bool can_paste();
 
-		[[nodiscard]] bool has_selection() const
-		{
-			return !_selection.empty();
-		}
+		[[nodiscard]] bool has_selection() const { return !_selection.empty(); }
 
 		[[nodiscard]] bool query_editable() const;
 
@@ -253,10 +223,7 @@ namespace ui
 		void edit_untab();
 		void edit_paste(std::string_view text);
 
-		[[nodiscard]] ::ui::text_selection selection() const
-		{
-			return _selection.normalize();
-		}
+		[[nodiscard]] ::ui::text_selection selection() const { return _selection.normalize(); }
 
 		void move_doc_end(bool selecting);
 		void move_doc_home(bool selecting);
@@ -285,10 +252,7 @@ namespace ui
 			return ::ui::text_selection(::ui::text_location(0, 0), end());
 		}
 
-		[[nodiscard]] int tab_size() const
-		{
-			return _tab_size;
-		}
+		[[nodiscard]] int tab_size() const { return _tab_size; }
 
 		int max_line_length() const;
 		::ui::text_location word_to_left(::ui::text_location pt) const;
@@ -299,15 +263,9 @@ namespace ui
 		int expanded_line_length(int line_index) const;
 		void expanded_chars(std::string_view text, int offset_in, int count_in, std::string& result) const;
 
-		[[nodiscard]] const ::ui::text_location& cursor_pos() const
-		{
-			return _cursor_loc;
-		}
+		[[nodiscard]] const ::ui::text_location& cursor_pos() const { return _cursor_loc; }
 
-		[[nodiscard]] const ::ui::text_location& anchor_pos() const
-		{
-			return _anchor_loc;
-		}
+		[[nodiscard]] const ::ui::text_location& anchor_pos() const { return _anchor_loc; }
 
 		void anchor_pos(const ::ui::text_location& ptNewAnchor);
 		void cursor_pos(const ::ui::text_location& ptCursorPos);
@@ -383,17 +341,13 @@ namespace ui
 
 		void invalidate_line(int index);
 
-		[[nodiscard]] bool spell_check() const
-		{
-			return _spell_check;
-		}
+		[[nodiscard]] bool spell_check() const { return _spell_check; }
 
 		void set_spell_check(bool enabled);
 		void toggle_spell_check();
-
 	};
 
-		using text_buffer_ptr = std::shared_ptr<text_buffer>;
+	using text_buffer_ptr = std::shared_ptr<text_buffer>;
 
 	class undo_group
 	{
@@ -406,34 +360,23 @@ namespace ui
 		undo_group& operator=(const undo_group&) = delete;
 		undo_group& operator=(undo_group&&) = delete;
 
-		undo_group(text_buffer& d) : _doc(d)
-		{
-		}
+		undo_group(text_buffer& d) : _doc(d) {}
 
-		undo_group(const text_buffer_ptr& d) : _doc(*d)
-		{
-		}
+		undo_group(const text_buffer_ptr& d) : _doc(*d) {}
 
 		~undo_group()
 		{
-			if (!_undo.empty())
-				_doc.record_undo(std::move(_undo));
+			if (!_undo.empty()) _doc.record_undo(std::move(_undo));
 		}
 
-		void insert(const ::ui::text_location& location, const char& c)
-		{
-			_undo.add_insert(location, c);
-		}
+		void insert(const ::ui::text_location& location, const char& c) { _undo.add_insert(location, c); }
 
 		void insert(const ::ui::text_selection& selection, const std::string_view text)
 		{
 			_undo.add_insert(selection, text);
 		}
 
-		void erase(const ::ui::text_location& location, const char& c)
-		{
-			_undo.add_erase(location, c);
-		}
+		void erase(const ::ui::text_location& location, const char& c) { _undo.add_erase(location, c); }
 
 		void erase(const ::ui::text_selection& selection, const std::string_view text)
 		{

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // os.h - the Windows operating-system services libdesktop-core and libdesktop-platform share, so each
 // service has one implementation to maintain and to port.
@@ -192,8 +191,7 @@ namespace os
 
 	using file_ptr = std::shared_ptr<file>;
 
-	file_ptr open_file(std::string_view path, file_open_mode mode,
-	                   file_share_mode share = file_share_mode::all);
+	file_ptr open_file(std::string_view path, file_open_mode mode, file_share_mode share = file_share_mode::all);
 	// Backend-only interop for libdesktop-platform's specialized handle operations. No application
 	// includes os.h or receives this token.
 	uintptr_t native_file_handle(const file_ptr& file);
@@ -243,6 +241,8 @@ namespace os
 	                                    const std::vector<file_dialog_filter>& filters, bool allow_multiple);
 	file_dialog_result save_file_dialog(uintptr_t owner, std::string_view title, std::string_view default_path,
 	                                    const std::vector<file_dialog_filter>& filters);
+	// The 1-based filter a save dialog opens on: the first whose patterns name the path's extension, else the first.
+	uint32_t file_dialog_filter_index(const std::vector<file_dialog_filter>& filters, std::string_view path);
 	file_dialog_result folder_dialog(uintptr_t owner, std::string_view title, std::string_view default_path = {});
 
 	// A profile-style INI store shared by both platform stacks. Locations and the policy that

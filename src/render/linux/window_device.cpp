@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The SDL3 software renderer bound to one platform::window.
 
@@ -20,20 +19,13 @@ namespace render::detail
 	bool backend_downgrade();
 	bool backend_gpu_active();
 
-	void register_window_device(void* key, std::function<void()> prepare_loss,
-	                            std::function<void()> rebuild_loss, std::function<void()> update_font,
-	                            std::function<void()> invalidate);
+	void register_window_device(void* key, std::function<void()> prepare_loss, std::function<void()> rebuild_loss,
+	                            std::function<void()> update_font, std::function<void()> invalidate);
 	void unregister_window_device(void* key);
 }
 
 namespace
 {
-	constexpr auto ui_component_snap = 8;
-	constexpr auto ui_baseline_snap = 4;
-	constexpr auto ui_cx_resize_handle = 12;
-	constexpr auto ui_scroll_width = 20;
-	constexpr auto ui_base_icon_cxy = 18;
-
 	constexpr uint32_t hidden_standby_timer_id = 0xD1FF;
 	constexpr uint32_t hidden_standby_poll_ms = 250;
 
@@ -47,14 +39,9 @@ namespace
 		std::vector<SDL_Rect> _rects;
 
 	public:
-		sdl_present_target(SDL_Window* window, const bool layered) : _window(window), _layered(layered)
-		{
-		}
+		sdl_present_target(SDL_Window* window, const bool layered) : _window(window), _layered(layered) {}
 
-		bool is_layered() const override
-		{
-			return _layered;
-		}
+		bool is_layered() const override { return _layered; }
 
 		render::software_buffer acquire_buffer(const core::sizei extent) override
 		{
@@ -98,15 +85,15 @@ namespace
 
 			const auto stride = _extent.cx * 4;
 			const auto native = _surface->format == SDL_PIXELFORMAT_ARGB8888 ||
-				_surface->format == SDL_PIXELFORMAT_XRGB8888;
+			                    _surface->format == SDL_PIXELFORMAT_XRGB8888;
 
 			for (auto y = clipped.top; y < clipped.bottom; ++y)
 			{
 				const auto* const src = _pixels.data() + static_cast<ptrdiff_t>(y - buffer_origin.y) * stride +
-					static_cast<ptrdiff_t>(clipped.left - buffer_origin.x) * 4;
+				                        static_cast<ptrdiff_t>(clipped.left - buffer_origin.x) * 4;
 				auto* const dst = static_cast<uint8_t*>(_surface->pixels) +
-					static_cast<ptrdiff_t>(y) * _surface->pitch +
-					static_cast<ptrdiff_t>(clipped.left) * SDL_BYTESPERPIXEL(_surface->format);
+				                  static_cast<ptrdiff_t>(y) * _surface->pitch +
+				                  static_cast<ptrdiff_t>(clipped.left) * SDL_BYTESPERPIXEL(_surface->format);
 
 				if (_layered)
 				{
@@ -127,8 +114,8 @@ namespace
 				}
 				else
 				{
-					SDL_ConvertPixels(clipped.width(), 1, SDL_PIXELFORMAT_ARGB8888, src, stride,
-					                  _surface->format, dst, _surface->pitch);
+					SDL_ConvertPixels(clipped.width(), 1, SDL_PIXELFORMAT_ARGB8888, src, stride, _surface->format, dst,
+					                  _surface->pitch);
 				}
 			}
 
@@ -139,8 +126,7 @@ namespace
 		{
 			if (!_surface) return;
 			if (SDL_MUSTLOCK(_surface)) SDL_UnlockSurface(_surface);
-			if (!_rects.empty()) SDL_UpdateWindowSurfaceRects(_window, _rects.data(),
-			                                                    static_cast<int>(_rects.size()));
+			if (!_rects.empty()) SDL_UpdateWindowSurfaceRects(_window, _rects.data(), static_cast<int>(_rects.size()));
 			_surface = nullptr;
 		}
 	};
@@ -159,23 +145,13 @@ namespace render
 		core::sizei _extent;
 		bool _hidden_standby = false;
 
-		int font_size_for_window() const
-		{
-			return core::round(_scale * static_cast<double>(render::base_font_size()));
-		}
+		int font_size_for_window() const { return core::round(_scale * static_cast<double>(render::base_font_size())); }
 
 		void update_metrics()
 		{
 			if (!_context) return;
 
-			const auto ui_scale = _scale * render::base_font_size() /
-				static_cast<double>(render::default_font_size);
-			_context->scale_factor = ui_scale;
-			_context->icon_cxy = core::round(ui_base_icon_cxy * ui_scale);
-			_context->padding2 = core::round(ui_component_snap * ui_scale);
-			_context->padding1 = core::round(ui_baseline_snap * ui_scale);
-			_context->handle_cxy = core::round(ui_cx_resize_handle * ui_scale);
-			_context->scroll_width = core::round(ui_scroll_width * ui_scale);
+			_context->scale_metrics(_scale * render::base_font_size() / static_cast<double>(render::default_font_size));
 		}
 
 		void update_font_and_metrics()
@@ -187,8 +163,8 @@ namespace render
 		void create_context()
 		{
 			_target = std::make_shared<sdl_present_target>(_sdl, _options.layered);
-			_context = render::create_software_draw_context(render::create_text_engine(font_size_for_window()),
-			                                             _target, font_size_for_window());
+			_context = render::create_software_draw_context(render::create_text_engine(font_size_for_window()), _target,
+			                                                font_size_for_window());
 			update_metrics();
 		}
 
@@ -242,16 +218,12 @@ namespace render
 		}
 
 	public:
-		window_device_linux(platform::window& window, const device_options& options)
-			: _window(window), _scale(window.scale()), _options(options), _sdl(std::any_cast<SDL_Window*>(window.native_handle())),
-			  _extent(window.client_extent())
+		window_device_linux(platform::window& window, const device_options& options) :
+			_window(window), _scale(window.scale()), _options(options),
+			_sdl(std::any_cast<SDL_Window*>(window.native_handle())), _extent(window.client_extent())
 		{
-			detail::register_window_device(
-				this,
-				[this] { prepare_device_loss(); },
-				[this] { rebuild_device(); },
-				[this] { update_font_and_metrics(); },
-				[this] { _window.invalidate(); });
+			detail::register_window_device(this, [this] { prepare_device_loss(); }, [this] { rebuild_device(); },
+			                               [this] { update_font_and_metrics(); }, [this] { _window.invalidate(); });
 			create_context();
 			if (_context && !_extent.is_empty()) _context->resize(_extent);
 		}
@@ -277,26 +249,25 @@ namespace render
 
 			core::bump(render::ui_perf.paints);
 			core::perf_timer timer(render::ui_perf.paint_us, &render::ui_perf.paint_max_us,
-			                     &render::ui_perf.paint_latency);
+			                       &render::ui_perf.paint_latency);
 			auto context = _context;
 			context->begin_draw(_extent, font_size_for_window(), actual_damage);
 			context->time_now = core::now();
 
 			{
 				core::perf_timer build(render::ui_perf.scene_build_us, &render::ui_perf.scene_build_max_us,
-				                     &render::ui_perf.scene_build_latency);
+				                       &render::ui_perf.scene_build_latency);
 				if (draw) draw(*context);
 			}
 
 			{
-				core::perf_timer backend(render::ui_perf.backend_render_us,
-				                     &render::ui_perf.backend_render_max_us,
-				                     &render::ui_perf.backend_render_latency);
+				core::perf_timer backend(render::ui_perf.backend_render_us, &render::ui_perf.backend_render_max_us,
+				                         &render::ui_perf.backend_render_latency);
 				context->render();
 			}
 		}
 
-		void redraw() override
+		void redraw(const core::recti changed) override
 		{
 			core::bump(render::ui_perf.redraws);
 			if (!_context || !_context->is_valid())
@@ -306,7 +277,7 @@ namespace render
 			}
 
 			if (skip_hidden_frame()) return;
-			_context->reset_damage();
+			_context->reset_damage(changed);
 			_context->render();
 		}
 
@@ -370,8 +341,7 @@ namespace render::detail
 	}
 }
 
-render::window_device_ptr render::create_window_device(platform::window& window,
-                                                        const render::device_options& options)
+render::window_device_ptr render::create_window_device(platform::window& window, const render::device_options& options)
 {
 	return std::make_shared<render::window_device_linux>(window, options);
 }

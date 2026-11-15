@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: A virtualised, selectable list control with optional weighted columns.
 
@@ -13,6 +12,7 @@
 #include "libdesktop/ui/views/view_base.h"
 #include "libdesktop/ui/views/view_theme.h"
 #include "libdesktop/ui/text/clipboard.h"
+#include "libdesktop/ui/text/table_layout.h"
 #include "libdesktop/ui/command.h"
 
 #include <memory>
@@ -61,11 +61,7 @@ namespace ui
 		int match_length = 0;
 		std::shared_ptr<void> data;
 
-		template <typename T>
-		[[nodiscard]] std::shared_ptr<T> as() const
-		{
-			return std::static_pointer_cast<T>(data);
-		}
+		template <typename T> [[nodiscard]] std::shared_ptr<T> as() const { return std::static_pointer_cast<T>(data); }
 
 		[[nodiscard]] bool has_match() const { return match_start >= 0 && match_length > 0; }
 	};
@@ -89,6 +85,9 @@ namespace ui
 		mutable bool _list_face_valid = false;
 		int _header_height = 0;
 		std::vector<list_column> _columns;
+		mutable table_layout::columns _column_layout;
+		table_layout::resize_gesture _column_drag;
+		double _column_scale = 1.0;
 		int _sort_column = -1;
 		bool _sort_ascending = true;
 
@@ -101,14 +100,14 @@ namespace ui
 		void update_scrollbar();
 		void draw_expand_icon(render::draw_context& dc, int cx, int cy, bool expanded) const;
 		void draw_cells(render::draw_context& dc, const list_item& item, const core::recti& bounds,
-	                       render::font_face font, core::color32 bg) const;
+		                render::font_face font, core::color32 bg) const;
 		[[nodiscard]] int centered_row_text_top(const core::recti& bounds) const;
 		[[nodiscard]] int first_visible_item() const;
 		void extend_selection_to(const list_item_ptr& item);
 		void draw_matched_text(render::draw_context& dc, const list_item& item, const core::recti& content_rect,
-	                       render::font_face font, core::color32 bg) const;
+		                       render::font_face font, core::color32 bg) const;
 		void draw_plain_text(render::draw_context& dc, const list_item& item, const core::recti& content_rect,
-	                       render::font_face font, core::color32 bg) const;
+		                     render::font_face font, core::color32 bg) const;
 
 		// These hooks are application policy, not list mechanics.
 		virtual void draw_header(render::draw_context& dc, const core::recti& header_rect) const;
@@ -131,6 +130,9 @@ namespace ui
 		void set_sort(int column, bool ascending);
 		[[nodiscard]] int column_at(core::pointi point) const;
 		[[nodiscard]] std::vector<core::recti> column_rects(int width) const;
+		[[nodiscard]] int column_divider_at(core::pointi point) const;
+		void resize_column(int column, int width);
+		void fit_column(int column);
 
 		[[nodiscard]] int selected_index() const;
 		[[nodiscard]] std::pair<int, int> selected_range() const;
@@ -157,12 +159,14 @@ namespace ui
 		void on_placed(render::measure_context& mc) override;
 		void paint(render::draw_context& dc, bool focused) const override;
 		void on_focus(bool focused, bool select_all) override;
-		bool on_key(int key, platform::key_state keys) override;
+		bool on_key(char32_t key, platform::key_state keys) override;
 		bool on_text(std::string_view text) override;
 		void on_mouse_down(core::pointi loc, platform::key_state keys) override;
 		void on_mouse_move(core::pointi loc, bool captured) override;
 		void on_mouse_up(core::pointi loc, platform::key_state keys) override;
+		void on_double_click(core::pointi loc, platform::key_state keys) override;
 		void on_mouse_leave() override;
+		void on_capture_lost() override;
 		bool on_wheel(core::pointi loc, int delta, platform::key_state keys) override;
 		std::vector<command_ptr> context_commands(core::pointi loc) override;
 		platform::cursor cursor_at(core::pointi loc) const override;
@@ -174,7 +178,8 @@ namespace ui
 
 
 	protected:
-		void draw_item(render::draw_context& dc, const list_item_ptr& item, const core::recti& bounds,
-		               bool selected, bool hovered) const;
+		bool cancel_column_drag();
+		void draw_item(render::draw_context& dc, const list_item_ptr& item, const core::recti& bounds, bool selected,
+		               bool hovered) const;
 	};
 }

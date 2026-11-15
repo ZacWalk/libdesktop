@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Linux text, asynchronous web and filesystem services.
 
@@ -93,9 +92,9 @@ namespace
 		}
 
 	public:
-		linux_atomic_writer(platform::file_ptr stage, core::file_path stage_path, core::file_path destination)
-			: _stage(std::move(stage)), _stage_path(std::move(stage_path)), _destination(std::move(destination)),
-			  _failure{platform::file_op_result_code::OK}
+		linux_atomic_writer(platform::file_ptr stage, core::file_path stage_path, core::file_path destination) :
+			_stage(std::move(stage)), _stage_path(std::move(stage_path)), _destination(std::move(destination)),
+			_failure{platform::file_op_result_code::OK}
 		{
 		}
 
@@ -130,7 +129,8 @@ namespace
 			if (_committed)
 				return remember({platform::file_op_result_code::FAILED, "The atomic writer was already committed."});
 			if (atomic_failure.load(std::memory_order_relaxed) == platform::atomic_file_test_failure::commit)
-				return remember({platform::file_op_result_code::FAILED, "The atomic writer commit was forced to fail."});
+				return remember(
+					{platform::file_op_result_code::FAILED, "The atomic writer commit was forced to fail."});
 
 			const auto flushed = flush();
 			if (!flushed.success()) return flushed;
@@ -149,7 +149,6 @@ namespace
 
 		core::file_path staged_path() const override { return _stage_path; }
 	};
-
 
 	std::string normalize_url_path(const std::string_view path)
 	{
@@ -289,7 +288,6 @@ core::folder_path platform::current_directory()
 	return error ? core::folder_path{} : core::folder_path(path.generic_string());
 }
 
-
 core::file_path platform::canonical_path(const core::file_path& path)
 {
 	return path.is_empty() ? core::file_path{} : core::file_path(canonical_text(path.str()));
@@ -332,12 +330,12 @@ platform::atomic_file_writer_open_result platform::create_atomic_file_writer_res
 		}
 		uint32_t random = 0;
 		core::generate_random_bytes(reinterpret_cast<uint8_t*>(&random), sizeof(random));
-		const auto name = std::format(".libdesktop-stage-{:08x}-{:08x}.tmp",
-		                              static_cast<uint32_t>(::getpid()), random);
+		const auto name = std::format(".libdesktop-stage-{:08x}-{:08x}.tmp", static_cast<uint32_t>(::getpid()), random);
 		const auto stage_path = destination.folder().combine_file(name);
 		const auto stage = platform::open_file(stage_path, file_open_mode::create_new);
 		if (stage)
-			return {std::make_shared<linux_atomic_writer>(stage, stage_path, destination), {platform::file_op_result_code::OK}};
+			return {std::make_shared<linux_atomic_writer>(stage, stage_path, destination),
+			        {platform::file_op_result_code::OK}};
 		if (errno != EEXIST) return {nullptr, failure(errno)};
 	}
 	return {nullptr, {file_op_result_code::ALREADY_EXISTS, "Unable to claim a unique atomic stage path."}};
@@ -352,7 +350,6 @@ void platform::test_set_atomic_file_failure(const atomic_file_test_failure failu
 {
 	atomic_failure.store(failure_kind, std::memory_order_relaxed);
 }
-
 
 platform::async_http_session_ptr platform::create_async_http_session(const std::string_view)
 {
@@ -370,17 +367,16 @@ std::string platform::resolve_url(const std::string_view base, const std::string
 
 	const auto authority_end = base.find('/', scheme_end + 3);
 	const auto prefix = std::string(base.substr(0, authority_end));
-	const auto base_path = authority_end == std::string_view::npos ? std::string_view("/")
-	                                                               : base.substr(authority_end);
+	const auto base_path = authority_end == std::string_view::npos ? std::string_view("/") : base.substr(authority_end);
 	if (relative.starts_with("//")) return std::string(base.substr(0, scheme_end)) + ":" + std::string(relative);
 
 	const auto query_or_fragment = base_path.find_first_of("?#");
 	const auto path_without_query = base_path.substr(0, query_or_fragment);
-	if (relative.front() == '#' || relative.front() == '?') return prefix + std::string(path_without_query) + std::string(relative);
+	if (relative.front() == '#' || relative.front() == '?')
+		return prefix + std::string(path_without_query) + std::string(relative);
 
 	std::string joined;
-	if (relative.front() == '/')
-		joined = std::string(relative);
+	if (relative.front() == '/') joined = std::string(relative);
 	else
 	{
 		const auto slash = path_without_query.find_last_of('/');
@@ -392,23 +388,29 @@ std::string platform::resolve_url(const std::string_view base, const std::string
 
 uint32_t platform::charset_to_codepage(const std::string_view charset)
 {
-	struct entry { std::string_view name; uint32_t codepage; };
+	struct entry
+	{
+		std::string_view name;
+		uint32_t codepage;
+	};
 	static constexpr entry table[] = {
-		{"utf-8", 65001}, {"utf8", 65001}, {"us-ascii", 65001}, {"ascii", 65001},
-		{"utf-16", 1200}, {"utf-16le", 1200}, {"utf-16be", 1201},
-		{"iso-8859-1", 28591}, {"latin1", 28591}, {"l1", 28591}, {"iso8859-1", 28591},
-		{"windows-1250", 1250}, {"windows-1251", 1251}, {"windows-1252", 1252},
-		{"windows-1253", 1253}, {"windows-1254", 1254}, {"windows-1255", 1255},
-		{"windows-1256", 1256}, {"windows-1257", 1257}, {"windows-1258", 1258},
-		{"cp1250", 1250}, {"cp1251", 1251}, {"cp1252", 1252},
-		{"iso-8859-2", 28592}, {"iso-8859-3", 28593}, {"iso-8859-4", 28594},
-		{"iso-8859-5", 28595}, {"iso-8859-6", 28596}, {"iso-8859-7", 28597},
-		{"iso-8859-8", 28598}, {"iso-8859-9", 28599}, {"iso-8859-13", 28603},
-		{"iso-8859-15", 28605}, {"koi8-r", 20866}, {"koi8-u", 21866},
-		{"shift_jis", 932}, {"shift-jis", 932}, {"sjis", 932}, {"ms_kanji", 932},
-		{"euc-jp", 20932}, {"iso-2022-jp", 50220}, {"gb2312", 936}, {"gbk", 936},
-		{"gb18030", 54936}, {"big5", 950}, {"euc-kr", 949}, {"ks_c_5601-1987", 949},
-		{"windows-874", 874}, {"tis-620", 874},
+		{"utf-8", 65001},       {"utf8", 65001},         {"us-ascii", 65001},
+		{"ascii", 65001},       {"utf-16", 1200},        {"utf-16le", 1200},
+		{"utf-16be", 1201},     {"iso-8859-1", 28591},   {"latin1", 28591},
+		{"l1", 28591},          {"iso8859-1", 28591},    {"windows-1250", 1250},
+		{"windows-1251", 1251}, {"windows-1252", 1252},  {"windows-1253", 1253},
+		{"windows-1254", 1254}, {"windows-1255", 1255},  {"windows-1256", 1256},
+		{"windows-1257", 1257}, {"windows-1258", 1258},  {"cp1250", 1250},
+		{"cp1251", 1251},       {"cp1252", 1252},        {"iso-8859-2", 28592},
+		{"iso-8859-3", 28593},  {"iso-8859-4", 28594},   {"iso-8859-5", 28595},
+		{"iso-8859-6", 28596},  {"iso-8859-7", 28597},   {"iso-8859-8", 28598},
+		{"iso-8859-9", 28599},  {"iso-8859-13", 28603},  {"iso-8859-15", 28605},
+		{"koi8-r", 20866},      {"koi8-u", 21866},       {"shift_jis", 932},
+		{"shift-jis", 932},     {"sjis", 932},           {"ms_kanji", 932},
+		{"euc-jp", 20932},      {"iso-2022-jp", 50220},  {"gb2312", 936},
+		{"gbk", 936},           {"gb18030", 54936},      {"big5", 950},
+		{"euc-kr", 949},        {"ks_c_5601-1987", 949}, {"windows-874", 874},
+		{"tis-620", 874},
 	};
 	for (const auto& candidate : table)
 		if (core::icmp(charset, candidate.name) == 0) return candidate.codepage;
@@ -459,8 +461,8 @@ std::string platform::url_encode(const std::string_view input)
 	for (const auto c : input)
 	{
 		const auto byte = static_cast<uint8_t>(c);
-		if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
-			(byte >= '0' && byte <= '9') || byte == '-' || byte == '_' || byte == '.' || byte == '~')
+		if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') ||
+		    byte == '-' || byte == '_' || byte == '.' || byte == '~')
 			result += static_cast<char>(byte);
 		else
 		{

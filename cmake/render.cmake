@@ -18,7 +18,8 @@ add_library(libdesktop-render STATIC
     src/render/software.cpp
     src/render/software_context.cpp
     src/render/device.cpp
-    src/render/shadow.cpp
+    src/render/polygon.cpp
+    src/render/polygon.h
 )
 add_library(libdesktop::render ALIAS libdesktop-render)
 
@@ -28,27 +29,11 @@ target_include_directories(libdesktop-render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 target_precompile_headers(libdesktop-render PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/libdesktop/render.h")
 
 if(MSVC)
-    target_compile_options(libdesktop-render PRIVATE /bigobj /W3 /sdl)
+    target_compile_options(libdesktop-render PRIVATE /bigobj /W4 /sdl)
     libdesktop_enable_msvc_exceptions(libdesktop-render)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(libdesktop-render PRIVATE -Wall -Wno-unknown-pragmas -Wno-multichar)
 endif()
-
-set(libdesktop_render_embedded "${CMAKE_CURRENT_BINARY_DIR}/libdesktop_render_embedded.cpp")
-set(libdesktop_render_embedded_text "// Generated from src/render/res by CMake. Do not edit.\n#include <cstddef>\n")
-set(libdesktop_shadow_path "${CMAKE_CURRENT_SOURCE_DIR}/src/render/res/shadow.png")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${libdesktop_shadow_path}")
-file(READ "${libdesktop_shadow_path}" libdesktop_shadow_hex HEX)
-string(REGEX REPLACE "([0-9A-Fa-f][0-9A-Fa-f])" "0x\\1," libdesktop_shadow_bytes "${libdesktop_shadow_hex}")
-string(LENGTH "${libdesktop_shadow_hex}" libdesktop_shadow_hex_length)
-math(EXPR libdesktop_shadow_length "${libdesktop_shadow_hex_length} / 2")
-string(APPEND libdesktop_render_embedded_text
-    "extern const unsigned char libdesktop_shadow_png[] = {${libdesktop_shadow_bytes}};\n"
-    "extern const std::size_t libdesktop_shadow_png_size = ${libdesktop_shadow_length};\n")
-file(WRITE "${libdesktop_render_embedded}.in" "${libdesktop_render_embedded_text}")
-configure_file("${libdesktop_render_embedded}.in" "${libdesktop_render_embedded}" COPYONLY)
-set_source_files_properties("${libdesktop_render_embedded}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-target_sources(libdesktop-render PRIVATE "${libdesktop_render_embedded}")
 
 if(WIN32)
     # Consumers still compile their own executable resource scripts; enable RC once for the tree.
@@ -82,7 +67,7 @@ if(WIN32)
     set(libdesktop_render_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/render_shaders")
     file(MAKE_DIRECTORY "${libdesktop_render_shader_dir}")
 
-    set(libdesktop_pixel_shaders circle_ps font_ps pano_ps rgb_bicubic_ps rgb_ps solid_ps yuv_bicubic_ps yuv_ps
+    set(libdesktop_pixel_shaders audio_vis_ps circle_ps font_ps pano_ps polygon_ps rgb_bicubic_ps rgb_ps solid_ps yuv_bicubic_ps yuv_ps
         yuv_hdr_bicubic_ps yuv_hdr_ps)
     set(libdesktop_vertex_shaders vs)
     set(libdesktop_render_shader_outputs "")

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Cross-platform operating-system services, files, settings, threads, and networking.
 
@@ -154,6 +153,7 @@ namespace platform
 		core::text_t png_best = "PNG - Best for non photos";
 		core::text_t webp_best = "WEBP - Best for the web";
 		core::text_t jxl_best = "JPEG XL - Smallest files for photos";
+		core::text_t avif_best = "AVIF - Small files, widely supported";
 		core::text_t error_connect_scanner = "Could not connect to scanner";
 		core::text_t error_scanner = "Scanner reported an error";
 		core::text_t error_save_image = "Failed to save image.";
@@ -174,14 +174,12 @@ namespace platform
 		installed_messages.store(m, std::memory_order_release);
 	}
 
-
 	std::string OS();
 
 	// The platform identity the daily ping reports, packed by platform::pack_environment. Every value is
 	// read fresh: a system fact means "right now", unlike a feature bit, which means "at least once
 	// since the last report". platform_environment.h owns each value's meaning and packed layout.
 	platform::environment_facts environment();
-
 
 	core::unique_folders known_folders();
 	local_folders_result local_folders();
@@ -435,7 +433,11 @@ namespace platform
 
 	core::folder_path known_path(known_folder f);
 	file_ptr open_file(core::file_path path, file_open_mode mode);
-	enum class file_lock_mode { read, rename_delete };
+	enum class file_lock_mode
+	{
+		read,
+		rename_delete
+	};
 	// Pins the object without following reparse points. On Windows, both modes exclude writers;
 	// read permits renames, while rename_delete also excludes other rename/delete handles.
 	file_ptr open_file_lock(core::file_path path, file_lock_mode mode = file_lock_mode::rename_delete);
@@ -462,7 +464,6 @@ namespace platform
 	extern file_hash_counters file_hash_perf;
 
 	bool eject(core::folder_path path);
-
 
 	enum class file_op_result_code
 	{
@@ -493,15 +494,9 @@ namespace platform
 		// Preserves the backend error for portable conditions such as cross_device_link.
 		std::error_code error{};
 
-		bool success() const
-		{
-			return code == file_op_result_code::OK;
-		}
+		bool success() const { return code == file_op_result_code::OK; }
 
-		bool failed() const
-		{
-			return code != file_op_result_code::OK;
-		}
+		bool failed() const { return code != file_op_result_code::OK; }
 
 		std::string format_error(std::string_view text = {}, std::string_view more_text = {}) const;
 	};
@@ -511,8 +506,8 @@ namespace platform
 	file_op_result move_file(const file_ptr& existing, core::file_path destination, bool fail_if_exists);
 	file_op_result delete_file(const file_ptr& existing);
 
-	file_op_result delete_items(const std::vector<core::file_path>& files, const std::vector<core::folder_path>& folders,
-	                            bool allow_undo);
+	file_op_result delete_items(const std::vector<core::file_path>& files,
+	                            const std::vector<core::folder_path>& folders, bool allow_undo);
 	// Returns true if deleting the given paths would move them to the Recycle Bin.
 	// Returns false when any path is on a location that bypasses the Recycle Bin
 	// (for example a UNC network path), causing a permanent, unrecoverable delete.
@@ -523,8 +518,9 @@ namespace platform
 	bool is_network_location(core::folder_path folder);
 	// Copies or moves through the shell. Collisions are auto-renamed unless replace_existing is set,
 	// which the caller may only do having named the colliding files and had the overwrite confirmed.
-	file_op_result move_or_copy(const std::vector<core::file_path>& files, const std::vector<core::folder_path>& folders,
-	                            core::folder_path target, bool is_move, bool replace_existing = false);
+	file_op_result move_or_copy(const std::vector<core::file_path>& files,
+	                            const std::vector<core::folder_path>& folders, core::folder_path target, bool is_move,
+	                            bool replace_existing = false);
 
 	file_op_result delete_file(core::file_path path);
 	file_op_result make_file_writable(core::file_path path);
@@ -577,10 +573,8 @@ namespace platform
 	core::folder_path temp_folder();
 	int display_frequency();
 
-
 	core::file_path resolve_link(core::file_path path);
 	bool created_date(core::file_path path, core::date_t dt);
-
 
 	struct metadata_result
 	{
@@ -594,7 +588,8 @@ namespace platform
 	file_op_result write_shell_tags(core::file_path path, const std::vector<std::string>& tags);
 	metadata_result read_shell_metadata(core::file_path path);
 
-	core::count_and_size calc_folder_summary(core::folder_path folder, bool show_hidden, const core::cancel_token& token);
+	core::count_and_size calc_folder_summary(core::folder_path folder, bool show_hidden,
+	                                         const core::cancel_token& token);
 	folder_contents iterate_file_items(core::folder_path folder, bool show_hidden);
 	std::vector<folder_info> select_folders(const core::item_selector& selector, bool show_hidden);
 	std::vector<file_info> select_files(const core::item_selector& selector, bool show_hidden);
@@ -753,8 +748,8 @@ namespace platform
 	                           const std::vector<file_dialog_filter>& filters, bool allow_multiple,
 	                           std::string_view title = {});
 	bool prompt_for_save_path(core::file_path& path, const std::vector<file_dialog_filter>& filters);
-	bool prompt_for_save_path(window* owner, core::file_path& path,
-	                          const std::vector<file_dialog_filter>& filters, std::string_view title = {});
+	bool prompt_for_save_path(window* owner, core::file_path& path, const std::vector<file_dialog_filter>& filters,
+	                          std::string_view title = {});
 
 	// The operating system's own UTF-16 conversion. Nothing in the app calls these: core::utf16_to_utf8
 	// and core::utf8_to_utf16 are the conversions it uses, and these exist so a test can check those
@@ -769,7 +764,6 @@ namespace platform
 	// conjoining jamo) compare and search as equal. ASCII input is returned as-is.
 	std::string normalize_nfc(std::string_view text);
 
-
 #ifndef WINSTORE
 	// Downloads https://<host>/<file_name> into the downloads folder, then calls complete with its
 	// path if it is correctly signed, or with an empty path.
@@ -778,7 +772,6 @@ namespace platform
 	file_op_result install(core::file_path installer_path, core::folder_path destination_folder, bool silent,
 	                       bool run_app_after_install);
 #endif
-
 
 	// dates
 	uint64_t utc_to_local(uint64_t ts);
@@ -795,8 +788,7 @@ namespace platform
 
 // These formatters use platform locale/date services and therefore belong to the platform API,
 // not the core umbrella.
-template <>
-struct std::formatter<core::date_t, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::date_t, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::date_t& d, std::format_context& ctx) const
 	{
@@ -804,8 +796,7 @@ struct std::formatter<core::date_t, char> : std::formatter<std::string_view, cha
 	}
 };
 
-template <>
-struct std::formatter<core::file_size, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::file_size, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::file_size& size, std::format_context& ctx) const
 	{
@@ -820,7 +811,7 @@ namespace platform
 	{
 		std::string name;
 		std::function<bool(const std::vector<core::file_path>& files, const std::vector<core::folder_path>& folders)>
-		invoke;
+			invoke;
 		int weight = 0;
 	};
 
@@ -872,7 +863,6 @@ namespace platform
 	drop_effect perform_drag(const std::any& frame_handle, const std::vector<core::file_path>& files,
 	                         const std::vector<core::folder_path>& folders);
 
-
 	using clipboard_data_ptr = std::shared_ptr<clipboard_data>;
 
 	clipboard_data_ptr clipboard();
@@ -886,6 +876,11 @@ namespace platform
 		// Writes the rows, top first, each dimensions().cx * 4 bytes of blue, green, red and alpha,
 		// into pixels, which holds dimensions().cy such rows, zeroed. Throws when it cannot.
 		virtual void write_pixels(std::span<uint8_t> pixels) const = 0;
+		// The same picture as a PNG file, for a target that takes PNG: a bitmap's target may drop its alpha, and
+		// browsers, Office and image editors take PNG first. offers_png says so before anything is encoded; png()
+		// throws when it cannot encode one.
+		virtual bool offers_png() const { return false; }
+		virtual std::vector<uint8_t> png() const { return {}; }
 	};
 
 	using clipboard_image_ptr = std::shared_ptr<const clipboard_image>;
@@ -950,8 +945,7 @@ namespace platform
 	void suppress_crash_guard(crash_guard g, bool suppress);
 	bool crash_guard_suppressed(crash_guard g);
 
-	template <typename T>
-	struct queue
+	template <typename T> struct queue
 	{
 		core::mutex _rw;
 		_Guarded_by_(_rw) std::deque<T> _storage;
@@ -975,8 +969,7 @@ namespace platform
 
 		// One lock and one empty-to-nonempty answer for a whole group, so a producer holding a batch
 		// signals its consumer once rather than once per element.
-		template <typename C>
-		bool enqueue_all(C&& items)
+		template <typename C> bool enqueue_all(C&& items)
 		{
 			core::exclusive_lock lock_dec(_rw);
 			const auto was_empty = _storage.empty();
@@ -1029,7 +1022,7 @@ namespace platform
 			task_t() = default;
 
 			template <class F>
-				requires (!std::same_as<std::remove_cvref_t<F>, task_t>)
+				requires(!std::same_as<std::remove_cvref_t<F>, task_t>)
 			task_t(F&& task) : _task(std::forward<F>(task)), _queued_us(core::now_us()), _ready_us(_queued_us)
 			{
 			}
@@ -1039,25 +1032,16 @@ namespace platform
 				_ready_us = _queued_us + static_cast<int64_t>(delay_ms) * 1000;
 			}
 
-			int64_t queued_at_us() const
-			{
-				return _queued_us;
-			}
+			int64_t queued_at_us() const { return _queued_us; }
 
-			int64_t ready_at_us() const
-			{
-				return _ready_us;
-			}
+			int64_t ready_at_us() const { return _ready_us; }
 
 			uint64_t wait_us(const int64_t start_us = core::now_us()) const
 			{
 				return start_us > _ready_us ? static_cast<uint64_t>(start_us - _ready_us) : 0;
 			}
 
-			void operator()() const
-			{
-				_task();
-			}
+			void operator()() const { _task(); }
 		};
 
 		queue<task_t> _q;
@@ -1067,19 +1051,11 @@ namespace platform
 		// events rather than on a duration.
 		static constexpr uint32_t wait_indefinitely = ~0u;
 
-		task_queue() : _event(false, false)
-		{
-		}
+		task_queue() : _event(false, false) {}
 
-		bool dequeue(task_t& result)
-		{
-			return _q.dequeue(result);
-		}
+		bool dequeue(task_t& result) { return _q.dequeue(result); }
 
-		std::deque<task_t> dequeue_all()
-		{
-			return _q.dequeue_all();
-		}
+		std::deque<task_t> dequeue_all() { return _q.dequeue_all(); }
 
 		void enqueue(task_t f)
 		{
@@ -1133,20 +1109,19 @@ namespace platform
 		bool _stopped = false;
 
 	public:
-		~threads()
-		{
-			clear();
-		}
+		~threads() { clear(); }
 
 		// Refuses to start once clear() has run. That refusal is what makes an on-demand start safe from
 		// any thread: the caller learns no worker will service its queue, rather than leaking a thread
 		// that outlives the objects it captured. There is deliberately no unchecked form.
-		template <typename F>
-		bool start_if_running(F&& f)
+		template <typename F> bool start_if_running(F&& f)
 		{
 			core::exclusive_lock lock_dec(_rw);
 			if (_stopped) return false;
-			_threads.emplace_back(std::thread(f));
+			// Growing the vector first means an allocation failure throws before a thread exists; a
+			// joinable std::thread destroyed by the unwind would call std::terminate.
+			_threads.reserve(_threads.size() + 1);
+			_threads.emplace_back(std::forward<F>(f));
 			return true;
 		}
 
@@ -1224,8 +1199,6 @@ namespace platform
 	// when another instance already holds it, which is a concurrent launch rather than a repeat of one.
 	bool claim_startup_scope();
 	void release_startup_scope();
-
-
 
 	////////////////////////////////
 	/// Network

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Shell integration, single-instance coordination, spelling, and file drag operations.
 
@@ -80,6 +79,47 @@ namespace platform
 	bool register_instance_signal(std::string_view name, std::function<void()> callback);
 	// Broadcasts the named second-launch signal; true means the OS accepted the post.
 	bool signal_existing_instance(std::string_view name);
+
+	enum class instance_request_status
+	{
+		accepted,
+		declined,
+		not_running,
+		timed_out,
+		unavailable,
+		failed
+	};
+
+	struct instance_request_result
+	{
+		instance_request_status status = instance_request_status::failed;
+		std::string error;
+	};
+
+	class instance_receiver
+	{
+	public:
+		virtual ~instance_receiver() = default;
+	};
+
+	using instance_receiver_ptr = std::unique_ptr<instance_receiver>;
+
+	struct instance_receiver_result
+	{
+		instance_receiver_ptr receiver;
+		bool already_running = false;
+		std::string error;
+	};
+
+	bool can_receive_instance_requests();
+	// Owns a per-user, per-session name until destruction, on the creating UI thread.
+	// The handler must only accept and queue work: it may be called inside a modal loop.
+	// Files are absolute paths; an empty list requests activation alone.
+	instance_receiver_result receive_instance_requests(std::string_view name,
+	                                                   std::function<bool(std::vector<core::file_path>)> handler);
+	// Waits at most timeout_ms for a starting receiver and its acknowledgement.
+	instance_request_result send_instance_request(std::string_view name, std::span<const core::file_path> files,
+	                                              uint32_t timeout_ms = 3000);
 
 	class spell_checker
 	{

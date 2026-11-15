@@ -10,6 +10,8 @@
 #include "platform/test_support.h"
 #include "platform/loopback_http.h"
 
+#include <dwmapi.h>
+
 using namespace std::literals;
 
 namespace
@@ -40,8 +42,8 @@ namespace
 	uint64_t stamp(const int month, const int day, const int hour, const int minute, const int second = 0,
 	               const int ms = 0)
 	{
-		return core::date_t(2024, month, day, hour, minute, second).to_int64() + static_cast<uint64_t>(ms) *
-			test_ticks_per_ms;
+		return core::date_t(2024, month, day, hour, minute, second).to_int64() +
+		       static_cast<uint64_t>(ms) * test_ticks_per_ms;
 	}
 
 	std::vector<uint64_t> samples_around(const std::vector<uint64_t>& changes, const bool include_gap_edges)
@@ -57,18 +59,16 @@ namespace
 			const auto at = [change](const int64_t minutes, const int64_t ms)
 			{
 				return static_cast<uint64_t>(static_cast<int64_t>(change) +
-					minutes * static_cast<int64_t>(test_ticks_per_minute) +
-					ms * static_cast<int64_t>(test_ticks_per_ms));
+				                             minutes * static_cast<int64_t>(test_ticks_per_minute) +
+				                             ms * static_cast<int64_t>(test_ticks_per_ms));
 			};
 
-			for (auto minute = -180; minute <= 180; ++minute)
-				result.push_back(at(minute, 0));
+			for (auto minute = -180; minute <= 180; ++minute) result.push_back(at(minute, 0));
 
 			const auto edges = include_gap_edges ? std::vector<int>{-60, -30, 0, 30, 60} : std::vector<int>{0};
 			for (const auto edge : edges)
 			{
-				for (auto ms = -3; ms <= 3; ++ms)
-					result.push_back(at(edge, ms) + 4321);
+				for (auto ms = -3; ms <= 3; ++ms) result.push_back(at(edge, ms) + 4321);
 			}
 		}
 
@@ -129,23 +129,22 @@ static void should_convert_dates_with_their_own_dst_offset()
 static void should_tabulate_time_zone_offsets_like_the_system()
 {
 	const std::vector<tabulation_case> cases = {
-		{
-			"northern", make_zone(300, -60, {0, 3, 0, 2, 2, 0, 0, 0}, {0, 11, 0, 1, 2, 0, 0, 0}),
-			{stamp(3, 10, 7, 0), stamp(11, 3, 6, 0)}, {stamp(3, 10, 2, 0), stamp(11, 3, 2, 0)}
-		},
-		{
-			"southern", make_zone(-600, -60, {0, 10, 0, 1, 2, 0, 0, 0}, {0, 4, 0, 1, 3, 0, 0, 0}),
-			{stamp(4, 6, 16, 0), stamp(10, 5, 16, 0)}, {stamp(4, 7, 3, 0), stamp(10, 6, 2, 0)}
-		},
-		{
-			"half-hour daylight", make_zone(-630, -30, {0, 10, 0, 1, 2, 0, 0, 0}, {0, 4, 0, 1, 2, 0, 0, 0}),
-			{stamp(4, 6, 15, 0), stamp(10, 5, 15, 30)}, {stamp(4, 7, 2, 0), stamp(10, 6, 2, 0)}
-		},
-		{
-			"before midnight", make_zone(-120, -60, {0, 3, 4, 5, 23, 59, 59, 999}, {0, 10, 5, 5, 1, 0, 0, 0}),
-			{stamp(3, 28, 21, 59, 59, 999), stamp(10, 24, 22, 0)},
-			{stamp(3, 28, 23, 59, 59, 999), stamp(10, 25, 1, 0)}
-		},
+		{"northern",
+	     make_zone(300, -60, {0, 3, 0, 2, 2, 0, 0, 0}, {0, 11, 0, 1, 2, 0, 0, 0}),
+	     {stamp(3, 10, 7, 0), stamp(11, 3, 6, 0)},
+	     {stamp(3, 10, 2, 0), stamp(11, 3, 2, 0)}},
+		{"southern",
+	     make_zone(-600, -60, {0, 10, 0, 1, 2, 0, 0, 0}, {0, 4, 0, 1, 3, 0, 0, 0}),
+	     {stamp(4, 6, 16, 0), stamp(10, 5, 16, 0)},
+	     {stamp(4, 7, 3, 0), stamp(10, 6, 2, 0)}},
+		{"half-hour daylight",
+	     make_zone(-630, -30, {0, 10, 0, 1, 2, 0, 0, 0}, {0, 4, 0, 1, 2, 0, 0, 0}),
+	     {stamp(4, 6, 15, 0), stamp(10, 5, 15, 30)},
+	     {stamp(4, 7, 2, 0), stamp(10, 6, 2, 0)}},
+		{"before midnight",
+	     make_zone(-120, -60, {0, 3, 4, 5, 23, 59, 59, 999}, {0, 10, 5, 5, 1, 0, 0, 0}),
+	     {stamp(3, 28, 21, 59, 59, 999), stamp(10, 24, 22, 0)},
+	     {stamp(3, 28, 23, 59, 59, 999), stamp(10, 25, 1, 0)}},
 		{"no daylight", make_zone(-330, 0, {}, {}), {}, {}},
 	};
 
@@ -154,8 +153,9 @@ static void should_tabulate_time_zone_offsets_like_the_system()
 		for (const auto instant : c.instants)
 		{
 			const auto earlier = instant - test_ticks_per_ms;
-			assert_equal(true, platform::utc_to_local(earlier, &c.zone) - earlier !=
-			             platform::utc_to_local(instant, &c.zone) - instant,
+			assert_equal(true,
+			             platform::utc_to_local(earlier, &c.zone) - earlier !=
+			                 platform::utc_to_local(instant, &c.zone) - instant,
 			             std::format("{}: the system changes offset at the stated instant", c.name));
 		}
 
@@ -168,15 +168,15 @@ static void should_tabulate_time_zone_offsets_like_the_system()
 
 			for (auto i = 0u; i < stamps.size(); ++i)
 			{
-				const auto expected = to_local
-					                      ? platform::utc_to_local(stamps[i], &c.zone)
-					                      : platform::local_to_utc(stamps[i], &c.zone);
+				const auto expected = to_local ? platform::utc_to_local(stamps[i], &c.zone)
+				                               : platform::local_to_utc(stamps[i], &c.zone);
 				if (tabulated[i] != expected && mismatches++ == 0)
 					first = std::format(" first at {}: {} != {}", stamps[i], tabulated[i], expected);
 			}
 
-			assert_equal(0, mismatches, std::format("{} {} tabulation matches the system{}", c.name,
-			                                        to_local ? "UTC-to-local" : "local-to-UTC", first));
+			assert_equal(0, mismatches,
+			             std::format("{} {} tabulation matches the system{}", c.name,
+			                         to_local ? "UTC-to-local" : "local-to-UTC", first));
 		}
 	}
 }
@@ -241,6 +241,24 @@ static void should_pass_bare_save_dialog_extensions()
 	assert_equal(L"", platform::dialog_default_extension(""), "an absent extension remains absent");
 }
 
+// The save dialog opened on its first type whatever the suggested name, so a photo's PNG or a HEIC's AVIF copy was
+// offered under JPEG, and choosing nothing else could still rename it.
+static void should_open_the_save_dialog_on_the_suggested_type()
+{
+	const std::vector<platform::file_dialog_filter> filters = {{"JPEG", "*.jpg;*.jpe;*.jpeg"},
+	                                                           {"PNG", "*.png"},
+	                                                           {"WebP", "*.webp"},
+	                                                           {"JPEG XL", "*.jxl"},
+	                                                           {"AVIF", "*.avif"}};
+
+	assert_equal(1u, platform::dialog_filter_index(filters, R"(C:\photos\a.jpg)"), "a JPEG is the first type");
+	assert_equal(1u, platform::dialog_filter_index(filters, R"(C:\photos\a.JPEG)"), "by any of its extensions");
+	assert_equal(2u, platform::dialog_filter_index(filters, R"(C:\photos\a.png)"), "a PNG opens on PNG");
+	assert_equal(5u, platform::dialog_filter_index(filters, R"(C:\photos\a-edit.AVIF)"), "in any case");
+	assert_equal(1u, platform::dialog_filter_index(filters, R"(C:\photos\a.heic)"), "an unlisted type, the first");
+	assert_equal(1u, platform::dialog_filter_index(filters, R"(C:\photos.d\a)"), "a dot in a folder is no extension");
+}
+
 // A single relative segment is its own parent, as a server's name is. Creating one is refused, where it
 // used to ask for its parent again until the stack ran out.
 static void should_refuse_a_folder_that_is_its_own_parent()
@@ -281,7 +299,7 @@ static void should_convert_utf8_to_ansi()
 	// bytes. An output sized at two bytes per UTF-16 unit truncated a name that is more CJK than
 	// ASCII, and a truncated conversion answers empty - so the file could not be opened by name.
 	const std::string cjk = "D:\\\xe5\x8b\x95\xe7\x94\xbb\\\xe6\x9d\xb1\xe4\xba\xac\xe6\x97\x85\xe8\xa1\x8c"
-		"\xe3\x81\xae\xe6\x80\x9d\xe3\x81\x84\xe5\x87\xba.mp4";
+							"\xe3\x81\xae\xe6\x80\x9d\xe3\x81\x84\xe5\x87\xba.mp4";
 	assert_equal(cjk, platform::utf8_to_a(cjk), "a name of three-byte characters converts whole");
 }
 
@@ -309,10 +327,7 @@ public:
 	registry_test_root(const registry_test_root&) = delete;
 	registry_test_root& operator=(const registry_test_root&) = delete;
 
-	const std::string& path() const
-	{
-		return _root;
-	}
+	const std::string& path() const { return _root; }
 
 	std::wstring subkey(const std::string_view section) const
 	{
@@ -326,12 +341,8 @@ static void should_persist_to_registry()
 	const auto archive = platform::create_registry_settings(root.path());
 
 	const std::vector<std::string> vals = {
-		"Hello World"s,
-		"\r\n\t hello"s,
-		"Доброго ранку!"s,
-		"Japanese こんにちは世界"s,
-		"Доброго ранку!"s,
-		std::string(64, 'x')
+		"Hello World"s,    "\r\n\t hello"s,      "Доброго ранку!"s, "Japanese こんにちは世界"s,
+		"Доброго ранку!"s, std::string(64, 'x'),
 	};
 
 	for (const auto& expected : vals)
@@ -354,7 +365,10 @@ static void should_validate_registry_value_types_and_sizes()
 	             static_cast<int>(RegCreateKeyExW(HKEY_CURRENT_USER, sectionW.c_str(), 0, nullptr,
 	                                              REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &key, nullptr)),
 	             "create registry test section");
-	const core::scope_exit close_key([&key] { if (key) RegCloseKey(key); });
+	const core::scope_exit close_key([&key]
+	{
+		if (key) RegCloseKey(key);
+	});
 
 	constexpr wchar_t text[] = L"text";
 	constexpr uint16_t short_number = 42;
@@ -365,13 +379,11 @@ static void should_validate_registry_value_types_and_sizes()
 	             "write wrong-number-type");
 	assert_equal(static_cast<int>(ERROR_SUCCESS),
 	             static_cast<int>(RegSetValueExW(key, L"short-number", 0, REG_DWORD,
-	                                             reinterpret_cast<const BYTE*>(&short_number),
-	                                             sizeof(short_number))),
+	                                             reinterpret_cast<const BYTE*>(&short_number), sizeof(short_number))),
 	             "write short-number");
 	assert_equal(static_cast<int>(ERROR_SUCCESS),
 	             static_cast<int>(RegSetValueExW(key, L"unterminated-string", 0, REG_SZ,
-	                                             reinterpret_cast<const BYTE*>(unterminated),
-	                                             sizeof(unterminated))),
+	                                             reinterpret_cast<const BYTE*>(unterminated), sizeof(unterminated))),
 	             "write unterminated-string");
 	assert_equal(static_cast<int>(ERROR_SUCCESS),
 	             static_cast<int>(RegSetValueExW(key, L"wrong-binary-type", 0, REG_SZ,
@@ -395,15 +407,13 @@ static void should_validate_registry_value_types_and_sizes()
 
 		uint8_t binary[16] = {};
 		auto binary_size = std::size(binary);
-		assert_equal(false, archive->read(section, "wrong-binary-type", binary, binary_size),
-		             "reject binary type");
+		assert_equal(false, archive->read(section, "wrong-binary-type", binary, binary_size), "reject binary type");
 	}
-
 }
 
 static void should_preserve_writability_probe_collisions()
 {
-	const auto folder = _temps.next_folder("write-probe");
+	const auto folder = temps.next_folder("write-probe");
 	const auto name = std::format("df-write-probe-{:08x}.tmp", static_cast<uint32_t>(GetCurrentProcessId()));
 	const auto collision = folder.combine_file(name);
 	write_test_file(collision, "existing file");
@@ -415,7 +425,7 @@ static void should_preserve_writability_probe_collisions()
 
 static void should_initialize_unicode_ini_settings()
 {
-	const auto folder = _temps.next_folder("unicode-ini");
+	const auto folder = temps.next_folder("unicode-ini");
 	const auto ini = folder.combine_file(std::format("{}.ini", core::app_file_stem()));
 	const auto settings = platform::create_ini_file_settings(folder);
 	const std::string value = "C:\\\xe6\x9d\xb1\xe4\xba\xac\\\xf0\x9f\x8e\xac.mp4";
@@ -435,7 +445,7 @@ static void should_initialize_unicode_ini_settings()
 // values read back unchanged, which is why the escape for a line break cannot be a backslash.
 static void should_read_ini_values_earlier_builds_wrote()
 {
-	const auto folder = _temps.next_folder("earlier-ini");
+	const auto folder = temps.next_folder("earlier-ini");
 	const auto ini = core::utf8_to_utf16(folder.combine_file(std::format("{}.ini", core::app_file_stem())).str());
 	assert_equal(true, WritePrivateProfileStringW(L"index", L"folder", LR"(C:\new\raw)", ini.c_str()) != 0,
 	             "an earlier build's folder is written");
@@ -498,11 +508,12 @@ static void should_let_windows_confirm_recycle_that_would_destroy()
 
 static void should_read_coherent_number_format_snapshots()
 {
-	platform::set_number_format_probe_snapshots({
-		                                            {L".", L",", 1, 1},
-		                                            {L",", L".", 1, 1},
-	                                            },
-	                                            true);
+	platform::set_number_format_probe_snapshots(
+		{
+			{L".", L",", 1, 1},
+			{L",", L".", 1, 1},
+		},
+		true);
 	const core::scope_exit restore([] { platform::clear_number_format_probe_snapshots(); });
 
 	assert_equal("1,234", platform::format_number("1234"), "the first format uses one complete snapshot");
@@ -529,13 +540,10 @@ static void should_reject_unusable_file_names()
 
 static void should_publish_pasted_bitmap_after_closing_stage()
 {
-	const auto folder = _temps.folder().combine(std::format("pasted-bitmap-{}", core::tick_count()));
+	const auto folder = temps.folder().combine(std::format("pasted-bitmap-{}", core::tick_count()));
 	assert_equal(true, platform::create_folder(folder).success(), "create bitmap paste temp folder");
 
-	const uint32_t pixels[] = {
-		0xffff0000, 0xff00ff00,
-		0xff0000ff, 0xffffffff
-	};
+	const uint32_t pixels[] = {0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff};
 	const auto bitmap = CreateBitmap(2, 2, 1, 32, pixels);
 	assert_equal(true, bitmap != nullptr, "create test bitmap");
 	const core::scope_exit delete_bitmap([bitmap] { DeleteObject(bitmap); });
@@ -560,13 +568,79 @@ static void should_publish_pasted_bitmap_after_closing_stage()
 	assert_equal(0, stage_count, "owned stage file was removed or published");
 }
 
+namespace
+{
+	// A 2 x 1 PNG: an opaque red pixel and a half-transparent blue one.
+	constexpr uint8_t two_pixel_png[] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+	                                     0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
+	                                     0x08, 0x06, 0x00, 0x00, 0x00, 0xf4, 0x22, 0x7f, 0x8a, 0x00, 0x00, 0x00,
+	                                     0x0e, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+	                                     0x42, 0x0d, 0x00, 0x0f, 0x7a, 0x03, 0x7e, 0x6a, 0x81, 0x31, 0xe1, 0x00,
+	                                     0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+
+	class png_clipboard_image final : public platform::clipboard_image
+	{
+	public:
+		std::vector<uint8_t> bytes;
+
+		explicit png_clipboard_image(std::vector<uint8_t> png) : bytes(std::move(png)) {}
+
+		core::sizei dimensions() const override { return {2, 1}; }
+
+		void write_pixels(const std::span<uint8_t> pixels) const override
+		{
+			constexpr uint8_t bgra[] = {0, 0, 255, 255, 255, 0, 0, 128};
+			std::copy(std::begin(bgra), std::end(bgra), pixels.begin());
+		}
+
+		bool offers_png() const override { return true; }
+		std::vector<uint8_t> png() const override { return bytes; }
+	};
+}
+
+// A copied picture offers PNG beside its bitmaps, and Paste saves the PNG it finds as it came - the alpha a bitmap
+// drops included - and the clipboard's memory, which can run past the file, no further than its IEND.
+static void should_paste_the_png_a_copy_offers()
+{
+	const auto folder = temps.folder().combine(std::format("pasted-png-{}", core::tick_count()));
+	assert_equal(true, platform::create_folder(folder).success(), "create PNG paste temp folder");
+
+	const auto image = std::make_shared<png_clipboard_image>(
+		std::vector<uint8_t>(std::begin(two_pixel_png), std::end(two_pixel_png)));
+	const auto probe = platform::probe_drag_data_object(image);
+	assert_equal(true, probe.advertises_png, "the PNG is advertised");
+	assert_equal(3, static_cast<int>(probe.image_formats.size()), "a bitmap, a DIB and a PNG are offered");
+	assert_equal(static_cast<uint32_t>(RegisterClipboardFormatW(L"PNG")), probe.image_formats[2],
+	             "the PNG follows the bitmap formats");
+	assert_equal(true,
+	             probe.png.size() >= sizeof(two_pixel_png) &&
+	                 std::equal(std::begin(two_pixel_png), std::end(two_pixel_png), probe.png.begin()),
+	             "the PNG offered is the picture's");
+
+	const auto pasted = platform::probe_paste_image(image, folder, "pasted", true);
+	assert_equal(true, pasted.success(), "the PNG pastes");
+	assert_equal(1, static_cast<int>(pasted.created_files.files.size()), "into one file");
+	const auto saved = platform::blob_from_file(pasted.created_files.files.front());
+	assert_equal(true, std::ranges::equal(saved, two_pixel_png), "byte for byte");
+
+	// Bytes that are not a PNG file are left, and the bitmap beside them pastes instead.
+	const auto mislabelled = std::make_shared<png_clipboard_image>(std::vector<uint8_t>(64, 0x42));
+	const auto fallback = platform::probe_paste_image(mislabelled, folder, "fallback", true);
+	assert_equal(true, fallback.success(), "the bitmap pastes");
+	const auto fallback_bytes = platform::blob_from_file(fallback.created_files.files.front());
+	assert_equal(true, fallback_bytes.size() > 8 && fallback_bytes[1] == 'P' && fallback_bytes[2] == 'N',
+	             "as a PNG WIC encoded from the bitmap");
+	assert_equal(false, std::ranges::equal(fallback_bytes, std::vector<uint8_t>(64, 0x42)),
+	             "not the mislabelled bytes");
+}
+
 // The recent-folder list must not wait on a share that has dropped, so a network location is
 // recognised from its spelling and volume type without being reached.
 static void should_recognise_network_locations()
 {
 	assert_equal(true, platform::is_network_location(core::folder_path(R"(\\server\share\photos)")),
 	             "a UNC share is a network location");
-	assert_equal(false, platform::is_network_location(_temps.folder()), "the local temporary folder is not");
+	assert_equal(false, platform::is_network_location(temps.folder()), "the local temporary folder is not");
 }
 
 // Copied text keeps the tabs that line up its columns and the breaks between its lines - Diffractor's
@@ -576,9 +650,13 @@ static void should_keep_tabs_and_line_breaks_on_the_clipboard()
 {
 	assert_equal_strict("\tCtrl+C\tCopy\r\nnext\n", clipboard_safe_text("\tCtrl+C\tCopy\r\nnext\n"),
 	                    "tabs and line breaks pass through");
-	assert_equal_strict("a.b.c", clipboard_safe_text(std::string_view("a\0b\x1b" "c", 5)),
+	assert_equal_strict("a.b.c",
+	                    clipboard_safe_text(std::string_view("a\0b\x1b"
+	                                                         "c",
+	                                                         5)),
 	                    "other control characters are escaped");
-	assert_equal_strict("\xC3\xA9\xE2\x82\xAC", clipboard_safe_text("\xC3\xA9\xE2\x82\xAC"), "other text passes through");
+	assert_equal_strict("\xC3\xA9\xE2\x82\xAC", clipboard_safe_text("\xC3\xA9\xE2\x82\xAC"),
+	                    "other text passes through");
 }
 
 // The synchronous web client against a scripted loopback server: what each request puts on the wire,
@@ -588,7 +666,7 @@ static void should_keep_tabs_and_line_breaks_on_the_clipboard()
 // file system refuses - with the system's reason.
 static void should_create_folders_on_the_way_down()
 {
-	const auto root = _temps.next_folder("create");
+	const auto root = temps.next_folder("create");
 	const auto nested = root.combine("a").combine("b").combine("c");
 	assert_equal(true, platform::create_folder(nested).success(), "nested folders are made");
 	assert_equal(true, platform::exists(nested), "and exist");
@@ -629,7 +707,8 @@ static void should_create_folders_on_the_way_down()
 	result = platform::create_folder(deep);
 	assert_equal(true, result.success(), "a folder past MAX_PATH is made");
 	assert_equal(true, platform::exists(deep), "and exists");
-	assert_equal(true, platform::exists(levels[0]) && platform::exists(levels[1]), "with the levels at the band's edges");
+	assert_equal(true, platform::exists(levels[0]) && platform::exists(levels[1]),
+	             "with the levels at the band's edges");
 
 	const auto inside = deep.combine_file("inside.txt");
 	write_test_file(inside, "deep");
@@ -653,7 +732,7 @@ static void should_open_exclusive_create_for_live_logs()
 
 static void should_remove_an_empty_directory_by_its_handle()
 {
-	const auto path = _temps.next_folder("locked-directory");
+	const auto path = temps.next_folder("locked-directory");
 	assert_equal(true, platform::create_folder(path).success(), "the directory is created");
 	const auto lock = platform::open_file_lock(core::file_path(path.text()));
 	assert_equal(true, lock != nullptr, "the directory can be opened as an identity token");
@@ -663,7 +742,7 @@ static void should_remove_an_empty_directory_by_its_handle()
 		write_test_file(child, "retained");
 		const auto refused = platform::delete_file(lock);
 		assert_equal(true, refused.failed() && refused.error == std::errc::directory_not_empty,
-			"an occupied directory retains its portable refusal reason");
+		             "an occupied directory retains its portable refusal reason");
 		assert_equal_strict("retained", read_test_file(child), "the refusal retains unrelated contents");
 		assert_equal(true, platform::delete_file(child).success(), "the test's child can be removed");
 		assert_equal(true, platform::delete_file(lock).success(), "the empty directory is removed by its token");
@@ -674,18 +753,19 @@ static void should_remove_an_empty_directory_by_its_handle()
 static void should_rename_a_directory_by_its_handle()
 {
 	const auto suffix = std::format("{}", core::tick_count());
-	const auto source = _temps.next_folder("locked-rename-source-" + suffix);
+	const auto source = temps.next_folder("locked-rename-source-" + suffix);
 	const auto destination = source.parent().combine("locked-rename-destination-" + suffix);
 	assert_equal(true, platform::create_folder(source).success(), "the source directory is created");
 	const auto lock = platform::open_file_lock(core::file_path(source.text()));
 	assert_equal(true, lock != nullptr, "the source directory is locked");
 	if (lock)
 	{
-		const auto refused = platform::move_file(core::file_path(source.text()),
-			core::file_path(destination.text()), true, false);
+		const auto refused = platform::move_file(core::file_path(source.text()), core::file_path(destination.text()),
+		                                         true, false);
 		assert_equal(true, refused.failed() && refused.error.value() == ERROR_SHARING_VIOLATION,
-			"another handle cannot rename the pinned directory");
-		assert_equal(true, platform::exists(source) && !platform::exists(destination), "a refused rename publishes nothing");
+		             "another handle cannot rename the pinned directory");
+		assert_equal(true, platform::exists(source) && !platform::exists(destination),
+		             "a refused rename publishes nothing");
 		const auto moved = platform::move_file(lock, core::file_path(destination.text()), true);
 		assert_equal(true, moved.success(), "the source directory is renamed by its token");
 	}
@@ -695,7 +775,7 @@ static void should_rename_a_directory_by_its_handle()
 
 static void should_exclude_mutations_while_verifying_a_locked_file()
 {
-	const auto root = _temps.next_folder("locked-file");
+	const auto root = temps.next_folder("locked-file");
 	const auto source = root.combine_file("source.txt");
 	const auto destination = root.combine_file("renamed.txt");
 	write_test_file(source, "verified");
@@ -706,20 +786,21 @@ static void should_exclude_mutations_while_verifying_a_locked_file()
 	assert_equal(true, reader != nullptr, "a content reader coexists with the mutation token");
 	if (!mutation || !reader) return;
 	assert_equal(true, expected.has_value() && platform::file_sha256(reader) == expected,
-		"the held content is hashed without reopening a mutation handle");
+	             "the held content is hashed without reopening a mutation handle");
 	assert_equal(true, platform::open_file_lock(source) == nullptr, "a second mutation token is refused");
 	const auto source_w = platform::to_file_system_path(source);
 	const auto writer = CreateFileW(source_w.c_str(), GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+	                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0,
+	                                nullptr);
 	const auto error = GetLastError();
 	if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
 	assert_equal(true, writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
-		"even a fully sharing writer cannot edit the verified content");
+	             "even a fully sharing writer cannot edit the verified content");
 	const auto refused = platform::move_file(source, destination, true, false);
 	assert_equal(true, refused.failed() && refused.error.value() == ERROR_SHARING_VIOLATION,
-		"another handle cannot replace the verified pathname");
+	             "another handle cannot replace the verified pathname");
 	assert_equal(true, platform::move_file(mutation, destination, true).success(),
-		"the held mutation token can rename while its content reader remains open");
+	             "the held mutation token can rename while its content reader remains open");
 	assert_equal(true, platform::file_sha256(reader) == expected, "the reader retains the renamed identity");
 	assert_equal(false, platform::exists(source), "the old pathname is absent after the token rename");
 	assert_equal(true, platform::exists(destination), "the verified destination is present");
@@ -727,7 +808,7 @@ static void should_exclude_mutations_while_verifying_a_locked_file()
 
 static void should_keep_move_failures_and_rename_nonempty_trees()
 {
-	const auto root = _temps.next_folder("rename-policy");
+	const auto root = temps.next_folder("rename-policy");
 	const auto source = root.combine_file("source.txt");
 	const auto destination = root.combine_file("destination.txt");
 	write_test_file(source, "original");
@@ -737,12 +818,15 @@ static void should_keep_move_failures_and_rename_nonempty_trees()
 	assert_equal(true, blocked.failed(), "rename-only reports a sharing failure");
 	assert_equal(true, blocked.error.value() == ERROR_SHARING_VIOLATION, "the native reason survives the wrapper");
 	assert_equal(true, !blocked.error_message.empty(), "the reason is also readable");
-	assert_equal(true, platform::exists(source) && !platform::exists(destination), "no copy is published after a denied rename");
+	assert_equal(true, platform::exists(source) && !platform::exists(destination),
+	             "no copy is published after a denied rename");
 	reader.reset();
-	assert_equal(true, platform::move_file(source, destination, true, false).success(), "the rename works after closing");
+	assert_equal(true, platform::move_file(source, destination, true, false).success(),
+	             "the rename works after closing");
 	write_test_file(source, "second");
 	const auto collision = platform::move_file(source, destination, true, false);
-	assert_equal(true, collision.failed() && static_cast<bool>(collision.error), "collisions retain their native error");
+	assert_equal(true, collision.failed() && static_cast<bool>(collision.error),
+	             "collisions retain their native error");
 	const auto shared_source = root.combine_file("shared-source.txt");
 	const auto shared_destination = root.combine_file("shared-renamed.txt");
 	write_test_file(shared_source, "shared");
@@ -750,20 +834,21 @@ static void should_keep_move_failures_and_rename_nonempty_trees()
 	assert_equal(true, shared_reader != nullptr, "a source can explicitly allow writes and renames");
 	const auto native_name = platform::to_file_system_path(shared_source);
 	auto* const writer = CreateFileW(native_name.c_str(), GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+	                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0,
+	                                 nullptr);
 	assert_equal(true, writer != INVALID_HANDLE_VALUE, "a concurrent writer is not denied by the shared reader");
 	if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
 	assert_equal(true, platform::move_file(shared_source, shared_destination, true, false).success(),
-		"the source can be renamed while the shared reader lives");
+	             "the source can be renamed while the shared reader lives");
 	if (shared_reader)
 	{
 		std::array<uint8_t, 6> bytes{};
 		assert_equal(true, shared_reader->read_at(0, bytes.data(), bytes.size()) == bytes.size(),
-			"the same object is still readable after its rename");
+		             "the same object is still readable after its rename");
 		assert_equal_strict("shared", std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
-			"the old token still supplies the original bytes");
+		                    "the old token still supplies the original bytes");
 		assert_equal_strict("shared-renamed.txt", shared_reader->path().name().sv(),
-			"its path follows the live object rather than the old cached filename");
+		                    "its path follows the live object rather than the old cached filename");
 	}
 	for (int i = 0; i < 10; ++i)
 	{
@@ -771,12 +856,14 @@ static void should_keep_move_failures_and_rename_nonempty_trees()
 		const auto renamed = root.combine(std::format("renamed-{}", i));
 		assert_equal(true, platform::create_folder(tree.combine("nested")).success(), "the nested source is created");
 		write_test_file(tree.combine("nested").combine_file("child.txt"), "descendant");
-		const auto moved = platform::move_file(core::file_path(tree.text()), core::file_path(renamed.text()), true, false);
+		const auto moved = platform::move_file(core::file_path(tree.text()), core::file_path(renamed.text()), true,
+		                                       false);
 		if (moved.failed()) std::printf("tree rename error %d: %s\n", moved.error.value(), moved.error_message.c_str());
 		assert_equal(true, moved.success(), "a nonempty directory is renamed without a file-copy fallback");
-		assert_equal(true, !platform::exists(tree) && platform::exists(renamed), "the tree is present under only the new name");
+		assert_equal(true, !platform::exists(tree) && platform::exists(renamed),
+		             "the tree is present under only the new name");
 		assert_equal_strict("descendant", read_test_file(renamed.combine("nested").combine_file("child.txt")),
-			"its descendants move intact");
+		                    "its descendants move intact");
 	}
 }
 
@@ -801,7 +888,8 @@ static void should_send_web_requests_and_read_their_responses()
 	assert_equal_strict("hello world", r.body, "body");
 	assert_equal_strict("text/plain", r.content_type, "content type");
 	assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "request line");
-	assert_equal_strict(core::app_name(), loopback::header_value(server.last(), "User-Agent"), "the application is the agent");
+	assert_equal_strict(core::app_name(), loopback::header_value(server.last(), "User-Agent"),
+	                    "the application is the agent");
 
 	platform::web_request query;
 	query.path = "/query";
@@ -822,11 +910,13 @@ static void should_send_web_requests_and_read_their_responses()
 	assert_equal_strict("POST /form HTTP/1.1", server.last().request_line, "form request line");
 	assert_equal_strict(std::format("multipart/form-data; boundary={}", boundary),
 	                    loopback::header_value(server.last(), "Content-Type"), "form content type");
-	assert_equal_strict(std::format(
-		                    "--{0}\r\nContent-Disposition: form-data; name=\"name\"\r\nContent-Type: text/plain; "
-		                    "charset=\"utf-8\"\r\n\r\nvalue\r\n--{0}--", boundary), server.last().body, "form body");
+	assert_equal_strict(
+		std::format("--{0}\r\nContent-Disposition: form-data; name=\"name\"\r\nContent-Type: text/plain; "
+	                "charset=\"utf-8\"\r\n\r\nvalue\r\n--{0}--",
+	                boundary),
+		server.last().body, "form body");
 
-	const auto zip = _temps.next_path(".zip");
+	const auto zip = temps.next_path(".zip");
 	write_test_file(zip, std::string_view("PK\x03\x04zip", 7));
 	platform::web_request upload;
 	upload.verb = platform::web_request_verb::POST;
@@ -837,26 +927,27 @@ static void should_send_web_requests_and_read_their_responses()
 	upload.file_path = zip;
 	r = platform::send_request(host, upload);
 	assert_equal(404, r.status_code, "upload status");
-	assert_equal_strict(std::format(
-		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
-		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
-		                    "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
-		                    boundary, std::string_view("PK\x03\x04zip", 7)), server.last().body, "upload body");
+	assert_equal_strict(
+		std::format("--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+	                "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
+	                "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
+	                boundary, std::string_view("PK\x03\x04zip", 7)),
+		server.last().body, "upload body");
 
 	// An attachment that cannot be read is left off and the rest of the request still goes. The client
 	// before the os:: client sent an empty file part instead.
 	auto unreadable = upload;
-	unreadable.file_path = _temps.next_path(".zip");
+	unreadable.file_path = temps.next_path(".zip");
 	const auto requests_before = server.requests().size();
 	r = platform::send_request(host, unreadable);
 	assert_equal(404, r.status_code, "the request without its attachment was answered");
 	assert_equal(true, server.requests().size() == requests_before + 1, "the request was sent");
-	assert_equal_strict(std::format(
-		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
-		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}--", boundary), server.last().body,
-	                    "the body without the attachment");
+	assert_equal_strict(std::format("--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+	                                "charset=\"utf-8\"\r\n\r\nv\r\n--{0}--",
+	                                boundary),
+	                    server.last().body, "the body without the attachment");
 
-	const auto download = _temps.next_path(".txt");
+	const auto download = temps.next_path(".txt");
 	platform::web_request fetch;
 	fetch.path = "/file";
 	fetch.download_file_path = download;
@@ -873,7 +964,7 @@ static void should_send_web_requests_and_read_their_responses()
 	assert_equal_strict("GET /hello HTTP/1.1", server.last().request_line, "is sent with one");
 
 	// Downloads and attachments reach files whose paths are longer than MAX_PATH.
-	const auto long_root = _temps.next_folder("long");
+	const auto long_root = temps.next_folder("long");
 	auto deep = long_root;
 	while (deep.text().size() < MAX_PATH + 20) deep = deep.combine(std::string(40, 'd'));
 
@@ -899,12 +990,12 @@ static void should_send_web_requests_and_read_their_responses()
 	long_upload.file_path = long_zip;
 	r = platform::send_request(host, long_upload);
 	assert_equal(404, r.status_code, "an attachment from a long path");
-	assert_equal_strict(std::format(
-		                    "--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
-		                    "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
-		                    "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
-		                    boundary, std::string_view("PK\x03\x04zip", 7)), server.last().body,
-	                    "is sent whole");
+	assert_equal_strict(
+		std::format("--{0}\r\nContent-Disposition: form-data; name=\"k\"\r\nContent-Type: text/plain; "
+	                "charset=\"utf-8\"\r\n\r\nv\r\n--{0}\r\nContent-Disposition: form-data; name=\"ff\"; "
+	                "filename=\"logs.zip\"\r\nContent-Type: application/x-zip-compressed\r\n\r\n{1}\r\n--{0}--",
+	                boundary, std::string_view("PK\x03\x04zip", 7)),
+		server.last().body, "is sent whole");
 
 	// A transfer cut short is no response at all, and leaves nothing at the download path. The client
 	// before the os:: client answered both with status 200 and what had arrived, so a truncated download
@@ -915,7 +1006,7 @@ static void should_send_web_requests_and_read_their_responses()
 	assert_equal(0, r.status_code, "a body cut short has no status");
 	assert_equal(true, r.body.empty(), "nor a body");
 
-	const auto cut_download = _temps.next_path(".txt");
+	const auto cut_download = temps.next_path(".txt");
 	cut.download_file_path = cut_download;
 	r = platform::send_request(host, cut);
 	assert_equal(0, r.status_code, "a download cut short has no status");
@@ -939,13 +1030,113 @@ static void should_send_web_requests_and_read_their_responses()
 	assert_equal(true, r.body.empty(), "nor a body");
 }
 
+static void should_keep_offscreen_windows_out_of_the_shell()
+{
+	assert_equal(true, platform::is_ui_thread(), "native windows use the registered UI thread");
+	const auto foreground = GetForegroundWindow();
+	platform::window_options options;
+	options.kind = platform::window_kind::app;
+	options.offscreen = true;
+	options.client_size = {240, 160};
+	const auto events = std::make_shared<platform::window_events>();
+	const auto window = platform::create_window(options, events);
+	assert_equal(true, window != nullptr, "a real offscreen application window is created");
+	if (!window) return;
+	const core::scope_exit destroy([&] { window->destroy(); });
+	const auto native = std::any_cast<HWND>(window->native_handle());
+	const auto style = GetWindowLongPtrW(native, GWL_EXSTYLE);
+	assert_equal(false, (style & WS_EX_APPWINDOW) != 0, "an offscreen window has no taskbar button");
+	assert_equal(true, (style & WS_EX_TOOLWINDOW) != 0, "nor an Alt+Tab entry");
+	assert_equal(true, (style & WS_EX_NOACTIVATE) != 0, "the native window cannot activate");
+	window->show(true);
+	window->focus();
+	assert_equal(true, GetForegroundWindow() == foreground, "show and focus leave the foreground alone");
+	DWORD cloaked = 0;
+	assert_equal(true,
+	             SUCCEEDED(DwmGetWindowAttribute(native, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
+	                 (cloaked & DWM_CLOAKED_APP) != 0,
+	             "the shell never shows it: the application has cloaked it");
+	RECT bounds{};
+	assert_equal(true, GetWindowRect(native, &bounds) != FALSE, "offscreen bounds are available");
+	const POINT middle{(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
+	assert_equal(false, GetAncestor(WindowFromPoint(middle), GA_ROOT) == native, "nor does the pointer find it");
+	assert_equal(false, window->is_occluded(), "while it paints, as a window on the desktop does");
+}
+
+// Windows reports AltGr as Ctrl+Alt. A key-down is AltGr typing where the layout types a character for it with
+// them held, and a Ctrl+Alt shortcut where it types none. The key state a window reads is its thread's, which a
+// test sets.
+static void should_tell_alt_graph_typing_from_a_ctrl_alt_shortcut()
+{
+	struct key_events final : platform::window_events
+	{
+		std::vector<platform::key_state> downs;
+
+		bool key_down(char32_t, const platform::key_state keys, bool) override
+		{
+			downs.push_back(keys);
+			return true;
+		}
+	};
+
+	platform::window_options options;
+	options.kind = platform::window_kind::app;
+	options.offscreen = true;
+	options.client_size = {120, 80};
+	const auto events = std::make_shared<key_events>();
+	const auto window = platform::create_window(options, events);
+	assert_equal(true, window != nullptr, "a window takes the keys");
+	if (!window) return;
+	const core::scope_exit destroy([&] { window->destroy(); });
+	const auto native = std::any_cast<HWND>(window->native_handle());
+
+	BYTE saved[256]{};
+	assert_equal(true, GetKeyboardState(saved) != FALSE, "the thread's key state is read");
+	const core::scope_exit restore([&saved] { SetKeyboardState(saved); });
+
+	auto held = std::to_array(saved);
+	held[VK_CONTROL] = held[VK_LCONTROL] = 0x80;
+	held[VK_MENU] = held[VK_RMENU] = 0x80;
+	SetKeyboardState(held.data());
+
+	const auto layout = GetKeyboardLayout(0);
+	const auto press = [native, layout, &events](const UINT key)
+	{
+		const auto scan = MapVirtualKeyExW(key, MAPVK_VK_TO_VSC, layout);
+		SendMessageW(native, WM_KEYDOWN, key, MAKELPARAM(1, scan));
+		return !events->downs.empty() && events->downs.back().alt_graph;
+	};
+
+	assert_equal(false, press(VK_F5), "Ctrl+Alt+F5 types nothing on any layout, so it is a shortcut");
+	assert_equal(false, press(VK_LEFT), "as is Ctrl+Alt+Left");
+
+	// Whether a letter types with AltGr is the layout's to say: where this one types any, that key is typing.
+	for (UINT key = 'A'; key <= 'Z'; ++key)
+	{
+		wchar_t typed[8]{};
+		const auto count = ToUnicodeEx(key, MapVirtualKeyExW(key, MAPVK_VK_TO_VSC, layout), held.data(), typed,
+		                               static_cast<int>(std::size(typed)), 4, layout);
+		if (count <= 0 || typed[0] < L' ') continue;
+		assert_equal(true, press(key), "a letter the layout types a character for with AltGr is typing");
+		break;
+	}
+
+	held[VK_MENU] = held[VK_RMENU] = 0;
+	SetKeyboardState(held.data());
+	assert_equal(false, press('A'), "and Ctrl without Alt is a shortcut whatever the layout");
+}
+
 void register_platform_system_win_tests(test_registry& tests)
 {
+	tests.add("Should keep offscreen windows out of the shell"s, should_keep_offscreen_windows_out_of_the_shell);
+	tests.add("Should tell AltGr typing from a Ctrl+Alt shortcut"s,
+	          should_tell_alt_graph_typing_from_a_ctrl_alt_shortcut);
 	tests.add("Should convert dates with their own DST offset"s, should_convert_dates_with_their_own_dst_offset);
 	tests.add("Should tabulate time zone offsets like the system"s, should_tabulate_time_zone_offsets_like_the_system);
 	tests.add("Should convert the current zone like the system"s, should_convert_the_current_zone_like_the_system);
 	tests.add("Should tabulate local time once per year"s, should_tabulate_local_time_once_per_year);
 	tests.add("Should pass bare save dialog extensions"s, should_pass_bare_save_dialog_extensions);
+	tests.add("Should open the save dialog on the suggested type"s, should_open_the_save_dialog_on_the_suggested_type);
 	tests.add("Should refuse a folder that is its own parent"s, should_refuse_a_folder_that_is_its_own_parent);
 	tests.add("Should convert extended file system paths"s, should_convert_extended_file_system_paths);
 	tests.add("Should convert utf8 to ansi"s, should_convert_utf8_to_ansi);
@@ -955,11 +1146,14 @@ void register_platform_system_win_tests(test_registry& tests)
 	tests.add("Should initialize Unicode INI settings"s, should_initialize_unicode_ini_settings);
 	tests.add("Should read INI values earlier builds wrote"s, should_read_ini_values_earlier_builds_wrote);
 	tests.add("Should double-terminate shell destination buffers"s, should_double_terminate_shell_destination_buffers);
-	tests.add("Should classify an aborted shell operation as cancelled"s, should_classify_an_aborted_shell_operation_as_cancelled);
-	tests.add("Should let Windows confirm recycle that would destroy"s, should_let_windows_confirm_recycle_that_would_destroy);
+	tests.add("Should classify an aborted shell operation as cancelled"s,
+	          should_classify_an_aborted_shell_operation_as_cancelled);
+	tests.add("Should let Windows confirm recycle that would destroy"s,
+	          should_let_windows_confirm_recycle_that_would_destroy);
 	tests.add("Should read coherent number format snapshots"s, should_read_coherent_number_format_snapshots);
 	tests.add("Should reject unusable file names"s, should_reject_unusable_file_names);
 	tests.add("Should publish pasted bitmap after closing stage"s, should_publish_pasted_bitmap_after_closing_stage);
+	tests.add("Should paste the PNG a copy offers"s, should_paste_the_png_a_copy_offers);
 	tests.add("Should recognise network locations"s, should_recognise_network_locations);
 	tests.add("Should keep tabs and line breaks on the clipboard"s, should_keep_tabs_and_line_breaks_on_the_clipboard);
 	tests.add("Should create folders on the way down"s, should_create_folders_on_the_way_down);
@@ -967,7 +1161,8 @@ void register_platform_system_win_tests(test_registry& tests)
 	tests.add("Should remove an empty directory by its handle"s, should_remove_an_empty_directory_by_its_handle);
 	tests.add("Should rename a directory by its handle"s, should_rename_a_directory_by_its_handle);
 	tests.add("Should exclude mutations while verifying a locked file"s,
-		should_exclude_mutations_while_verifying_a_locked_file);
-	tests.add("Should keep move failures and rename nonempty trees"s, should_keep_move_failures_and_rename_nonempty_trees);
+	          should_exclude_mutations_while_verifying_a_locked_file);
+	tests.add("Should keep move failures and rename nonempty trees"s,
+	          should_keep_move_failures_and_rename_nonempty_trees);
 	tests.add("Should send web requests and read their responses"s, should_send_web_requests_and_read_their_responses);
 }

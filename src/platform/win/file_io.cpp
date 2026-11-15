@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows atomic file replacement and filesystem path operations.
 
@@ -29,8 +28,8 @@ namespace
 		if (message.empty()) message = platform::last_os_error();
 		platform::file_op_result result{platform::file_op_result_code::FAILED};
 		result.code = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
-			               ? platform::file_op_result_code::ALREADY_EXISTS
-			               : platform::file_op_result_code::FAILED;
+		                  ? platform::file_op_result_code::ALREADY_EXISTS
+		                  : platform::file_op_result_code::FAILED;
 		result.error_message = std::move(message);
 		result.error = {static_cast<int>(error), std::system_category()};
 		return result;
@@ -46,7 +45,8 @@ namespace
 		std::wstring result(256, L'\0');
 		for (;;)
 		{
-			const auto length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(result.size()), result.data(), nullptr);
+			const auto length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(result.size()), result.data(),
+			                                     nullptr);
 			if (length == 0) return path;
 			if (length < result.size())
 			{
@@ -59,8 +59,7 @@ namespace
 
 	bool final_path_of(const std::wstring& path, std::wstring& result)
 	{
-		const auto handle = CreateFileW(path.c_str(), 0,
-		                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		const auto handle = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
 		if (handle == INVALID_HANDLE_VALUE) return false;
 
@@ -68,7 +67,7 @@ namespace
 		for (;;)
 		{
 			const auto length = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
-		                                                  FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+			                                              FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
 			if (length == 0)
 			{
 				CloseHandle(handle);
@@ -102,7 +101,7 @@ namespace
 	{
 		if (input.empty()) return {};
 		const auto full_wide = full_path_of(core::utf8_to_utf16(input));
-		const auto full = core::utf16_to_utf8(full_wide);
+		auto full = core::utf16_to_utf8(full_wide);
 		std::vector<std::string> tail;
 		std::string current_text = full;
 
@@ -147,7 +146,7 @@ namespace
 
 		platform::file_op_result remember(platform::file_op_result result)
 		{
-			if (_failure.success()) _failure = result;
+			if (_failure.success()) _failure = std::move(result);
 			return _failure;
 		}
 
@@ -160,9 +159,9 @@ namespace
 		}
 
 	public:
-		win_atomic_writer(platform::file_ptr stage, core::file_path stage_path, core::file_path destination)
-			: _stage(std::move(stage)), _stage_path(std::move(stage_path)), _destination(std::move(destination)),
-			  _failure{platform::file_op_result_code::OK}
+		win_atomic_writer(platform::file_ptr stage, core::file_path stage_path, core::file_path destination) :
+			_stage(std::move(stage)), _stage_path(stage_path), _destination(destination),
+			_failure{platform::file_op_result_code::OK}
 		{
 		}
 
@@ -197,9 +196,10 @@ namespace
 			if (_committed)
 				return remember({platform::file_op_result_code::FAILED, "The atomic writer was already committed."});
 			if (atomic_failure.load(std::memory_order_relaxed) == platform::atomic_file_test_failure::commit)
-				return remember({platform::file_op_result_code::FAILED, "The atomic writer commit was forced to fail."});
+				return remember(
+					{platform::file_op_result_code::FAILED, "The atomic writer commit was forced to fail."});
 
-			const auto flushed = flush();
+			auto flushed = flush();
 			if (!flushed.success()) return flushed;
 			_stage.reset();
 			const auto moved = platform::move_file(_stage_path, _destination, false);
@@ -247,7 +247,6 @@ core::folder_path platform::current_directory()
 		result.resize(static_cast<size_t>(length) + 1);
 	}
 }
-
 
 core::file_path platform::canonical_path(const core::file_path& path)
 {
@@ -297,11 +296,11 @@ platform::atomic_file_writer_open_result platform::create_atomic_file_writer_res
 		const auto stage_path = destination.folder().combine_file(name);
 		const auto stage = platform::open_file(stage_path, file_open_mode::create_new);
 		if (stage)
-			return {std::make_shared<win_atomic_writer>(stage, stage_path, destination), {platform::file_op_result_code::OK}};
+			return {std::make_shared<win_atomic_writer>(stage, stage_path, destination),
+			        {platform::file_op_result_code::OK}};
 
 		const auto error = GetLastError();
-		if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
-			return {nullptr, failure(error)};
+		if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) return {nullptr, failure(error)};
 	}
 	return {nullptr, {file_op_result_code::ALREADY_EXISTS, "Unable to claim a unique atomic stage path."}};
 }

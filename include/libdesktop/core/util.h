@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Core utility types and functions. Defines fundamental types (file_size, date_t, blob),
 // memory helpers, logging, performance timers, and common utility functions used throughout the
@@ -25,7 +24,7 @@
 #define COMPILE_ARM_INTRINSIC
 #endif
 
-constexpr std::size_t operator "" _z(const unsigned long long n)
+constexpr std::size_t operator"" _z(const unsigned long long n)
 {
 	return static_cast<std::size_t>(n);
 }
@@ -40,16 +39,15 @@ constexpr std::size_t operator "" _z(const unsigned long long n)
 //
 // df_assert_movable cannot be used on core::hash_map / core::hash_set or anything containing one:
 // the MSVC unordered containers do not declare a noexcept move constructor.
-#define df_assert_pod(T) \
-	static_assert(std::is_trivially_copyable_v<T>, #T " must remain trivially copyable")
+#define df_assert_pod(T) static_assert(std::is_trivially_copyable_v<T>, #T " must remain trivially copyable")
 
-#define df_assert_movable(T) \
-	static_assert(std::is_nothrow_move_constructible_v<T>, #T " must be nothrow move constructible"); \
+#define df_assert_movable(T)                                                                                           \
+	static_assert(std::is_nothrow_move_constructible_v<T>, #T " must be nothrow move constructible");                  \
 	static_assert(std::is_nothrow_move_assignable_v<T>, #T " must be nothrow move assignable")
 
-#define df_assert_move_only(T) \
-	df_assert_movable(T); \
-	static_assert(!std::is_copy_constructible_v<T>, #T " must not be copy constructible"); \
+#define df_assert_move_only(T)                                                                                         \
+	df_assert_movable(T);                                                                                              \
+	static_assert(!std::is_copy_constructible_v<T>, #T " must not be copy constructible");                             \
 	static_assert(!std::is_copy_assignable_v<T>, #T " must not be copy assignable")
 
 namespace core
@@ -58,109 +56,81 @@ namespace core
 	void set_app_name(std::string_view name);
 	std::string_view app_name();
 
-
-// The message is stored rather than passed to a base constructor: std::exception(const char*)
-// is an MSVC extension and does not exist in libstdc++.
-class app_exception final : public std::exception
-{
-public:
-	explicit app_exception(std::string message) : _message(std::move(message))
+	// The message is stored rather than passed to a base constructor: std::exception(const char*)
+	// is an MSVC extension and does not exist in libstdc++.
+	class app_exception final : public std::exception
 	{
-	}
+	public:
+		explicit app_exception(std::string message) : _message(std::move(message)) {}
 
-	explicit app_exception(const char* message) : _message(message)
+		explicit app_exception(const char* message) : _message(message) {}
+
+		const char* what() const noexcept override { return _message.c_str(); }
+
+	private:
+		std::string _message;
+	};
+
+	struct text_t
 	{
-	}
+		text_t() = default;
 
-	const char* what() const noexcept override
-	{
-		return _message.c_str();
-	}
+		text_t(const std::string_view t) : text(t) {}
 
-private:
-	std::string _message;
-};
+		// A string literal needs its own constructor: reaching text_t through std::string_view is a
+		// second user-defined conversion, which MSVC accepts and conforming compilers reject.
+		text_t(const char* t) : text(t) {}
 
-struct text_t
-{
-	text_t() = default;
+		// A copy is a snapshot of whatever translation was published when it was taken, which is what
+		// the std::string this replaced already did. The atomic member is what forces them to be
+		// written out.
+		text_t(const text_t& other) : text(other.text), trans(other.trans.load(std::memory_order_acquire)) {}
 
-	text_t(const std::string_view t) : text(t)
-	{
-	}
+		text_t(text_t&& other) noexcept : text(other.text), trans(other.trans.load(std::memory_order_acquire)) {}
 
-	// A string literal needs its own constructor: reaching text_t through std::string_view is a
-	// second user-defined conversion, which MSVC accepts and conforming compilers reject.
-	text_t(const char* t) : text(t)
-	{
-	}
-
-	// A copy is a snapshot of whatever translation was published when it was taken, which is what
-	// the std::string this replaced already did. The atomic member is what forces them to be
-	// written out.
-	text_t(const text_t& other) : text(other.text), trans(other.trans.load(std::memory_order_acquire))
-	{
-	}
-
-	text_t(text_t&& other) noexcept : text(other.text), trans(other.trans.load(std::memory_order_acquire))
-	{
-	}
-
-	text_t& operator=(const text_t& other)
-	{
-		if (this != &other)
+		text_t& operator=(const text_t& other)
 		{
-			text = other.text;
-			trans.store(other.trans.load(std::memory_order_acquire), std::memory_order_release);
+			if (this != &other)
+			{
+				text = other.text;
+				trans.store(other.trans.load(std::memory_order_acquire), std::memory_order_release);
+			}
+			return *this;
 		}
-		return *this;
-	}
 
-	text_t& operator=(text_t&& other) noexcept
-	{
-		if (this != &other)
+		text_t& operator=(text_t&& other) noexcept
 		{
-			text = other.text;
-			trans.store(other.trans.load(std::memory_order_acquire), std::memory_order_release);
+			if (this != &other)
+			{
+				text = other.text;
+				trans.store(other.trans.load(std::memory_order_acquire), std::memory_order_release);
+			}
+			return *this;
 		}
-		return *this;
-	}
 
-	operator std::string_view() const
-	{
-		return sv();
-	}
+		operator std::string_view() const { return sv(); }
 
-	std::string_view sv() const
-	{
-		// Published as a pointer to storage that is never freed. A worker formatting a message while
-		// the language is switched keeps a view that stays valid; a std::string assigned in place
-		// would reallocate its buffer under that reader.
-		const auto* const t = trans.load(std::memory_order_acquire);
-		return (t == nullptr || t->empty()) ? text : std::string_view(*t);
-	}
+		std::string_view sv() const
+		{
+			// Published as a pointer to storage that is never freed. A worker formatting a message while
+			// the language is switched keeps a view that stays valid; a std::string assigned in place
+			// would reallocate its buffer under that reader.
+			const auto* const t = trans.load(std::memory_order_acquire);
+			return (t == nullptr || t->empty()) ? text : std::string_view(*t);
+		}
 
-	void clear()
-	{
-		trans.store(nullptr, std::memory_order_release);
-	}
+		void clear() { trans.store(nullptr, std::memory_order_release); }
 
-	// Publishes a translation. The storage has to outlive every reader, because a worker can hold
-	// the pointer across a language switch; app_text_t keeps it in _translation_storage, which is
-	// appended to and never cleared.
-	void publish(const std::string* translated)
-	{
-		trans.store(translated, std::memory_order_release);
-	}
+		// Publishes a translation. The storage has to outlive every reader, because a worker can hold
+		// the pointer across a language switch; app_text_t keeps it in _translation_storage, which is
+		// appended to and never cleared.
+		void publish(const std::string* translated) { trans.store(translated, std::memory_order_release); }
 
-	const std::string* published() const
-	{
-		return trans.load(std::memory_order_acquire);
-	}
+		const std::string* published() const { return trans.load(std::memory_order_acquire); }
 
-	std::string_view text;
-	std::atomic<const std::string*> trans{nullptr};
-};
+		std::string_view text;
+		std::atomic<const std::string*> trans{nullptr};
+	};
 
 	constexpr uint32_t sixty_four_k = 1024 * 64;
 	constexpr uint32_t two_fifty_six_k = 1024 * 256;
@@ -203,24 +173,19 @@ struct text_t
 		void operator()(void* x) const { _aligned_free(x); }
 	};
 
-	template <typename T>
-	using unique_alloc_ptr = std::unique_ptr<T, free_delete>;
+	template <typename T> using unique_alloc_ptr = std::unique_ptr<T, free_delete>;
 
-	template <typename T>
-	unique_alloc_ptr<T> unique_alloc(const size_t alloc_size)
+	template <typename T> unique_alloc_ptr<T> unique_alloc(const size_t alloc_size)
 	{
 		if (alloc_size > std::numeric_limits<size_t>::max() - 16) return {};
 		return std::unique_ptr<T, free_delete>(static_cast<T*>(_aligned_malloc(alloc_size + 16, 16)));
 	}
 
-	template <typename T>
-	class releaser
+	template <typename T> class releaser
 	{
 	public:
-		releaser(T* ptr, std::function<void(T*)> destroy_func)
-			: ptr_(ptr), destroy_func_(std::move(destroy_func))
-		{
-		} // Move the function for efficiency
+		releaser(T* ptr, std::function<void(T*)> destroy_func) :
+			ptr_(ptr), destroy_func_(std::move(destroy_func)) {} // Move the function for efficiency
 
 		~releaser() { destroy_func_(ptr_); }
 
@@ -238,13 +203,10 @@ struct text_t
 	};
 
 	// Zero-overhead scope guard: no std::function, no allocation, inlinable.
-	template <typename F>
-	class scope_exit
+	template <typename F> class scope_exit
 	{
 	public:
-		explicit scope_exit(F f) : _f(std::move(f))
-		{
-		}
+		explicit scope_exit(F f) : _f(std::move(f)) {}
 
 		~scope_exit() { _f(); }
 
@@ -259,6 +221,9 @@ struct text_t
 
 	using log_sink = void (*)(std::string_view line);
 	void set_log_sink(log_sink sink);
+	// Hears every line the log is written as it is written, beside the sink: an application that keeps the latest
+	// lines for itself. Called holding the log's lock, so it must be quick and must not log. Null for none.
+	void set_log_observer(log_sink observer);
 
 	void log(std::string_view context, std::string_view message);
 	// For messages a codec can emit once per scanned item. Each distinct message reaches the log once.
@@ -320,8 +285,8 @@ struct text_t
 
 	public:
 		explicit perf_timer(std::atomic_uint64_t& total_us, std::atomic_uint32_t* max_us = nullptr,
-		                    latency_counters* latency = nullptr) noexcept
-			: _total_us(total_us), _max_us(max_us), _latency(latency)
+		                    latency_counters* latency = nullptr) noexcept :
+			_total_us(total_us), _max_us(max_us), _latency(latency)
 		{
 		}
 
@@ -345,9 +310,7 @@ struct text_t
 		int64_t _start = 0;
 
 	public:
-		measure_ms(int& ms) : _ms(ms), _start(now_ms())
-		{
-		}
+		measure_ms(int& ms) : _ms(ms), _start(now_ms()) {}
 
 		~measure_ms()
 		{
@@ -419,7 +382,7 @@ struct text_t
 		return section >= limit && section + section_size <= limit + limit_size;
 	}
 
-	// Returns true if x is in range [low..high], else false 
+	// Returns true if x is in range [low..high], else false
 	constexpr bool in_range(const int low, const int high, const int x)
 	{
 		return low <= x && high >= x;
@@ -432,8 +395,7 @@ struct text_t
 
 	constexpr int mul_div(const int32_t n, const int32_t num, const int32_t den)
 	{
-		if (in_range(INT16_MIN, INT16_MAX, n) &&
-			in_range(INT16_MIN, INT16_MAX, num))
+		if (in_range(INT16_MIN, INT16_MAX, n) && in_range(INT16_MIN, INT16_MAX, num))
 		{
 			return den ? (n * num + den / 2) / den : -1;
 		}
@@ -445,8 +407,7 @@ struct text_t
 		return static_cast<int>(mul_div(n64, num64, den64));
 	}
 
-	template <typename FloatingPoint>
-	constexpr FloatingPoint fabs(FloatingPoint x)
+	template <typename FloatingPoint> constexpr FloatingPoint fabs(FloatingPoint x)
 	{
 		return x >= 0 ? x : x < 0 ? -x : 0;
 	}
@@ -484,28 +445,24 @@ struct text_t
 	// Skips value-initialization. Blob buffers are sized then immediately overwritten by a
 	// read or decode, so the implicit zero-fill is a wasted pass over every byte.
 	// Any blob sized this way MUST be fully written, or trimmed to what was written.
-	template <typename T>
-	struct default_init_allocator : std::allocator<T>
+	template <typename T> struct default_init_allocator : std::allocator<T>
 	{
 		using std::allocator<T>::allocator;
 
-		template <typename U>
-		struct rebind
+		template <typename U> struct rebind
 		{
 			using other = default_init_allocator<U>;
 		};
 
-		template <typename U>
-		void construct(U* p) noexcept(std::is_nothrow_default_constructible_v<U>)
+		template <typename U> void construct(U* p) noexcept(std::is_nothrow_default_constructible_v<U>)
 		{
-			::new(static_cast<void*>(p)) U;
+			::new (static_cast<void*>(p)) U;
 		}
 
-		template <typename U, typename... Args>
-		void construct(U* p, Args&&... args)
+		template <typename U, typename... Args> void construct(U* p, Args&&... args)
 		{
-			std::allocator_traits<std::allocator<T>>::construct(
-				static_cast<std::allocator<T>&>(*this), p, std::forward<Args>(args)...);
+			std::allocator_traits<std::allocator<T>>::construct(static_cast<std::allocator<T>&>(*this), p,
+			                                                    std::forward<Args>(args)...);
 		}
 	};
 
@@ -535,28 +492,17 @@ struct text_t
 		blob(const blob&) = delete;
 		blob& operator=(const blob&) = delete;
 
-		explicit blob(const size_type n) : _v(n)
-		{
-		}
+		explicit blob(const size_type n) : _v(n) {}
 
-		blob(const size_type n, const uint8_t fill) : _v(n, fill)
-		{
-		}
+		blob(const size_type n, const uint8_t fill) : _v(n, fill) {}
 
 		// Takes ownership of the vector's allocation. The source is left in the usual valid,
 		// unspecified moved-from state and no bytes are copied.
-		explicit blob(storage&& bytes) noexcept : _v(std::move(bytes))
-		{
-		}
+		explicit blob(storage&& bytes) noexcept : _v(std::move(bytes)) {}
 
-		blob(const std::initializer_list<uint8_t> il) : _v(il)
-		{
-		}
+		blob(const std::initializer_list<uint8_t> il) : _v(il) {}
 
-		template <typename Iter>
-		blob(Iter first, Iter last) : _v(first, last)
-		{
-		}
+		template <typename Iter> blob(Iter first, Iter last) : _v(first, last) {}
 
 		blob clone() const
 		{
@@ -594,14 +540,11 @@ struct text_t
 		void pop_back() { _v.pop_back(); }
 		void swap(blob& other) noexcept { _v.swap(other._v); }
 
-		template <typename... Args>
-		auto insert(Args&&... args) { return _v.insert(std::forward<Args>(args)...); }
+		template <typename... Args> auto insert(Args&&... args) { return _v.insert(std::forward<Args>(args)...); }
 
-		template <typename... Args>
-		auto erase(Args&&... args) { return _v.erase(std::forward<Args>(args)...); }
+		template <typename... Args> auto erase(Args&&... args) { return _v.erase(std::forward<Args>(args)...); }
 
-		template <typename... Args>
-		void assign(Args&&... args) { _v.assign(std::forward<Args>(args)...); }
+		template <typename... Args> void assign(Args&&... args) { _v.assign(std::forward<Args>(args)...); }
 
 		friend bool operator==(const blob& a, const blob& b) { return a._v == b._v; }
 		friend bool operator!=(const blob& a, const blob& b) { return a._v != b._v; }
@@ -622,35 +565,19 @@ struct text_t
 		cspan(cspan&&) noexcept = default;
 		cspan& operator=(cspan&&) noexcept = default;
 
-		cspan(const uint8_t* d, const size_t s) noexcept : data(d), size(s)
-		{
-		}
+		cspan(const uint8_t* d, const size_t s) noexcept : data(d), size(s) {}
 
-		cspan(const blob& b) noexcept : data(b.data()), size(b.size())
-		{
-		}
+		cspan(const blob& b) noexcept : data(b.data()), size(b.size()) {}
 
-		bool operator>(const size_t other) const
-		{
-			return size > other;
-		}
+		bool operator>(const size_t other) const { return size > other; }
 
 		// Compare in the wider type: truncating size to int reinterprets a large span as a negative
 		// number, and this overload is the only bound in front of several unchecked parser reads.
-		bool operator>(const int other) const
-		{
-			return other < 0 || size > static_cast<size_t>(other);
-		}
+		bool operator>(const int other) const { return other < 0 || size > static_cast<size_t>(other); }
 
-		const uint8_t* begin() const
-		{
-			return data;
-		}
+		const uint8_t* begin() const { return data; }
 
-		const uint8_t* end() const
-		{
-			return data + size;
-		}
+		const uint8_t* end() const { return data + size; }
 
 		cspan sub(const size_t pos) const
 		{
@@ -662,10 +589,7 @@ struct text_t
 			return result;
 		}
 
-		bool empty() const
-		{
-			return size == 0 || data == nullptr;
-		}
+		bool empty() const { return size == 0 || data == nullptr; }
 	};
 
 	// CRC-32C (Castagnoli), with the processor's CRC instruction where it has one. A running value
@@ -687,23 +611,13 @@ struct text_t
 		span(span&&) noexcept = default;
 		span& operator=(span&&) noexcept = default;
 
-		span(uint8_t* d, const size_t s) noexcept : data(d), size(s)
-		{
-		}
+		span(uint8_t* d, const size_t s) noexcept : data(d), size(s) {}
 
-		span(blob& b) noexcept : data(b.data()), size(b.size())
-		{
-		}
+		span(blob& b) noexcept : data(b.data()), size(b.size()) {}
 
-		bool operator>(const size_t other) const
-		{
-			return size > other;
-		}
+		bool operator>(const size_t other) const { return size > other; }
 
-		bool operator>(const int other) const
-		{
-			return other < 0 || size > static_cast<size_t>(other);
-		}
+		bool operator>(const int other) const { return other < 0 || size > static_cast<size_t>(other); }
 
 		span sub(const size_t pos) const
 		{
@@ -715,15 +629,9 @@ struct text_t
 			return result;
 		}
 
-		operator bool() const
-		{
-			return size > 0 && data;
-		}
+		operator bool() const { return size > 0 && data; }
 
-		operator cspan() const
-		{
-			return {data, size};
-		}
+		operator cspan() const { return {data, size}; }
 
 	private:
 		span operator+(int) const;
@@ -741,9 +649,7 @@ struct text_t
 		constexpr xy8(const xy8&) noexcept = default;
 		constexpr xy8(xy8&&) noexcept = default;
 
-		constexpr xy8(const uint8_t xx, const uint8_t yy) : x(xx), y(yy)
-		{
-		}
+		constexpr xy8(const uint8_t xx, const uint8_t yy) : x(xx), y(yy) {}
 
 		constexpr static xy8 make(const uint8_t xx, const uint8_t yy)
 		{
@@ -751,20 +657,13 @@ struct text_t
 			return result;
 		}
 
-		constexpr bool operator ==(const xy8 other) const
-		{
-			return x == other.x && y == other.y;
-		}
+		constexpr bool operator==(const xy8 other) const { return x == other.x && y == other.y; }
 
-		constexpr bool operator !=(const xy8 other) const
-		{
-			return x != other.x || y != other.y;
-		}
+		constexpr bool operator!=(const xy8 other) const { return x != other.x || y != other.y; }
 
 		static xy8 parse(std::string_view r);
 		std::string str() const;
 	};
-
 
 #pragma pack(pop)
 
@@ -778,9 +677,7 @@ struct text_t
 		constexpr xy16(const xy16&) noexcept = default;
 		constexpr xy16(xy16&&) noexcept = default;
 
-		constexpr xy16(const int16_t xx, const int16_t yy) : x(xx), y(yy)
-		{
-		}
+		constexpr xy16(const int16_t xx, const int16_t yy) : x(xx), y(yy) {}
 
 		constexpr static xy16 make(const int16_t xx, const int16_t yy) noexcept
 		{
@@ -802,9 +699,7 @@ struct text_t
 		constexpr xy32(const xy32&) noexcept = default;
 		constexpr xy32(xy32&&) noexcept = default;
 
-		constexpr xy32(const int32_t xx, const int32_t yy) : x(xx), y(yy)
-		{
-		}
+		constexpr xy32(const int32_t xx, const int32_t yy) : x(xx), y(yy) {}
 
 		constexpr static xy32 make(const int32_t xx, const int32_t yy)
 		{
@@ -820,10 +715,7 @@ struct text_t
 
 		static xy32 parse(std::string_view r);
 
-		constexpr operator xy16() const
-		{
-			return xy16::make(static_cast<int16_t>(x), static_cast<int16_t>(y));
-		}
+		constexpr operator xy16() const { return xy16::make(static_cast<int16_t>(x), static_cast<int16_t>(y)); }
 
 		constexpr bool is_empty() const { return x == 0 && y == 0; }
 
@@ -839,38 +731,22 @@ struct text_t
 
 		constexpr file_size() noexcept = default;
 
-		constexpr explicit file_size(const uint32_t d) noexcept : _i(d)
-		{
-		}
+		constexpr explicit file_size(const uint32_t d) noexcept : _i(d) {}
 
-		constexpr explicit file_size(const uint64_t i) noexcept : _i(i)
-		{
-		}
+		constexpr explicit file_size(const uint64_t i) noexcept : _i(i) {}
 
-		constexpr explicit file_size(const int64_t i) noexcept : _i(i)
-		{
-		}
+		constexpr explicit file_size(const int64_t i) noexcept : _i(i) {}
 
-		constexpr explicit file_size(const int32_t i) noexcept : _i(static_cast<uint64_t>(i))
-		{
-		}
+		constexpr explicit file_size(const int32_t i) noexcept : _i(static_cast<uint64_t>(i)) {}
 
-		constexpr explicit file_size(const float f) noexcept : _i(static_cast<uint64_t>(f))
-		{
-		}
+		constexpr explicit file_size(const float f) noexcept : _i(static_cast<uint64_t>(f)) {}
 
-		constexpr explicit file_size(const double d) noexcept : _i(static_cast<uint64_t>(d))
-		{
-		}
+		constexpr explicit file_size(const double d) noexcept : _i(static_cast<uint64_t>(d)) {}
 
 #if !DF_LONG_IS_INT64
-		constexpr explicit file_size(const long i) noexcept : _i(static_cast<uint64_t>(i))
-		{
-		}
+		constexpr explicit file_size(const long i) noexcept : _i(static_cast<uint64_t>(i)) {}
 
-		constexpr explicit file_size(const unsigned long i) noexcept : _i(static_cast<uint64_t>(i))
-		{
-		}
+		constexpr explicit file_size(const unsigned long i) noexcept : _i(static_cast<uint64_t>(i)) {}
 #endif
 
 		constexpr file_size(const file_size&) noexcept = default;
@@ -890,20 +766,11 @@ struct text_t
 			return *this;
 		}
 
-		constexpr file_size operator+(const file_size other) const noexcept
-		{
-			return file_size(_i + other._i);
-		}
+		constexpr file_size operator+(const file_size other) const noexcept { return file_size(_i + other._i); }
 
-		constexpr file_size operator-(const file_size other) const noexcept
-		{
-			return file_size(_i - other._i);
-		}
+		constexpr file_size operator-(const file_size other) const noexcept { return file_size(_i - other._i); }
 
-		constexpr file_size operator/(const size_t other) const noexcept
-		{
-			return file_size(_i / other);
-		}
+		constexpr file_size operator/(const size_t other) const noexcept { return file_size(_i / other); }
 
 		constexpr file_size& operator+=(const file_size other) noexcept
 		{
@@ -911,37 +778,19 @@ struct text_t
 			return *this;
 		}
 
-		constexpr void clear()
-		{
-			_i = 0;
-		}
+		constexpr void clear() { _i = 0; }
 
-		constexpr bool is_empty() const
-		{
-			return _i == 0;
-		}
+		constexpr bool is_empty() const { return _i == 0; }
 
-		constexpr bool is_valid() const
-		{
-			return _i != 0;
-		}
+		constexpr bool is_valid() const { return _i != 0; }
 
 		friend auto operator<=>(const file_size&, const file_size&) = default;
 
-		constexpr int to_int() const
-		{
-			return static_cast<int>(_i);
-		}
+		constexpr int to_int() const { return static_cast<int>(_i); }
 
-		constexpr uint64_t to_int64() const
-		{
-			return _i;
-		}
+		constexpr uint64_t to_int64() const { return _i; }
 
-		constexpr float to_float() const
-		{
-			return static_cast<float>(_i);
-		}
+		constexpr float to_float() const { return static_cast<float>(_i); }
 
 		static file_size null;
 	};
@@ -956,24 +805,17 @@ struct text_t
 		uint64_t div = 0;
 		int rounded = 0;
 
-		uint64_t total() const
-		{
-			return n * div + dec * div / 10;
-		}
+		uint64_t total() const { return n * div + dec * div / 10; }
 	};
 
 	size_rounded round_size(uint64_t s);
-
 
 	struct count_and_size
 	{
 		uint64_t count = 0;
 		file_size size;
 
-		count_and_size operator+(const count_and_size other) const
-		{
-			return {count + other.count, size + other.size};
-		}
+		count_and_size operator+(const count_and_size other) const { return {count + other.count, size + other.size}; }
 
 		count_and_size operator+=(const count_and_size other)
 		{
@@ -1010,17 +852,10 @@ struct text_t
 		std::atomic_int& _i;
 
 	public:
-		scope_locked_inc(std::atomic_int& i) : _i(i)
-		{
-			gauge_enter(_i);
-		}
+		scope_locked_inc(std::atomic_int& i) : _i(i) { gauge_enter(_i); }
 
-		~scope_locked_inc() override
-		{
-			gauge_leave(_i);
-		}
+		~scope_locked_inc() override { gauge_leave(_i); }
 	};
-
 
 	struct version
 	{
@@ -1031,14 +866,14 @@ struct text_t
 
 		friend auto operator<=>(const version&, const version&) = default;
 
-		version operator +(const int i) const
+		version operator+(const int i) const
 		{
 			version result = *this;
 			result.major += i;
 			return result;
 		}
 
-		friend std::ostringstream& operator <<(std::ostringstream& stream, const version& ver)
+		friend std::ostringstream& operator<<(std::ostringstream& stream, const version& ver)
 		{
 			stream << ver.major;
 			stream << '.';
@@ -1058,15 +893,9 @@ struct text_t
 	{
 		int i = 0;
 
-		void operator++()
-		{
-			i++;
-		}
+		void operator++() { i++; }
 
-		void operator+=(const int n)
-		{
-			i += n;
-		}
+		void operator+=(const int n) { i += n; }
 
 		int_counter& operator=(const int n)
 		{
@@ -1074,10 +903,7 @@ struct text_t
 			return *this;
 		}
 
-		operator int() const
-		{
-			return i;
-		}
+		operator int() const { return i; }
 	};
 
 	class cancel_token
@@ -1091,9 +917,8 @@ struct text_t
 		bool is_cancelled() const
 		{
 			return (flag && flag->load(std::memory_order_relaxed)) ||
-				(version && job_version != version->load(std::memory_order_relaxed));
+			       (version && job_version != version->load(std::memory_order_relaxed));
 		}
-
 
 		~cancel_token() noexcept = default;
 		cancel_token& operator=(const cancel_token& other) noexcept = delete;
@@ -1119,9 +944,7 @@ struct text_t
 			return result;
 		}
 
-		cancel_token(std::atomic_bool& f) : flag(&f)
-		{
-		}
+		cancel_token(std::atomic_bool& f) : flag(&f) {}
 	};
 
 	inline uint32_t byteswap32(const uint32_t n)
@@ -1160,11 +983,10 @@ struct text_t
 
 		for (const auto c : url)
 		{
-			if ((48 <= c && c <= 57) || //0-9
-				(65 <= c && c <= 90) || //ABC...XYZ
-				(97 <= c && c <= 122) || //abc...xyz
-				c == '~' || c == '-' || c == '_' || c == '.'
-			)
+			if ((48 <= c && c <= 57) ||  // 0-9
+			    (65 <= c && c <= 90) ||  // ABC...XYZ
+			    (97 <= c && c <= 122) || // abc...xyz
+			    c == '~' || c == '-' || c == '_' || c == '.')
 			{
 				result += c;
 			}
@@ -1182,8 +1004,7 @@ struct text_t
 	}
 } // namespace
 
-template <>
-struct std::formatter<core::text_t, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::text_t, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::text_t& t, std::format_context& ctx) const
 	{
@@ -1193,8 +1014,7 @@ struct std::formatter<core::text_t, char> : std::formatter<std::string_view, cha
 
 // Helper for formatting with runtime format strings (e.g. text_t).
 // Takes args by value so temporaries can be passed to std::make_format_args.
-template <class... Args>
-std::string str_format(const std::string_view fmt, Args... args)
+template <class... Args> std::string str_format(const std::string_view fmt, Args... args)
 {
 	return std::vformat(fmt, std::make_format_args(args...));
 }

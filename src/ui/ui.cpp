@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The UI layer's own definitions: its globals and hooks, and the theme's colours.
 
@@ -25,6 +24,7 @@ std::unordered_map<void*, std::function<bool()>> ui::animations;
 float ui::animation_step_factor = 0.333f;
 
 std::atomic_int ui::command_active = 0;
+std::atomic_int ui::menu_active = 0;
 core::date_t ui::start_time;
 
 namespace

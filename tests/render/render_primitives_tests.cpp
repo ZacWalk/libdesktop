@@ -4,6 +4,8 @@
 #include "libdesktop/render/software.h"
 #include "test.h"
 
+#include <thread>
+
 using namespace std::literals;
 
 namespace
@@ -129,6 +131,67 @@ namespace
 		assert_equal(measured.height, measured.ascent + measured.descent, "ascent and descent make the line");
 		assert_equal(true, measured.descent > 0, "text descends below its baseline");
 	}
+
+	// A shadow is worked out rather than drawn from an image: its band is darkest against what it encloses, fades to
+	// nothing at its bounds and rounds at the corners, and what it encloses is left for whatever casts it.
+	void should_shade_only_a_shadows_band()
+	{
+		core::surface surface;
+		assert_equal(true, surface.alloc(100, 80, core::texture_format::ARGB) != nullptr, "surface allocated");
+		const render::software_canvas canvas(surface);
+		canvas.fill_rect({0, 0, 100, 80}, core::color(1.0f, 1.0f, 1.0f, 1.0f));
+		canvas.fill_shadow({10, 10, 90, 70}, 16, 0.5f);
+
+		const auto shade = [&surface](const int x, const int y)
+		{
+			return 255 - static_cast<int>(surface.get_pixel(x, y) & 0xff);
+		};
+
+		assert_equal(0, shade(50, 40), "what the band encloses is left alone");
+		assert_equal(0, shade(5, 40), "as is everything outside the bounds");
+		assert_equal(true, std::abs(shade(25, 40) - 127) <= 2, "the band is alpha deep against the enclosed rectangle");
+		assert_equal(true, shade(10, 40) <= 2, "and fades to nothing at the bounds");
+		assert_equal(true, shade(14, 40) < shade(18, 40) && shade(18, 40) < shade(22, 40), "deepening inward");
+		assert_equal(shade(18, 40), shade(81, 40), "the same on every side");
+		assert_equal(true, shade(18, 18) < shade(18, 40) / 2, "and round at the corners");
+	}
+
+	// A surface context's text engine is its own, so a worker can draw a picture with text in it - as an
+	// application renders a video frame by frame - without the UI thread.
+	void should_draw_text_on_a_surface_from_a_worker()
+	{
+		const auto surface = std::make_shared<core::surface>();
+		core::sizei measured;
+		auto rendered = false;
+
+		std::thread worker([&]
+		{
+			const auto context = render::create_surface_context(surface);
+			if (!context) return;
+
+			context->begin_draw({96, 32}, render::default_font_size, {});
+			context->clear(core::color(0.0f, 0.0f, 0.0f, 1.0f));
+			measured = context->measure_text("Worker", render::font_face::dialog, render::text_style::single_line, 96);
+			context->draw_text("Worker", {0, 0, 96, 32}, render::font_face::dialog, render::text_style::single_line,
+			                   core::color(1.0f, 1.0f, 1.0f, 1.0f), {});
+			rendered = !context->render().failed;
+		});
+		worker.join();
+
+		assert_equal(true, rendered, "the worker renders its surface");
+		assert_equal(true, measured.cx > 0, "the worker measures its text");
+
+		auto lit = 0;
+		for (auto y = 0; y < surface->dimensions().cy; ++y)
+		{
+			const auto* const row = surface->pixels_line(y);
+			for (auto x = 0; x < surface->dimensions().cx; ++x)
+			{
+				if (row[x * 4] != 0 || row[x * 4 + 1] != 0 || row[x * 4 + 2] != 0) ++lit;
+			}
+		}
+		assert_equal(true, lit > 0, "the text reaches the surface");
+	}
 }
 
 void register_render_primitives_tests(test_registry& tests)
@@ -136,8 +199,10 @@ void register_render_primitives_tests(test_registry& tests)
 	tests.add("Should draw primitives to a CPU surface"s, should_draw_primitives_to_a_cpu_surface);
 	tests.add("Should draw into an existing CPU surface"s, should_draw_into_an_existing_cpu_surface);
 	tests.add("Should keep existing pixels outside what a surface context draws"s,
-		should_keep_existing_pixels_outside_what_a_surface_context_draws);
+	          should_keep_existing_pixels_outside_what_a_surface_context_draws);
 	tests.add("Should upload and draw a CPU surface"s, should_upload_and_draw_a_cpu_surface);
 	tests.add("Should cache custom font descriptors"s, should_cache_custom_font_descriptors);
 	tests.add("Should measure the font baseline"s, should_measure_the_font_baseline);
+	tests.add("Should shade only a shadow's band"s, should_shade_only_a_shadows_band);
+	tests.add("Should draw text on a surface from a worker"s, should_draw_text_on_a_surface_from_a_worker);
 }

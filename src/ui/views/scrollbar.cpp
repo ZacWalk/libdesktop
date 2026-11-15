@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Scrollbar geometry, capture state, and themed drawing.
 
@@ -104,8 +103,8 @@ void ui::scrollbar::draw(render::draw_context& dc, const core::recti client, con
 			dc.draw_rect({client.right - htw, client.top, client.right, client.bottom}, track);
 			x_pad = scaled_pad;
 		}
-		dc.draw_rect({client.right - tt - em - x_pad, span.start,
-		              client.right - em, span.start + span.length}, thumb_color);
+		dc.draw_rect({client.right - tt - em - x_pad, span.start, client.right - em, span.start + span.length},
+		             thumb_color);
 	}
 	else
 	{
@@ -116,8 +115,8 @@ void ui::scrollbar::draw(render::draw_context& dc, const core::recti client, con
 			dc.draw_rect({client.left, client.bottom - htw, client.right, client.bottom}, track);
 			y_pad = scaled_pad;
 		}
-		dc.draw_rect({span.start, client.bottom - tt - em - y_pad,
-		              span.start + span.length, client.bottom - em}, thumb_color);
+		dc.draw_rect({span.start, client.bottom - tt - em - y_pad, span.start + span.length, client.bottom - em},
+		             thumb_color);
 	}
 }
 

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Layout, input, selection, editing support and drawing for text-buffer document controls.
 
@@ -26,8 +25,7 @@ namespace
 		int count = 0;
 		for (size_t i = 0; i < text.size(); ++i)
 		{
-			if (!core::is_utf8_continuation(text[i]) && ++count > max_codepoints)
-				return i;
+			if (!core::is_utf8_continuation(text[i]) && ++count > max_codepoints) return i;
 		}
 		return text.size();
 	}
@@ -36,23 +34,18 @@ namespace
 	void draw_scrollbar(Scrollbar& scrollbar, render::draw_context& draw, const core::recti bounds,
 	                    const ui::view_theme& theme)
 	{
-		if constexpr (requires { scrollbar.draw(draw, bounds, theme); })
-			scrollbar.draw(draw, bounds, theme);
-		else
-			scrollbar.draw(draw, bounds);
+		if constexpr (requires { scrollbar.draw(draw, bounds, theme); }) scrollbar.draw(draw, bounds, theme);
+		else scrollbar.draw(draw, bounds);
 	}
 
-	template <typename Scrollbar>
-	void set_scrollbar_scale(Scrollbar& scrollbar, const double scale)
+	template <typename Scrollbar> void set_scrollbar_scale(Scrollbar& scrollbar, const double scale)
 	{
-		if constexpr (requires { scrollbar.set_dpi_scale(scale); })
-			scrollbar.set_dpi_scale(scale);
-		else
-			scrollbar.set_scale(scale);
+		if constexpr (requires { scrollbar.set_dpi_scale(scale); }) scrollbar.set_dpi_scale(scale);
+		else scrollbar.set_scale(scale);
 	}
 
 	std::shared_ptr<ui::command> view_command(const std::string_view text, std::function<void()> invoke,
-	                                           const bool enabled)
+	                                          const bool enabled)
 	{
 		auto result = std::make_shared<ui::command>();
 		result->text = text;
@@ -63,7 +56,7 @@ namespace
 
 	template <typename Scrollbar>
 	void begin_scrollbar_tracking(Scrollbar& scrollbar, const core::pointi point, const core::recti bounds,
-	                             ui::control_host* host)
+	                              ui::control_host* host)
 	{
 		if (!scrollbar.hit_test(point, bounds)) return;
 		scrollbar._tracking = true;
@@ -75,15 +68,13 @@ namespace
 
 namespace ui
 {
-	doc_view::doc_view(view_host& host, const view_theme& th, view_context* context, text_clipboard* clipboard)
-		: text_view(host, th, context, clipboard),
-		  _highlight(syntax::for_language(syntax::language::plain))
+	doc_view::doc_view(view_host& host, const view_theme& th, view_context* context, text_clipboard* clipboard) :
+		text_view(host, th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
 	{
 	}
 
-	doc_view::doc_view(const view_theme& th, view_context* context, text_clipboard* clipboard)
-		: text_view(th, context, clipboard),
-		  _highlight(syntax::for_language(syntax::language::plain))
+	doc_view::doc_view(const view_theme& th, view_context* context, text_clipboard* clipboard) :
+		text_view(th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
 	{
 	}
 
@@ -113,8 +104,7 @@ namespace ui
 		if (!(selection._end < target)) return target;
 
 		auto result = target;
-		if (target.y == selection._end.y)
-			result.x = selection._start.x + (target.x - selection._end.x);
+		if (target.y == selection._end.y) result.x = selection._start.x + (target.x - selection._end.x);
 		result.y = target.y - (selection._end.y - selection._start.y);
 		return result;
 	}
@@ -179,16 +169,15 @@ namespace ui
 
 	bool doc_view::cookie_valid(const int line_index) const
 	{
-		return line_index >= 0 && line_index < _cookies_valid_to && line_index < static_cast<int>(_parse_cookies.size()) &&
-			_parse_cookies[line_index] != invalid_cookie;
+		return line_index >= 0 && line_index < _cookies_valid_to &&
+		       line_index < static_cast<int>(_parse_cookies.size()) && _parse_cookies[line_index] != invalid_cookie;
 	}
 
 	void doc_view::discard_cookies_below(const int line_index) const
 	{
 		const auto begin = std::clamp(_cookies_valid_to, 0, static_cast<int>(_parse_cookies.size()));
 		const auto end = std::clamp(line_index, begin, static_cast<int>(_parse_cookies.size()));
-		if (end > begin)
-			std::fill(_parse_cookies.begin() + begin, _parse_cookies.begin() + end, invalid_cookie);
+		if (end > begin) std::fill(_parse_cookies.begin() + begin, _parse_cookies.begin() + end, invalid_cookie);
 		_cookies_valid_to = std::max(_cookies_valid_to, line_index);
 	}
 
@@ -208,10 +197,8 @@ namespace ui
 		auto i = line_index;
 		const auto scan_limit = std::max(0, i - 1000);
 		while (i >= scan_limit && !cookie_valid(i)) --i;
-		if (i < scan_limit)
-			i = scan_limit;
-		else
-			++i;
+		if (i < scan_limit) i = scan_limit;
+		else ++i;
 
 		if (i > line_index) return _parse_cookies[line_index];
 		discard_cookies_below(i);
@@ -238,9 +225,9 @@ namespace ui
 		if (_doc && _doc->spell_check() && !buf.empty())
 		{
 			const auto len = static_cast<int>(line_text.size());
-			auto can_spell_check_style = [](const text_style style)
+			auto can_spell_check_style = [](const text_style ts)
 			{
-				switch (style)
+				switch (ts)
 				{
 				case text_style::normal_text:
 				case text_style::md_heading1:
@@ -248,25 +235,23 @@ namespace ui
 				case text_style::md_heading3:
 				case text_style::md_bold:
 				case text_style::md_italic:
-				case text_style::md_link_text:
-					return true;
-				default:
-					return false;
+				case text_style::md_link_text: return true;
+				default: return false;
 				}
 			};
-			auto append_block = [](std::vector<text_block>& blocks, const int position, const text_style style)
+			auto append_block = [](std::vector<text_block>& blocks, const int position, const text_style ts)
 			{
 				if (!blocks.empty())
 				{
 					if (blocks.back()._char_pos == position)
 					{
-						blocks.back()._color = style;
+						blocks.back()._color = ts;
 						return;
 					}
-					if (blocks.back()._color == style) return;
+					if (blocks.back()._color == ts) return;
 				}
-				if (position == 0 && style == text_style::normal_text) return;
-				blocks.push_back({position, style});
+				if (position == 0 && ts == text_style::normal_text) return;
+				blocks.push_back({position, ts});
 			};
 
 			_spell_blocks.clear();
@@ -309,8 +294,7 @@ namespace ui
 					append_segment(start, end, buf[i]._color);
 				}
 			}
-			else
-				append_segment(0, len, text_style::normal_text);
+			else append_segment(0, len, text_style::normal_text);
 
 			block_count = std::min(static_cast<int>(_spell_blocks.size()), static_cast<int>(buf.size()));
 			for (int i = 0; i < block_count; ++i) buf[i] = _spell_blocks[i];
@@ -354,46 +338,51 @@ namespace ui
 		return false;
 	}
 
-	bool doc_view::on_key(const int key, const platform::key_state keys)
+	bool doc_view::on_key(const char32_t key, const platform::key_state keys)
 	{
 		if (!_doc) return text_view::on_key(key, keys);
 		const bool ctrl = keys.control;
 		const bool shift = keys.shift;
-		auto handled = [this] { reset_caret_blink(); return true; };
-		const auto k = static_cast<char32_t>(key);
+		auto handled = [this]
+		{
+			reset_caret_blink();
+			return true;
+		};
 
-		if (k == platform::keys::ESCAPE && (_drag_text || _drag_text_pending))
+		if (key == platform::keys::ESCAPE && (_drag_text || _drag_text_pending))
 		{
 			cancel_text_drag();
 			return handled();
 		}
 
-		if (k == platform::keys::LEFT && !ctrl && !shift) { _doc->move_char_left(false); return handled(); }
-		if (k == platform::keys::LEFT && !ctrl && shift) { _doc->move_char_left(true); return handled(); }
-		if (k == platform::keys::RIGHT && !ctrl && !shift) { _doc->move_char_right(false); return handled(); }
-		if (k == platform::keys::RIGHT && !ctrl && shift) { _doc->move_char_right(true); return handled(); }
-		if (k == platform::keys::LEFT && ctrl && !shift) { _doc->move_word_left(false); return handled(); }
-		if (k == platform::keys::LEFT && ctrl && shift) { _doc->move_word_left(true); return handled(); }
-		if (k == platform::keys::RIGHT && ctrl && !shift) { _doc->move_word_right(false); return handled(); }
-		if (k == platform::keys::RIGHT && ctrl && shift) { _doc->move_word_right(true); return handled(); }
-		if (k == platform::keys::UP && !ctrl && !shift) { _doc->move_lines(-1, false); return handled(); }
-		if (k == platform::keys::UP && !ctrl && shift) { _doc->move_lines(-1, true); return handled(); }
-		if (k == platform::keys::DOWN && !ctrl && !shift) { _doc->move_lines(1, false); return handled(); }
-		if (k == platform::keys::DOWN && !ctrl && shift) { _doc->move_lines(1, true); return handled(); }
-		if (k == platform::keys::UP && ctrl) { wrap_scroll_by(-1); return handled(); }
-		if (k == platform::keys::DOWN && ctrl) { wrap_scroll_by(1); return handled(); }
-		if (k == platform::keys::PRIOR && !shift) { _doc->move_lines(-_screen_lines, false); return handled(); }
-		if (k == platform::keys::PRIOR && shift) { _doc->move_lines(-_screen_lines, true); return handled(); }
-		if (k == platform::keys::NEXT && !shift) { _doc->move_lines(_screen_lines, false); return handled(); }
-		if (k == platform::keys::NEXT && shift) { _doc->move_lines(_screen_lines, true); return handled(); }
-		if (k == platform::keys::END && !ctrl && !shift) { _doc->move_line_end(false); return handled(); }
-		if (k == platform::keys::END && !ctrl && shift) { _doc->move_line_end(true); return handled(); }
-		if (k == platform::keys::HOME && !ctrl && !shift) { _doc->move_line_home(false); return handled(); }
-		if (k == platform::keys::HOME && !ctrl && shift) { _doc->move_line_home(true); return handled(); }
-		if (k == platform::keys::HOME && ctrl && !shift) { _doc->move_doc_home(false); return handled(); }
-		if (k == platform::keys::HOME && ctrl && shift) { _doc->move_doc_home(true); return handled(); }
-		if (k == platform::keys::END && ctrl && !shift) { _doc->move_doc_end(false); return handled(); }
-		if (k == platform::keys::END && ctrl && shift) { _doc->move_doc_end(true); return handled(); }
+		// clang-format off
+		if (key == platform::keys::LEFT && !ctrl && !shift) { _doc->move_char_left(false); return handled(); }
+		if (key == platform::keys::LEFT && !ctrl && shift) { _doc->move_char_left(true); return handled(); }
+		if (key == platform::keys::RIGHT && !ctrl && !shift) { _doc->move_char_right(false); return handled(); }
+		if (key == platform::keys::RIGHT && !ctrl && shift) { _doc->move_char_right(true); return handled(); }
+		if (key == platform::keys::LEFT && ctrl && !shift) { _doc->move_word_left(false); return handled(); }
+		if (key == platform::keys::LEFT && ctrl && shift) { _doc->move_word_left(true); return handled(); }
+		if (key == platform::keys::RIGHT && ctrl && !shift) { _doc->move_word_right(false); return handled(); }
+		if (key == platform::keys::RIGHT && ctrl && shift) { _doc->move_word_right(true); return handled(); }
+		if (key == platform::keys::UP && !ctrl && !shift) { _doc->move_lines(-1, false); return handled(); }
+		if (key == platform::keys::UP && !ctrl && shift) { _doc->move_lines(-1, true); return handled(); }
+		if (key == platform::keys::DOWN && !ctrl && !shift) { _doc->move_lines(1, false); return handled(); }
+		if (key == platform::keys::DOWN && !ctrl && shift) { _doc->move_lines(1, true); return handled(); }
+		if (key == platform::keys::UP && ctrl) { wrap_scroll_by(-1); return handled(); }
+		if (key == platform::keys::DOWN && ctrl) { wrap_scroll_by(1); return handled(); }
+		if (key == platform::keys::PRIOR && !shift) { _doc->move_lines(-_screen_lines, false); return handled(); }
+		if (key == platform::keys::PRIOR && shift) { _doc->move_lines(-_screen_lines, true); return handled(); }
+		if (key == platform::keys::NEXT && !shift) { _doc->move_lines(_screen_lines, false); return handled(); }
+		if (key == platform::keys::NEXT && shift) { _doc->move_lines(_screen_lines, true); return handled(); }
+		if (key == platform::keys::END && !ctrl && !shift) { _doc->move_line_end(false); return handled(); }
+		if (key == platform::keys::END && !ctrl && shift) { _doc->move_line_end(true); return handled(); }
+		if (key == platform::keys::HOME && !ctrl && !shift) { _doc->move_line_home(false); return handled(); }
+		if (key == platform::keys::HOME && !ctrl && shift) { _doc->move_line_home(true); return handled(); }
+		if (key == platform::keys::HOME && ctrl && !shift) { _doc->move_doc_home(false); return handled(); }
+		if (key == platform::keys::HOME && ctrl && shift) { _doc->move_doc_home(true); return handled(); }
+		if (key == platform::keys::END && ctrl && !shift) { _doc->move_doc_end(false); return handled(); }
+		if (key == platform::keys::END && ctrl && shift) { _doc->move_doc_end(true); return handled(); }
+		// clang-format on
 
 		return text_view::on_key(key, keys);
 	}
@@ -417,8 +406,8 @@ namespace ui
 		}
 		if (_hscroll._tracking)
 		{
-			scroll_to_char(std::clamp(_hscroll.track_to(point, client_rect()), 0,
-			                         std::max(0, _doc->max_line_length() - 1)));
+			scroll_to_char(
+				std::clamp(_hscroll.track_to(point, client_rect()), 0, std::max(0, _doc->max_line_length() - 1)));
 			update_caret();
 			return;
 		}
@@ -482,6 +471,15 @@ namespace ui
 		if (redraw) invalidate();
 	}
 
+	// A selection being dragged keeps what it reached, and text being dragged is dropped nowhere.
+	void doc_view::on_capture_lost()
+	{
+		text_view::on_capture_lost();
+		cancel_text_drag();
+		_drag_selection = false;
+		_drag_sel_timer = 0;
+	}
+
 	bool doc_view::on_wheel(const core::pointi, const int delta, const platform::key_state keys)
 	{
 		if (keys.control)
@@ -490,10 +488,8 @@ namespace ui
 			return true;
 		}
 		if (!can_scroll()) return false;
-		if (_word_wrap && !_wrap_line_y.empty())
-			set_scroll_pixel(_scroll_offset.y - delta * _font_extent.cy);
-		else
-			set_scroll_pixel(_scroll_offset.y - delta * _font_extent.cy);
+		if (_word_wrap && !_wrap_line_y.empty()) set_scroll_pixel(_scroll_offset.y - delta * _font_extent.cy);
+		else set_scroll_pixel(_scroll_offset.y - delta * _font_extent.cy);
 		update_caret();
 		return true;
 	}
@@ -509,8 +505,8 @@ namespace ui
 		if (!_doc) return platform::cursor::normal;
 		const auto scrollbar = scrollbar_rect();
 		if (_vscroll.hit_test(point, scrollbar) || _hscroll.hit_test(point, scrollbar)) return platform::cursor::normal;
-		if (point.x < margin_width() || _doc->is_inside_selection(client_to_text(point)) ||
-			!allows_drag_selection() || _drag_text)
+		if (point.x < margin_width() || _doc->is_inside_selection(client_to_text(point)) || !allows_drag_selection() ||
+		    _drag_text)
 			return platform::cursor::normal;
 		return platform::cursor::text_select;
 	}
@@ -533,8 +529,7 @@ namespace ui
 
 	void doc_view::tick()
 	{
-		if (_drag_selection && _doc)
-			on_timer_drag_selection();
+		if (_drag_selection && _doc) on_timer_drag_selection();
 	}
 
 	void doc_view::scale_changed()
@@ -558,10 +553,10 @@ namespace ui
 		recalc_vert_scrollbar();
 		recalc_horz_scrollbar();
 	}
-	void doc_view::set_word_wrap(const bool enabled)
+	void doc_view::set_word_wrap(const bool wrap)
 	{
-		if (_word_wrap == enabled) return;
-		_word_wrap = enabled;
+		if (_word_wrap == wrap) return;
+		_word_wrap = wrap;
 		_scroll_offset.x = 0;
 		mark_wrap_dirty_all();
 		layout();
@@ -625,8 +620,7 @@ namespace ui
 				last_break = -1;
 				column_at_break = 0;
 			}
-			else
-				column += advance;
+			else column += advance;
 		}
 	}
 
@@ -663,17 +657,16 @@ namespace ui
 		while (lo < hi)
 		{
 			const auto mid = (lo + hi + 1) / 2;
-			if (_wrap_line_y[mid] <= visual_row)
-				lo = mid;
-			else
-				hi = mid - 1;
+			if (_wrap_line_y[mid] <= visual_row) lo = mid;
+			else hi = mid - 1;
 		}
 		return lo;
 	}
 
 	int doc_view::line_visual_rows(const int line_index) const
 	{
-		if (!_word_wrap || _wrap_offsets.empty() || line_index < 0 || line_index >= static_cast<int>(_wrap_offsets.size()) - 1)
+		if (!_word_wrap || _wrap_offsets.empty() || line_index < 0 ||
+		    line_index >= static_cast<int>(_wrap_offsets.size()) - 1)
 			return 1;
 		return line_break_count(line_index) + 1;
 	}
@@ -689,20 +682,16 @@ namespace ui
 			const auto cursor_top = line_offset_vrow(cursor_vrow);
 			const auto cursor_bottom = cursor_top + _font_extent.cy;
 			const auto visible_height = std::max(0, _view_extent.cy - text_top());
-			if (cursor_bottom > _scroll_offset.y + visible_height)
-				set_scroll_pixel(cursor_bottom - visible_height);
-			else if (cursor_top < _scroll_offset.y)
-				set_scroll_pixel(cursor_top);
+			if (cursor_bottom > _scroll_offset.y + visible_height) set_scroll_pixel(cursor_bottom - visible_height);
+			else if (cursor_top < _scroll_offset.y) set_scroll_pixel(cursor_top);
 		}
 		else
 		{
 			const auto cursor_top = line_offset(point.y);
 			const auto cursor_bottom = cursor_top + _font_extent.cy;
 			const auto visible_height = std::max(0, _view_extent.cy - text_top());
-			if (cursor_bottom > _scroll_offset.y + visible_height)
-				set_scroll_pixel(cursor_bottom - visible_height);
-			else if (cursor_top < _scroll_offset.y)
-				set_scroll_pixel(cursor_top);
+			if (cursor_bottom > _scroll_offset.y + visible_height) set_scroll_pixel(cursor_bottom - visible_height);
+			else if (cursor_top < _scroll_offset.y) set_scroll_pixel(cursor_top);
 		}
 
 		if (!_word_wrap && point.y >= 0 && point.y < static_cast<int>(_doc->size()))
@@ -729,9 +718,11 @@ namespace ui
 		}
 
 		if (_word_wrap && _total_visual_rows > 0)
-			_content_extent.cy = top_content_padding() + _total_visual_rows * _font_extent.cy + bottom_content_padding();
+			_content_extent.cy = top_content_padding() + _total_visual_rows * _font_extent.cy +
+			                     bottom_content_padding();
 		else
-			_content_extent.cy = top_content_padding() + static_cast<int>(_doc->size()) * _font_extent.cy + bottom_content_padding();
+			_content_extent.cy = top_content_padding() + static_cast<int>(_doc->size()) * _font_extent.cy +
+			                     bottom_content_padding();
 		_content_extent.cx = _view_extent.cx;
 
 		const auto max_y = max_scroll_pixel();
@@ -772,8 +763,7 @@ namespace ui
 		}
 		const auto top = _scroll_offset.y - text_top();
 		core::recti dirty = client_rect();
-		if (end < 0)
-			dirty.top = line_offset(start) - top;
+		if (end < 0) dirty.top = line_offset(start) - top;
 		else
 		{
 			if (end < start) std::swap(start, end);
@@ -793,8 +783,7 @@ namespace ui
 			_host.invalidate_layout();
 			invalidate_lines(start, -1);
 		}
-		else
-			invalidate_lines(start, end);
+		else invalidate_lines(start, end);
 	}
 
 	void doc_view::line_count_changed(const int at, const int delta)
@@ -820,13 +809,11 @@ namespace ui
 		}
 
 		const auto line_count = static_cast<int>(_doc->size());
-		if (_wrap_dirty_all || static_cast<int>(_wrap_offsets.size()) != line_count + 1)
-			full_layout(line_count);
+		if (_wrap_dirty_all || static_cast<int>(_wrap_offsets.size()) != line_count + 1) full_layout(line_count);
 		else if (_wrap_dirty_first >= 0)
 		{
 			const auto last = std::min(_wrap_dirty_last, line_count - 1);
-			for (int i = _wrap_dirty_first; i <= last; ++i)
-				relayout_line(i);
+			for (int i = _wrap_dirty_first; i <= last; ++i) relayout_line(i);
 		}
 		clear_wrap_dirty();
 	}
@@ -847,8 +834,7 @@ namespace ui
 			reset_parse_cookies();
 			return;
 		}
-		if (delta > 0)
-			_parse_cookies.insert(_parse_cookies.begin() + at + 1, delta, invalid_cookie);
+		if (delta > 0) _parse_cookies.insert(_parse_cookies.begin() + at + 1, delta, invalid_cookie);
 		else if (delta < 0)
 			_parse_cookies.erase(_parse_cookies.begin() + at + 1, _parse_cookies.begin() + at + 1 - delta);
 		_cookies_valid_to = std::min(_cookies_valid_to, at);
@@ -859,7 +845,7 @@ namespace ui
 		const auto line_count = static_cast<int>(_wrap_offsets.size()) - 1;
 		const auto before_edit = static_cast<int>(_doc ? _doc->size() : 0) - delta;
 		if (!_word_wrap || line_count <= 0 || line_count != before_edit || at < 0 || at >= line_count ||
-			static_cast<int>(_wrap_line_y.size()) != line_count + 1 || (delta < 0 && at + 1 - delta > line_count))
+		    static_cast<int>(_wrap_line_y.size()) != line_count + 1 || (delta < 0 && at + 1 - delta > line_count))
 		{
 			mark_wrap_dirty_all();
 			return;
@@ -958,7 +944,7 @@ namespace ui
 		const auto length = static_cast<int>(_render_buf.size());
 
 		if (_word_wrap && !_wrap_offsets.empty() && result.y < static_cast<int>(_wrap_offsets.size()) - 1 &&
-			result.y < static_cast<int>(_wrap_line_y.size()))
+		    result.y < static_cast<int>(_wrap_line_y.size()))
 		{
 			const auto line_pixel_y = line_offset(result.y);
 			const auto pixel_y = point.y - text_top() + _scroll_offset.y;
@@ -975,10 +961,8 @@ namespace ui
 			while (index < row_end)
 			{
 				int advance = 0;
-				if (_render_buf[index] == '\t')
-					advance = tab_size - absolute_column % tab_size;
-				else if (!core::is_utf8_continuation(_render_buf[index]))
-					advance = 1;
+				if (_render_buf[index] == '\t') advance = tab_size - absolute_column % tab_size;
+				else if (!core::is_utf8_continuation(_render_buf[index])) advance = 1;
 				absolute_column += advance;
 				relative_column += advance;
 				if (relative_column > wanted) break;
@@ -993,10 +977,8 @@ namespace ui
 			int index = 0;
 			while (index < length)
 			{
-				if (_render_buf[index] == '\t')
-					column += tab_size - column % tab_size;
-				else if (!core::is_utf8_continuation(_render_buf[index]))
-					++column;
+				if (_render_buf[index] == '\t') column += tab_size - column % tab_size;
+				else if (!core::is_utf8_continuation(_render_buf[index])) ++column;
 				if (column > wanted) break;
 				++index;
 			}
@@ -1011,7 +993,7 @@ namespace ui
 		if (!_doc || point.y < 0 || point.y >= static_cast<int>(_doc->size())) return result;
 
 		if (_word_wrap && !_wrap_offsets.empty() && point.y < static_cast<int>(_wrap_offsets.size()) - 1 &&
-			point.y < static_cast<int>(_wrap_line_y.size()))
+		    point.y < static_cast<int>(_wrap_line_y.size()))
 		{
 			const auto breaks = line_breaks(point.y);
 			const auto sub_row = char_to_sub_row(point.y, point.x);
@@ -1025,10 +1007,8 @@ namespace ui
 			for (int index = row_start; index < point.x && index < static_cast<int>(_render_buf.size()); ++index)
 			{
 				int advance = 0;
-				if (_render_buf[index] == '\t')
-					advance = tab_size - absolute_column % tab_size;
-				else if (!core::is_utf8_continuation(_render_buf[index]))
-					advance = 1;
+				if (_render_buf[index] == '\t') advance = tab_size - absolute_column % tab_size;
+				else if (!core::is_utf8_continuation(_render_buf[index])) advance = 1;
 				absolute_column += advance;
 				relative_column += advance;
 			}
@@ -1042,10 +1022,8 @@ namespace ui
 			int column = 0;
 			for (int index = 0; index < point.x && index < static_cast<int>(_render_buf.size()); ++index)
 			{
-				if (_render_buf[index] == '\t')
-					column += tab_size - column % tab_size;
-				else if (!core::is_utf8_continuation(_render_buf[index]))
-					++column;
+				if (_render_buf[index] == '\t') column += tab_size - column % tab_size;
+				else if (!core::is_utf8_continuation(_render_buf[index])) ++column;
 			}
 			result.x = text_left() + (column - scroll_char()) * _font_extent.cx;
 		}
@@ -1096,9 +1074,9 @@ namespace ui
 		if (!_doc || !_doc->has_selection()) return false;
 		const auto selection = _doc->selection().normalize();
 		const auto starts_before = selection._start.y < line_index ||
-			(selection._start.y == line_index && selection._start.x <= 0);
+		                           (selection._start.y == line_index && selection._start.x <= 0);
 		const auto ends_after = selection._end.y > line_index ||
-			(selection._end.y == line_index && selection._end.x >= length);
+		                        (selection._end.y == line_index && selection._end.x >= length);
 		return starts_before && ends_after;
 	}
 
@@ -1149,8 +1127,8 @@ namespace ui
 			if (block_clip.right > block_clip.left)
 			{
 				draw.draw_rect(block_clip, core::color(bg_color));
-				draw.draw_text(std::string_view(_expand_buf.data(), static_cast<size_t>(draw_bytes)), block_clip,
-				               font, render::text_style::single_line, core::color(text_color), {});
+				draw.draw_text(std::string_view(_expand_buf.data(), static_cast<size_t>(draw_bytes)), block_clip, font,
+				               render::text_style::single_line, core::color(text_color), {});
 			}
 		}
 		origin.x += _font_extent.cx * codepoints;
@@ -1165,14 +1143,11 @@ namespace ui
 		const auto selection = _doc->selection();
 		int selection_begin = 0;
 		int selection_end = 0;
-		if (selection._start.y > text_pos.y)
-			selection_begin = count;
+		if (selection._start.y > text_pos.y) selection_begin = count;
 		else if (selection._start.y == text_pos.y)
 			selection_begin = std::clamp(selection._start.x - text_pos.x, 0, count);
-		if (selection._end.y > text_pos.y)
-			selection_end = count;
-		else if (selection._end.y == text_pos.y)
-			selection_end = std::clamp(selection._end.x - text_pos.x, 0, count);
+		if (selection._end.y > text_pos.y) selection_end = count;
+		else if (selection._end.y == text_pos.y) selection_end = std::clamp(selection._end.x - text_pos.x, 0, count);
 
 		if (selection_begin > 0)
 			draw_line(draw, origin, clip, chars, offset, selection_begin, font, text_color, bg_color);
@@ -1180,7 +1155,8 @@ namespace ui
 			draw_line(draw, origin, clip, chars, offset + selection_begin, selection_end - selection_begin, font,
 			          _theme.style_color(text_style::sel_text), _theme.style_color(text_style::sel_bkgnd));
 		if (selection_end < count)
-			draw_line(draw, origin, clip, chars, offset + selection_end, count - selection_end, font, text_color, bg_color);
+			draw_line(draw, origin, clip, chars, offset + selection_end, count - selection_end, font, text_color,
+			          bg_color);
 	}
 
 	void doc_view::draw_wrapped_line(render::draw_context& draw, const core::recti& rect, const int line_index,
@@ -1208,13 +1184,13 @@ namespace ui
 			if (row_y >= rect.bottom) break;
 			const core::recti row_rect(rect.left, row_y, rect.right, row_y + _font_extent.cy);
 			core::pointi origin(row_rect.left, row_y);
-			auto draw_clipped = [&](const int start, const int end, const text_style style)
+			auto draw_clipped = [&](const int start, const int end, const text_style ts)
 			{
 				const auto first = std::max(start, row_start);
 				const auto last = std::min(end, row_end);
 				if (first < last)
-					draw_line(draw, origin, row_rect, style, _render_buf, first, last - first,
-					          {first, line_index}, font, _theme.style_color(style), bg_color);
+					draw_line(draw, origin, row_rect, ts, _render_buf, first, last - first, {first, line_index}, font,
+					          _theme.style_color(ts), bg_color);
 			};
 
 			if (block_count > 0)
@@ -1226,8 +1202,7 @@ namespace ui
 					draw_clipped(buffer[i]._char_pos, end, buffer[i]._color);
 				}
 			}
-			else
-				draw_clipped(0, length, text_style::normal_text);
+			else draw_clipped(0, length, text_style::normal_text);
 
 			if (row == rows - 1 && _doc->is_inside_selection({length, line_index}))
 			{
@@ -1245,7 +1220,7 @@ namespace ui
 		const auto bg_color = line_bg_color(line_index);
 		const auto& line = (*_doc)[line_index];
 		if (_word_wrap && !_wrap_offsets.empty() && line_index < static_cast<int>(_wrap_offsets.size()) - 1 &&
-			line_break_count(line_index) > 0)
+		    line_break_count(line_index) > 0)
 		{
 			draw_wrapped_line(draw, rect, line_index, font);
 			return;
@@ -1270,14 +1245,15 @@ namespace ui
 
 		if (block_count > 0)
 		{
-			draw_line(draw, origin, rect, text_style::normal_text, _render_buf, 0, buffer[0]._char_pos,
-			          {0, line_index}, font, _theme.style_color(text_style::normal_text), bg_color);
+			draw_line(draw, origin, rect, text_style::normal_text, _render_buf, 0, buffer[0]._char_pos, {0, line_index},
+			          font, _theme.style_color(text_style::normal_text), bg_color);
 			for (int i = 0; i + 1 < block_count; ++i)
 				draw_line(draw, origin, rect, buffer[i]._color, _render_buf, buffer[i]._char_pos,
 				          buffer[i + 1]._char_pos - buffer[i]._char_pos, {buffer[i]._char_pos, line_index}, font,
 				          _theme.style_color(buffer[i]._color), bg_color);
-			draw_line(draw, origin, rect, buffer[block_count - 1]._color, _render_buf, buffer[block_count - 1]._char_pos,
-			          length - buffer[block_count - 1]._char_pos, {buffer[block_count - 1]._char_pos, line_index}, font,
+			draw_line(draw, origin, rect, buffer[block_count - 1]._color, _render_buf,
+			          buffer[block_count - 1]._char_pos, length - buffer[block_count - 1]._char_pos,
+			          {buffer[block_count - 1]._char_pos, line_index}, font,
 			          _theme.style_color(buffer[block_count - 1]._color), bg_color);
 		}
 		else
@@ -1312,12 +1288,13 @@ namespace ui
 		const auto client = client_rect();
 		const auto clip = draw.clip_bounds();
 		const auto line_count = _doc ? static_cast<int>(_doc->size()) : 0;
-		const auto margin = margin_width();
-		const auto padding_left = margin + _font_extent.cx;
+		const auto margin_cx = margin_width();
+		const auto padding_left = margin_cx + _font_extent.cx;
 
 		draw.draw_rect(client, core::color(_theme.style_color(text_style::normal_bkgnd)));
-		draw.draw_rect({0, 0, margin, client.bottom},
-		               core::color(_theme.style_color(_sel_margin ? text_style::sel_margin : text_style::normal_bkgnd)));
+		draw.draw_rect({0, 0, margin_cx, client.bottom},
+		               core::color(
+						   _theme.style_color(_sel_margin ? text_style::sel_margin : text_style::normal_bkgnd)));
 
 		if (_focused && _doc)
 		{
@@ -1335,12 +1312,11 @@ namespace ui
 			if (_word_wrap && !_wrap_line_y.empty())
 			{
 				const auto first_row = _font_extent.cy > 0
-					                       ? std::max(0, (_scroll_offset.y - top_content_padding()) / _font_extent.cy)
-					                       : 0;
+				                           ? std::max(0, (_scroll_offset.y - top_content_padding()) / _font_extent.cy)
+				                           : 0;
 				current_line = visual_row_to_line_index(first_row);
 			}
-			else
-				current_line = std::max(0, scroll_line() - 1);
+			else current_line = std::max(0, scroll_line() - 1);
 			current_line = std::clamp(current_line, 0, line_count - 1);
 			int y = line_offset(current_line) - _scroll_offset.y + text_top();
 			while (y < client.bottom && current_line < line_count)
@@ -1348,7 +1324,7 @@ namespace ui
 				const auto height = line_height(current_line);
 				if (y + height > clip.top && y < clip.bottom)
 				{
-					draw_margin(draw, {0, y, margin, y + height}, current_line, body_font());
+					draw_margin(draw, {0, y, margin_cx, y + height}, current_line, body_font());
 					draw_line(draw, {padding_left, y, client.right, y + height}, current_line, body_font());
 				}
 				++current_line;
@@ -1382,8 +1358,7 @@ namespace ui
 		const auto point = text_to_client(position);
 		const auto caret = core::recti(point.x, point.y, point.x + 2, point.y + _font_extent.cy);
 		const auto client = client_rect();
-		if (caret.top < client.bottom && caret.bottom > client.top)
-			draw.draw_rect(caret, core::color(_theme.text));
+		if (caret.top < client.bottom && caret.bottom > client.top) draw.draw_rect(caret, core::color(_theme.text));
 	}
 
 	void doc_view::start_caret_blink()
@@ -1457,8 +1432,7 @@ namespace ui
 	{
 		if (_word_wrap && !_wrap_line_y.empty() && can_scroll())
 			set_scroll_pixel(_scroll_offset.y + delta * _font_extent.cy);
-		else
-			scroll_by(delta);
+		else scroll_by(delta);
 	}
 
 	void doc_view::scroll_by(const int delta)
@@ -1468,8 +1442,7 @@ namespace ui
 
 	bool doc_view::can_scroll() const
 	{
-		if (_word_wrap && _total_visual_rows > 0)
-			return _screen_lines < _total_visual_rows;
+		if (_word_wrap && _total_visual_rows > 0) return _screen_lines < _total_visual_rows;
 		const auto line_count = _doc ? static_cast<int>(_doc->size()) : 0;
 		return line_count > 1 && _screen_lines < line_count - 1;
 	}
@@ -1519,10 +1492,10 @@ namespace ui
 		const auto bar_height = text_top();
 		const auto pad_y = _font_extent.cy / 4;
 		const auto background = _focused ? _theme.focus_handle : _theme.handle;
-		const auto bounds = core::recti(0, 0, client.right, bar_height);
+		const auto bar = core::recti(0, 0, client.right, bar_height);
 		const auto text_width = core::utf8_codepoint_count(text) * _font_extent.cx;
 		const auto text_x = (client.right - text_width) / 2;
-		draw.draw_rect(bounds, core::color(background));
+		draw.draw_rect(bar, core::color(background));
 		draw.draw_text(text, {text_x, pad_y, text_x + text_width, bar_height}, body_font(),
 		               render::text_style::single_line, core::color(_theme.text), core::color(background));
 	}
@@ -1562,8 +1535,8 @@ namespace ui
 		{
 			const auto position = client_to_text(_drag_point);
 			_doc->select(_line_selection ? _doc->line_selection(position, true)
-			                            : (_word_selection ? _doc->word_selection(position, true)
-			                                               : _doc->pos_selection(position, true)));
+			                             : (_word_selection ? _doc->word_selection(position, true)
+			                                                : _doc->pos_selection(position, true)));
 		}
 	}
 
@@ -1585,7 +1558,7 @@ namespace ui
 		}
 
 		if (allows_text_drag() && !keys.shift && !keys.control && point.x >= margin_width() && _doc->has_selection() &&
-			_doc->is_inside_selection(client_to_text(point)))
+		    _doc->is_inside_selection(client_to_text(point)))
 		{
 			_drag_text_pending = true;
 			_drag_text_origin = point;
@@ -1595,8 +1568,7 @@ namespace ui
 
 		if (point.x < margin_width())
 		{
-			if (keys.control)
-				_doc->select(_doc->all());
+			if (keys.control) _doc->select(_doc->all());
 			else if (allows_drag_selection())
 			{
 				_doc->select(_doc->line_selection(client_to_text(point), keys.shift));
@@ -1610,7 +1582,8 @@ namespace ui
 		else if (allows_drag_selection())
 		{
 			const auto position = client_to_text(point);
-			_doc->select(keys.control ? _doc->word_selection(position, keys.shift) : _doc->pos_selection(position, keys.shift));
+			_doc->select(keys.control ? _doc->word_selection(position, keys.shift)
+			                          : _doc->pos_selection(position, keys.shift));
 			_drag_sel_timer = 1;
 			if (auto* const h = host()) h->capture_pointer(true);
 			_word_selection = keys.control;
@@ -1650,8 +1623,8 @@ namespace ui
 		{
 			const auto position = client_to_text(point);
 			_doc->select(_line_selection ? _doc->line_selection(position, true)
-			                            : (_word_selection ? _doc->word_selection(position, true)
-			                                               : _doc->pos_selection(position, true)));
+			                             : (_word_selection ? _doc->word_selection(position, true)
+			                                                : _doc->pos_selection(position, true)));
 			_drag_selection = false;
 			_drag_sel_timer = 0;
 			if (auto* const h = host()) h->capture_pointer(false);

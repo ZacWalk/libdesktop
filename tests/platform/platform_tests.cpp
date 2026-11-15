@@ -13,6 +13,10 @@ void register_platform_services_tests(test_registry& tests);
 void register_platform_shell_tests(test_registry& tests);
 #ifdef _WIN32
 void register_os_tests(test_registry& tests);
+void register_instance_tests(test_registry& tests);
+std::optional<int> run_instance_test_child(int argc, char* argv[]);
+#else
+void register_window_icon_tests(test_registry& tests);
 #endif
 
 static void register_tests(test_registry& tests)
@@ -24,11 +28,18 @@ static void register_tests(test_registry& tests)
 	register_platform_system_tests(tests);
 #ifdef _WIN32
 	register_os_tests(tests);
+	register_instance_tests(tests);
+#else
+	register_window_icon_tests(tests);
 #endif
 }
 
 int main(const int argc, char* argv[])
 {
+	platform::set_ui_thread();
+#ifdef _WIN32
+	if (const auto child = run_instance_test_child(argc, argv)) return *child;
+#endif
 	core::set_app_name("LibDesktop-Tests");
 #ifdef _WIN32
 	std::setlocale(LC_ALL, "en_US.UTF-8");
@@ -48,5 +59,5 @@ int main(const int argc, char* argv[])
 	} all;
 
 	register_tests(all);
-	return run_registered_tests(all, argc, argv, [] { return _temps.delete_temps(); });
+	return run_registered_tests(all, argc, argv, [] { return temps.delete_temps(); });
 }

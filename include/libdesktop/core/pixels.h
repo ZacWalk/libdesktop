@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Pixel formats, surfaces, images, colours, and pixel operations.
 
@@ -26,6 +25,7 @@ namespace core
 		PNG,
 		WEBP,
 		JXL,
+		AVIF,
 	};
 
 	enum class texture_format
@@ -34,7 +34,12 @@ namespace core
 		RGB,
 		ARGB,
 		NV12,
-		P010
+		P010,
+		// Sixteen bits a channel, for a picture with more precision than a byte holds: red, green, blue and
+		// a fourth channel in that memory order, as Direct3D's R16G16B16A16 and the codecs' 16-bit RGBA
+		// store them. RGBX16 is opaque, its fourth channel always 65535; RGBA16's is straight alpha.
+		RGBX16,
+		RGBA16,
 	};
 
 	// True when one pixel is four contiguous bytes, so a software reader may walk the surface as
@@ -43,6 +48,43 @@ namespace core
 	constexpr bool is_packed(const texture_format format) noexcept
 	{
 		return format == texture_format::RGB || format == texture_format::ARGB;
+	}
+
+	// True when one pixel is four 16-bit channels, red first.
+	constexpr bool is_wide(const texture_format format) noexcept
+	{
+		return format == texture_format::RGBX16 || format == texture_format::RGBA16;
+	}
+
+	// True when the fourth channel is alpha rather than padding.
+	constexpr bool has_alpha(const texture_format format) noexcept
+	{
+		return format == texture_format::ARGB || format == texture_format::RGBA16;
+	}
+
+	// The bytes one pixel of a packed or wide format takes; for a planar one, its luma sample's.
+	constexpr int bytes_per_pixel(const texture_format format) noexcept
+	{
+		switch (format)
+		{
+		case texture_format::NV12: return 1;
+		case texture_format::P010: return 2;
+		case texture_format::RGBX16:
+		case texture_format::RGBA16: return 8;
+		default: return 4;
+		}
+	}
+
+	// The format at the other precision: a byte a channel for a wide one, sixteen bits for a packed one,
+	// keeping whether the fourth channel is alpha.
+	constexpr texture_format wide_format(const texture_format format) noexcept
+	{
+		return has_alpha(format) ? texture_format::RGBA16 : texture_format::RGBX16;
+	}
+
+	constexpr texture_format packed_format(const texture_format format) noexcept
+	{
+		return has_alpha(format) ? texture_format::ARGB : texture_format::RGB;
 	}
 	// Selects the YUV->RGB conversion applied to NV12/P010 textures. A single value
 	// encodes both the colour matrix (BT.601/709/2020) and the signal range: the
@@ -57,6 +99,37 @@ namespace core
 		rec2020_limited,
 		rec2020_full,
 	};
+
+	// Where a 4:2:0 picture's chroma samples lie against its luma, as H.273 names the sitings: across,
+	// with every other luma column (left) or between two; down, with the upper (top) or lower (bottom) row
+	// of each pair, or between them. Most video is left-sited; JPEG, WebP and MPEG-1 centre their chroma.
+	enum class chroma_siting : uint8_t
+	{
+		center,
+		left,
+		top_left,
+		top,
+		bottom_left,
+		bottom,
+	};
+
+	// What a sampler adds, in luma pixels, to a position on the luma plane to read a half-size chroma plane
+	// at the same place. A sampler takes each chroma sample to lie between two luma pixels, so chroma sited
+	// with a luma column or row lies half a pixel from where it is read.
+	constexpr float chroma_shift_x(const chroma_siting siting) noexcept
+	{
+		return siting == chroma_siting::left || siting == chroma_siting::top_left ||
+		               siting == chroma_siting::bottom_left
+		           ? 0.5f
+		           : 0.0f;
+	}
+
+	constexpr float chroma_shift_y(const chroma_siting siting) noexcept
+	{
+		if (siting == chroma_siting::top_left || siting == chroma_siting::top) return 0.5f;
+		if (siting == chroma_siting::bottom_left || siting == chroma_siting::bottom) return -0.5f;
+		return 0.0f;
+	}
 
 	// Affine YUV->RGB transform: a 3x3 matrix plus a bias column, stored row-major.
 	struct yuv_rgb_matrix
@@ -75,28 +148,34 @@ namespace core
 
 		switch (cs)
 		{
-		case color_space::rec709_limited: kr = 0.2126;
+		case color_space::rec709_limited:
+			kr = 0.2126;
 			kb = 0.0722;
 			full = false;
 			break;
-		case color_space::rec709_full: kr = 0.2126;
+		case color_space::rec709_full:
+			kr = 0.2126;
 			kb = 0.0722;
 			full = true;
 			break;
-		case color_space::rec2020_limited: kr = 0.2627;
+		case color_space::rec2020_limited:
+			kr = 0.2627;
 			kb = 0.0593;
 			full = false;
 			break;
-		case color_space::rec2020_full: kr = 0.2627;
+		case color_space::rec2020_full:
+			kr = 0.2627;
 			kb = 0.0593;
 			full = true;
 			break;
-		case color_space::rec601_full: kr = 0.299;
+		case color_space::rec601_full:
+			kr = 0.299;
 			kb = 0.114;
 			full = true;
 			break;
 		case color_space::rec601_limited:
-		default: kr = 0.299;
+		default:
+			kr = 0.299;
 			kb = 0.114;
 			full = false;
 			break;
@@ -168,14 +247,14 @@ namespace core
 
 	constexpr bool flips_xy(const orientation o) noexcept
 	{
-		return o == orientation::left_top || o == orientation::right_top || o == orientation::right_bottom || o ==
-			orientation::left_bottom;
+		return o == orientation::left_top || o == orientation::right_top || o == orientation::right_bottom ||
+		       o == orientation::left_bottom;
 	}
 
 	constexpr bool is_inverted(const orientation o) noexcept
 	{
-		return o == orientation::top_right || o == orientation::bottom_right || o == orientation::right_top || o ==
-			orientation::right_bottom;
+		return o == orientation::top_right || o == orientation::bottom_right || o == orientation::right_top ||
+		       o == orientation::right_bottom;
 	}
 
 	constexpr simple_transform to_simple_transform(const orientation orientation) noexcept
@@ -218,8 +297,8 @@ namespace core
 	sizei scale_dimensions(sizei dims, sizei limit, bool dont_scale_up = false) noexcept;
 	recti scale_dimensions(sizei dims, recti limit, bool dont_scale_up = false) noexcept;
 
-	// Area-average reduction, allocating dst. Handles the packed 32 bit formats and NV12, whose two
-	// planes reduce independently. Answers false for anything that is not a pure reduction of one of
+	// Area-average reduction, allocating dst. Handles the packed 32 bit formats, the wide 64 bit ones and NV12,
+	// whose two planes reduce independently. Answers false for anything that is not a pure reduction of one of
 	// those, which is the caller's cue to keep using swscale.
 	bool area_downscale(const const_surface_ptr& src, surface_ptr& dst, sizei dst_extent);
 
@@ -227,10 +306,17 @@ namespace core
 	// machine that would otherwise exercise just one of the two.
 	bool area_downscale_baseline(const const_surface_ptr& src, surface_ptr& dst, sizei dst_extent);
 
-	// Separable bilinear resize of a packed 32 bit surface, allocating dst. For the cases
+	// Separable bilinear resize of a packed or wide surface, allocating dst. For the cases
 	// area_downscale refuses - an enlargement, or one axis growing while the other shrinks. A pure
 	// reduction belongs to area_downscale, which is both cheaper and correct for it.
 	bool bilinear_resize(const const_surface_ptr& src, surface_ptr& dst, sizei dst_extent);
+
+	// The picture at a byte a channel, each 16-bit channel rounded to the nearest level; a packed surface
+	// comes back as it is. Null for a planar one.
+	const_surface_ptr to_8_bit(const const_surface_ptr& src);
+	// The picture at sixteen bits a channel, each byte widened exactly; a wide surface comes back as it is.
+	// Null for a planar one.
+	const_surface_ptr to_16_bit(const const_surface_ptr& src);
 
 	////////////////////////////////////////////////////////////////////////////////////
 	// Pixels Conversions
@@ -336,7 +422,6 @@ namespace core
 		return saturate_rgba(rr + rr * ff, gg + gg * ff, bb + bb * ff, aa);
 	}
 
-
 	constexpr color32 emphasize(const color32 c, const float ff = 0.22f) noexcept
 	{
 		const bool is_bright = get_b(c) > 0x80 || get_g(c) > 0x80 || get_r(c) > 0x80;
@@ -355,11 +440,8 @@ namespace core
 
 	constexpr color32 average(const color32 c1, const color32 c2) noexcept
 	{
-		return rgba(
-			(get_r(c1) + get_r(c2)) / 2,
-			(get_g(c1) + get_g(c2)) / 2,
-			(get_b(c1) + get_b(c2)) / 2,
-			(get_a(c1) + get_a(c2)) / 2);
+		return rgba((get_r(c1) + get_r(c2)) / 2, (get_g(c1) + get_g(c2)) / 2, (get_b(c1) + get_b(c2)) / 2,
+		            (get_a(c1) + get_a(c2)) / 2);
 	}
 
 	constexpr uint32_t ilerp(const uint32_t a, const uint32_t b, const int t)
@@ -373,11 +455,8 @@ namespace core
 
 	constexpr color32 lerp(const color32 c1, const color32 c2, const int t) noexcept
 	{
-		return saturate_rgba(
-			ilerp(get_r(c1), get_r(c2), t),
-			ilerp(get_g(c1), get_g(c2), t),
-			ilerp(get_b(c1), get_b(c2), t),
-			ilerp(get_a(c1), get_a(c2), t));
+		return saturate_rgba(ilerp(get_r(c1), get_r(c2), t), ilerp(get_g(c1), get_g(c2), t),
+		                     ilerp(get_b(c1), get_b(c2), t), ilerp(get_a(c1), get_a(c2), t));
 	}
 
 	inline color32 lerp(const color32 c1, const color32 c2, const float t) noexcept
@@ -405,10 +484,7 @@ namespace core
 	class histogram final : public core::no_copy
 	{
 	public:
-		histogram() noexcept
-		{
-			clear();
-		}
+		histogram() noexcept { clear(); }
 
 		static constexpr int max_value = 0x100;
 		static constexpr int alloc_size = sizeof(int) * max_value;
@@ -476,7 +552,13 @@ namespace core
 		texture_format _format = texture_format::None;
 		core::orientation _orientation = core::orientation::top_left;
 		core::color_space _cs = core::color_space::rec601_limited;
+		core::chroma_siting _chroma = core::chroma_siting::center;
 		tone_map_lut_ptr _tone_map;
+
+		// Packed and wide surfaces hold pixels a software reader can address one by one. A planar one holds
+		// luma rows and then chroma rows, narrower than its pixels would be, so walking it as pixels runs
+		// past the end of its block.
+		static bool has_addressable_pixels(const texture_format fmt) noexcept { return is_packed(fmt) || is_wide(fmt); }
 
 	public:
 		surface() noexcept = default;
@@ -494,97 +576,52 @@ namespace core
 			_dimensions.cy = 0;
 			_size = 0;
 			_cs = core::color_space::rec601_limited;
+			_chroma = core::chroma_siting::center;
 			_tone_map.reset();
 			_format = texture_format::None;
 			_time = 0.0;
 			_orientation = core::orientation::top_left;
 		}
 
-		void make_blank() const
-		{
-			memset(_pixels.get(), 0, _size);
-		}
+		void make_blank() const { memset(_pixels.get(), 0, _size); }
 
-		size_t size() const
-		{
-			return _size;
-		}
+		size_t size() const { return _size; }
 
-		bool empty() const
-		{
-			return _pixels == nullptr || _dimensions.cx == 0 || _dimensions.cy == 0;
-		}
+		bool empty() const { return _pixels == nullptr || _dimensions.cx == 0 || _dimensions.cy == 0; }
 
-		const sizei dimensions() const noexcept
-		{
-			return _dimensions;
-		}
+		const sizei dimensions() const noexcept { return _dimensions; }
 
-		uint32_t width() const noexcept
-		{
-			return _dimensions.cx;
-		}
+		uint32_t width() const noexcept { return _dimensions.cx; }
 
-		uint32_t height() const noexcept
-		{
-			return _dimensions.cy;
-		}
+		uint32_t height() const noexcept { return _dimensions.cy; }
 
-		size_t stride() const noexcept
-		{
-			return _stride;
-		}
+		size_t stride() const noexcept { return _stride; }
 
-		texture_format format() const noexcept
-		{
-			return _format;
-		}
+		texture_format format() const noexcept { return _format; }
 
-		double time() const noexcept
-		{
-			return _time;
-		}
+		double time() const noexcept { return _time; }
 
-		const core::orientation orientation() const noexcept
-		{
-			return _orientation;
-		}
+		const core::orientation orientation() const noexcept { return _orientation; }
 
-		void orientation(const core::orientation ori) noexcept
-		{
-			_orientation = ori;
-		}
+		void orientation(const core::orientation ori) noexcept { _orientation = ori; }
 
-		core::color_space color_space() const noexcept
-		{
-			return _cs;
-		}
+		core::color_space color_space() const noexcept { return _cs; }
 
-		void color_space(const core::color_space cs) noexcept
-		{
-			_cs = cs;
-		}
+		void color_space(const core::color_space cs) noexcept { _cs = cs; }
+
+		// NV12 and P010 alone: where their chroma lies. Centred unless set, as JPEG's is.
+		core::chroma_siting chroma_siting() const noexcept { return _chroma; }
+
+		void chroma_siting(const core::chroma_siting siting) noexcept { _chroma = siting; }
 
 		// Set only on HDR planes, whose YUV matrix produces a signal an SDR display cannot show as it is.
-		const tone_map_lut_ptr& tone_map() const noexcept
-		{
-			return _tone_map;
-		}
+		const tone_map_lut_ptr& tone_map() const noexcept { return _tone_map; }
 
-		void tone_map(tone_map_lut_ptr lut) noexcept
-		{
-			_tone_map = std::move(lut);
-		}
+		void tone_map(tone_map_lut_ptr lut) noexcept { _tone_map = std::move(lut); }
 
-		uint8_t* pixels() noexcept
-		{
-			return _pixels.get();
-		}
+		uint8_t* pixels() noexcept { return _pixels.get(); }
 
-		const uint8_t* pixels() const noexcept
-		{
-			return _pixels.get();
-		}
+		const uint8_t* pixels() const noexcept { return _pixels.get(); }
 
 		const uint8_t* pixels_line(const int y) const noexcept
 		{
@@ -604,10 +641,7 @@ namespace core
 			return alloc(s.cx, s.cy, fmt, ori, time);
 		}
 
-		static int calc_bytes_per_pixel(texture_format fmt)
-		{
-			return 4;
-		}
+		static int calc_bytes_per_pixel(const texture_format fmt) { return is_wide(fmt) ? 8 : 4; }
 
 		uint8_t* alloc(const int cx, const int cy, const texture_format fmt,
 		               const core::orientation ori = orientation::top_left, const double time = 0.0)
@@ -622,9 +656,8 @@ namespace core
 
 			// NV12/P010 are planar 4:2:0: a full-resolution luma plane followed by a
 			// half-height interleaved chroma plane, so the buffer is 1.5x the luma size.
-			// (calc_bytes_per_pixel stays 4 for the RGBA copy/draw helpers.)
 			const auto is_yuv = fmt == texture_format::NV12 || fmt == texture_format::P010;
-			const auto bytes_per_luma = fmt == texture_format::P010 ? 2 : (fmt == texture_format::NV12 ? 1 : 4);
+			const auto bytes_per_luma = bytes_per_pixel(fmt);
 
 			_stride = calc_stride(cx, bytes_per_luma);
 			const auto size = is_yuv ? (_stride * cy * 3_z / 2_z) : (_stride * cy);
@@ -638,15 +671,15 @@ namespace core
 			_format = fmt;
 			_time = time;
 			_orientation = ori;
+			_chroma = core::chroma_siting::center;
 			_tone_map.reset();
 			return _pixels.get();
 		}
 
 		void copy(const surface& s, const recti r)
 		{
-			if (s.format() == texture_format::NV12 || s.format() == texture_format::P010 ||
-				r.left < 0 || r.top < 0 || r.right > s._dimensions.cx || r.bottom > s._dimensions.cy ||
-				r.width() < 1 || r.height() < 1)
+			if (s.format() == texture_format::NV12 || s.format() == texture_format::P010 || r.left < 0 || r.top < 0 ||
+			    r.right > s._dimensions.cx || r.bottom > s._dimensions.cy || r.width() < 1 || r.height() < 1)
 			{
 				throw app_exception("invalid surface crop"s);
 			}
@@ -655,8 +688,9 @@ namespace core
 
 			const ptrdiff_t stride_out = _stride;
 			const ptrdiff_t stride_in = s._stride;
-			const auto copy_bytes = r.width() * 4_z;
-			const auto* const p = s._pixels.get() + r.left * 4_z + r.top * stride_in;
+			const auto pixel_bytes = static_cast<size_t>(calc_bytes_per_pixel(s.format()));
+			const auto copy_bytes = r.width() * pixel_bytes;
+			const auto* const p = s._pixels.get() + r.left * pixel_bytes + r.top * stride_in;
 
 			for (int y = 0; y < _dimensions.cy; ++y)
 			{
@@ -664,28 +698,52 @@ namespace core
 			}
 		}
 
+		// Copies src from s to location. Nothing is drawn unless both surfaces hold addressable pixels of one
+		// size and both rectangles lie inside their surfaces.
 		void draw(const surface& s, const pointi location, const recti src) const
 		{
+			if (!has_addressable_pixels(_format) || !has_addressable_pixels(s._format) ||
+			    is_wide(_format) != is_wide(s._format) || src.left < 0 || src.top < 0 || src.right > s._dimensions.cx ||
+			    src.bottom > s._dimensions.cy || src.width() < 1 || src.height() < 1 || location.x < 0 ||
+			    location.y < 0 || location.x + src.width() > _dimensions.cx ||
+			    location.y + src.height() > _dimensions.cy)
+			{
+				return;
+			}
+
 			const ptrdiff_t stride_this = _stride;
 			const ptrdiff_t stride_src = s._stride;
-			const ptrdiff_t copy_bytes_len = src.width() * calc_bytes_per_pixel(_format);
+			const ptrdiff_t pixel_bytes = calc_bytes_per_pixel(_format);
+			const ptrdiff_t copy_bytes_len = src.width() * pixel_bytes;
 
 			for (int y = 0; y < src.height(); ++y)
 			{
-				memcpy_s(
-					_pixels.get() + (y + location.y) * stride_this + location.x * 4,
-					stride_this,
-					s._pixels.get() + (y + src.top) * stride_src + src.left * 4,
-					copy_bytes_len);
+				memcpy_s(_pixels.get() + (y + location.y) * stride_this + location.x * pixel_bytes, stride_this,
+				         s._pixels.get() + (y + src.top) * stride_src + src.left * pixel_bytes, copy_bytes_len);
 			}
 		}
 
 		void swap_rb();
 		void unpremultiply_alpha();
 
+		// A wide surface takes and gives the colour as a packed one holds it, blue in the low byte, each
+		// channel a byte's worth of its sixteen bits; precise work reads the 16-bit channels directly. A
+		// planar surface has no such pixel: it is neither written nor read.
 		void set_pixel(const int x, const int y, const color32 c) const
 		{
 			if (x < 0 || x >= _dimensions.cx || y < 0 || y >= _dimensions.cy) return;
+			if (!has_addressable_pixels(_format)) return;
+
+			if (is_wide(_format))
+			{
+				auto* const p = std::bit_cast<uint16_t*>(_pixels.get() + y * _stride) + x * 4;
+				p[0] = static_cast<uint16_t>((0xffu & c >> 16) * 257u);
+				p[1] = static_cast<uint16_t>((0xffu & c >> 8) * 257u);
+				p[2] = static_cast<uint16_t>((0xffu & c) * 257u);
+				p[3] = _format == texture_format::RGBA16 ? static_cast<uint16_t>((0xffu & c >> 24) * 257u) : 0xffffu;
+				return;
+			}
+
 			auto* const line = std::bit_cast<color32*>(_pixels.get() + y * _stride);
 			line[x] = c;
 		}
@@ -693,20 +751,29 @@ namespace core
 		color32 get_pixel(const int x, const int y) const
 		{
 			if (x < 0 || x >= _dimensions.cx || y < 0 || y >= _dimensions.cy) return 0;
+			if (!has_addressable_pixels(_format)) return 0;
+
+			if (is_wide(_format))
+			{
+				const auto* const p = std::bit_cast<const uint16_t*>(_pixels.get() + y * _stride) + x * 4;
+				const auto to_byte = [](const uint32_t v)
+				{
+					return (v * 255u + 32767u) / 65535u;
+				};
+				return to_byte(p[2]) | to_byte(p[1]) << 8 | to_byte(p[0]) << 16 | to_byte(p[3]) << 24;
+			}
+
 			const auto* const line = std::bit_cast<const color32*>(_pixels.get() + y * _stride);
 			return line[x];
 		}
 
 		void clear(color32 clr) const;
-		// The packed pixels turned or mirrored as the transform names; null for planar surfaces and for
-		// none. The result keeps this surface's orientation tag for the caller to restate.
+		// The packed or wide pixels turned or mirrored as the transform names; null for planar surfaces and
+		// for none. The result keeps this surface's orientation tag for the caller to restate.
 		surface_ptr transform(simple_transform t) const;
-
-
 
 		pixel_difference_result pixel_difference(const const_surface_ptr& image) const;
 	};
-
 
 	class image final : public std::enable_shared_from_this<image>
 	{
@@ -730,61 +797,38 @@ namespace core
 		{
 		}
 
-		image(const core::cspan data, const sizei d, const image_format f, const core::orientation orientation) noexcept :
+		// Not noexcept: the copy can be large, and its std::bad_alloc must reach the caller's catch
+		// rather than terminate the process.
+		image(const core::cspan data, const sizei d, const image_format f, const core::orientation orientation) :
 			_data(data.begin(), data.end()), _dimensions(d), _format(f), _orientation(orientation)
 		{
 		}
 
 		friend bool operator==(const image& lhs, const image& rhs)
 		{
-			return lhs._data == rhs._data
-				&& lhs._dimensions == rhs._dimensions;
+			return lhs._data == rhs._data && lhs._dimensions == rhs._dimensions;
 		}
 
-		friend bool operator!=(const image& lhs, const image& rhs)
-		{
-			return !(lhs == rhs);
-		}
+		friend bool operator!=(const image& lhs, const image& rhs) { return !(lhs == rhs); }
 
 		bool empty() const
 		{
 			return _format == image_format::Unknown || _data.empty() || _dimensions.cx == 0 || _dimensions.cy == 0;
 		}
 
-		const sizei dimensions() const noexcept
-		{
-			return _dimensions;
-		}
+		const sizei dimensions() const noexcept { return _dimensions; }
 
-		image_format format() const
-		{
-			return _format;
-		}
+		image_format format() const { return _format; }
 
-		uint32_t width() const noexcept
-		{
-			return _dimensions.cx;
-		}
+		uint32_t width() const noexcept { return _dimensions.cx; }
 
-		uint32_t height() const noexcept
-		{
-			return _dimensions.cy;
-		}
+		uint32_t height() const noexcept { return _dimensions.cy; }
 
-		core::orientation orientation() const noexcept
-		{
-			return _orientation;
-		}
+		core::orientation orientation() const noexcept { return _orientation; }
 
-		void orientation(const core::orientation ori) const noexcept
-		{
-			_orientation = ori;
-		}
+		void orientation(const core::orientation ori) const noexcept { _orientation = ori; }
 
-		const core::blob& data() const noexcept
-		{
-			return _data;
-		}
+		const core::blob& data() const noexcept { return _data; }
 
 		void clear() noexcept
 		{
@@ -801,6 +845,7 @@ namespace core
 			case image_format::PNG: return "png";
 			case image_format::WEBP: return "webp";
 			case image_format::JXL: return "jxl";
+			case image_format::AVIF: return "avif";
 			case image_format::Unknown: break;
 			default: break;
 			}
@@ -835,7 +880,6 @@ namespace core
 		return i != nullptr && i->format() == image_format::JPEG;
 	}
 
-
 	class color
 	{
 	public:
@@ -849,62 +893,29 @@ namespace core
 		color() = default;
 
 		explicit color(const color32 rgb) :
-			r(get_r(rgb) / 255.0f),
-			g(get_g(rgb) / 255.0f),
-			b(get_b(rgb) / 255.0f),
-			a(get_a(rgb) / 255.0f)
+			r(get_r(rgb) / 255.0f), g(get_g(rgb) / 255.0f), b(get_b(rgb) / 255.0f), a(get_a(rgb) / 255.0f)
 		{
 		}
 
 		color(const color32 rgb, const float a) :
-			r(get_r(rgb) / 255.0f),
-			g(get_g(rgb) / 255.0f),
-			b(get_b(rgb) / 255.0f),
-			a(a)
+			r(get_r(rgb) / 255.0f), g(get_g(rgb) / 255.0f), b(get_b(rgb) / 255.0f), a(a)
 		{
 			core::assert_true(a < 1.1f);
 		}
 
-		color(const float xx, const float yy, const float zz, const float ww) :
-			r(xx),
-			g(yy),
-			b(zz),
-			a(ww)
-		{
-		}
+		color(const float xx, const float yy, const float zz, const float ww) : r(xx), g(yy), b(zz), a(ww) {}
 
-		color inverse() const
-		{
-			return {1.0f - r, 1.0f - g, 1.0f - b, a};
-		}
+		color inverse() const { return {1.0f - r, 1.0f - g, 1.0f - b, a}; }
 
-		color a_min(const float aa) const
-		{
-			return {r, g, b, std::min(a, aa)};
-		}
+		color a_min(const float aa) const { return {r, g, b, std::min(a, aa)}; }
 
-		color32 rgb() const
-		{
-			return saturate_rgba(r, g, b, 0.0f);
-		}
+		color32 rgb() const { return saturate_rgba(r, g, b, 0.0f); }
 
-		color32 rgba() const
-		{
-			return saturate_rgba(r, g, b, a);
-		}
+		color32 rgba() const { return saturate_rgba(r, g, b, a); }
 
-		color operator-(const color other) const
-		{
-			return {r - other.r, g - other.g, b - other.b, a - other.a};
-		}
+		color operator-(const color other) const { return {r - other.r, g - other.g, b - other.b, a - other.a}; }
 
-		float abs_sum() const
-		{
-			return std::abs(r) +
-				std::abs(g) +
-				std::abs(b) +
-				std::abs(a);
-		}
+		float abs_sum() const { return std::abs(r) + std::abs(g) + std::abs(b) + std::abs(a); }
 
 		color& operator+=(const color other)
 		{
@@ -915,23 +926,15 @@ namespace core
 			return *this;
 		}
 
-		color operator*(const float x) const
-		{
-			return color(r * x, g * x, b * x, a * x);
-		}
+		color operator*(const float x) const { return color(r * x, g * x, b * x, a * x); }
 
 		friend bool operator==(const color lhs, const color rhs)
 		{
-			return core::equiv(lhs.r, rhs.r)
-				&& core::equiv(lhs.g, rhs.g)
-				&& core::equiv(lhs.b, rhs.b)
-				&& core::equiv(lhs.a, rhs.a);
+			return core::equiv(lhs.r, rhs.r) && core::equiv(lhs.g, rhs.g) && core::equiv(lhs.b, rhs.b) &&
+			       core::equiv(lhs.a, rhs.a);
 		}
 
-		friend bool operator!=(const color lhs, const color rhs)
-		{
-			return !(lhs == rhs);
-		}
+		friend bool operator!=(const color lhs, const color rhs) { return !(lhs == rhs); }
 
 		void merge(const color other)
 		{
@@ -952,15 +955,9 @@ namespace core
 			a = out_a;
 		}
 
-		static constexpr float sat_f(const float x)
-		{
-			return std::clamp(x, 0.0f, 1.0f);
-		}
+		static constexpr float sat_f(const float x) { return std::clamp(x, 0.0f, 1.0f); }
 
-		color scale(const float x) const
-		{
-			return {sat_f(r * x), sat_f(g * x), sat_f(b * x), a};
-		}
+		color scale(const float x) const { return {sat_f(r * x), sat_f(g * x), sat_f(b * x), a}; }
 
 		color average(const color other) const
 		{
@@ -968,19 +965,13 @@ namespace core
 				(r + other.r) / 2.0f,
 				(g + other.g) / 2.0f,
 				(b + other.b) / 2.0f,
-				(a + other.a) / 2.0f
+				(a + other.a) / 2.0f,
 			};
 		}
 
-		static float femphasize(const float f)
-		{
-			return (f - 0.5f) * 0.9f + 0.5f;
-		}
+		static float femphasize(const float f) { return (f - 0.5f) * 0.9f + 0.5f; }
 
-		color emphasize() const
-		{
-			return color(femphasize(r), femphasize(g), femphasize(b), a);
-		}
+		color emphasize() const { return color(femphasize(r), femphasize(g), femphasize(b), a); }
 
 		color emphasize(const bool can_emphasize) const
 		{
@@ -993,10 +984,10 @@ namespace core
 			return {1.0f, 1.0f, 1.0f, a};
 		}
 
-		color aa(const float a) const
+		color aa(const float alpha) const
 		{
-			core::assert_true(a < 1.1f);
-			return {r, g, b, a};
+			core::assert_true(alpha < 1.1f);
+			return {r, g, b, alpha};
 		}
 	};
 
@@ -1016,6 +1007,8 @@ namespace core
 		case texture_format::P010: return "p010";
 		case texture_format::NV12: return "NV12";
 		case texture_format::RGB: return "RGB";
+		case texture_format::RGBX16: return "RGBX16";
+		case texture_format::RGBA16: return "RGBA16";
 		default: break;
 		}
 

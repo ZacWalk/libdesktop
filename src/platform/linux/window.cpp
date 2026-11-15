@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: SDL's native window boundary. It owns no drawing surface: render binds a device to the
 // SDL_Window* returned here, while this file translates SDL input and window state into neutral events.
@@ -25,6 +24,8 @@ namespace
 		result.control = (mod & SDL_KMOD_CTRL) != 0;
 		result.shift = (mod & SDL_KMOD_SHIFT) != 0;
 		result.alt = (mod & SDL_KMOD_ALT) != 0;
+		// SDL reports AltGr - a layout's third level - apart from Alt; what it types arrives as text.
+		result.alt_graph = (mod & SDL_KMOD_MODE) != 0;
 		return result;
 	}
 
@@ -178,8 +179,8 @@ namespace
 
 	core::recti physical_rect(const SDL_Rect& rect, const float scale)
 	{
-		return {core::round(rect.x * scale), core::round(rect.y * scale),
-			core::round((rect.x + rect.w) * scale), core::round((rect.y + rect.h) * scale)};
+		return {core::round(rect.x * scale), core::round(rect.y * scale), core::round((rect.x + rect.w) * scale),
+		        core::round((rect.y + rect.h) * scale)};
 	}
 
 	int64_t overlap_area(const SDL_Rect& a, const SDL_Rect& b)
@@ -217,10 +218,10 @@ namespace
 		for (const auto& display : all)
 		{
 			const auto display_physical = physical_rect(display.bounds, display.scale);
-			const auto requested = core::recti(physical.x, physical.y, physical.x + physical.w, physical.y + physical.h);
+			const auto requested = core::recti(physical.x, physical.y, physical.x + physical.w,
+			                                   physical.y + physical.h);
 			const auto overlap = requested.intersection(display_physical);
-			const auto area = static_cast<int64_t>(std::max(0, overlap.width())) *
-				std::max(0, overlap.height());
+			const auto area = static_cast<int64_t>(std::max(0, overlap.width())) * std::max(0, overlap.height());
 			if (area > largest)
 			{
 				largest = area;
@@ -234,18 +235,22 @@ namespace
 	{
 		const auto all = displays();
 		if (all.empty())
-			return client_size.is_empty() ? core::recti{0, 0, 1440, 810} :
-			       core::recti{0, 0, std::max(1, client_size.cx), std::max(1, client_size.cy)};
+			return client_size.is_empty() ? core::recti{0, 0, 1440, 810}
+			                              : core::recti{0, 0, std::max(1, client_size.cx), std::max(1, client_size.cy)};
 		const auto primary = SDL_GetPrimaryDisplay();
 		const auto* chosen = &all.front();
 		for (const auto& display : all)
-			if (display.id == primary) { chosen = &display; break; }
-		const auto width = client_size.is_empty() ? std::max(320, chosen->usable.w * 3 / 4) :
-		                   std::max(1, core::round(client_size.cx / chosen->scale));
-		const auto height = client_size.is_empty() ? std::max(200, chosen->usable.h * 3 / 4) :
-		                    std::max(1, core::round(client_size.cy / chosen->scale));
+			if (display.id == primary)
+			{
+				chosen = &display;
+				break;
+			}
+		const auto width = client_size.is_empty() ? std::max(320, chosen->usable.w * 3 / 4)
+		                                          : std::max(1, core::round(client_size.cx / chosen->scale));
+		const auto height = client_size.is_empty() ? std::max(200, chosen->usable.h * 3 / 4)
+		                                           : std::max(1, core::round(client_size.cy / chosen->scale));
 		const SDL_Rect logical{chosen->usable.x + (chosen->usable.w - width) / 2,
-			chosen->usable.y + (chosen->usable.h - height) / 2, width, height};
+		                       chosen->usable.y + (chosen->usable.h - height) / 2, width, height};
 		return physical_rect(logical, chosen->scale);
 	}
 }
@@ -268,8 +273,7 @@ namespace platform
 		int cx = 0;
 		int cy = 0;
 		int maximized = 0;
-		if (std::sscanf(value.c_str(), "%d %d %d %d %d", &x, &y, &cx, &cy, &maximized) != 5)
-			return std::nullopt;
+		if (std::sscanf(value.c_str(), "%d %d %d %d %d", &x, &y, &cx, &cy, &maximized) != 5) return std::nullopt;
 
 		constexpr auto minimum_width = 320;
 		constexpr auto minimum_height = 200;
@@ -329,6 +333,13 @@ namespace platform
 
 namespace platform::linux_detail
 {
+	SDL_Surface* load_window_icon(const std::span<const uint8_t> data)
+	{
+		if (data.empty()) return nullptr;
+		auto* const stream = SDL_IOFromConstMem(data.data(), data.size());
+		return stream ? SDL_LoadBMP_IO(stream, true) : nullptr;
+	}
+
 	platform::key_state key_state_from_sdl(const SDL_Keymod mod)
 	{
 		return ::key_state_of(mod);
@@ -338,7 +349,6 @@ namespace platform::linux_detail
 	{
 		return ::to_key(key);
 	}
-
 
 	sdl_window::sdl_window(const platform::window_options& options, std::weak_ptr<platform::window_events> events) :
 		_kind(options.kind), _events(std::move(events)), _parent(options.parent),
@@ -351,8 +361,8 @@ namespace platform::linux_detail
 		if (!SDL_WasInit(SDL_INIT_VIDEO)) return;
 
 		const auto initial_bounds = options.bounds.is_empty() && options.kind == window_kind::app
-			? default_window_bounds(options.client_size)
-			: options.bounds;
+		                                ? default_window_bounds(options.client_size)
+		                                : options.bounds;
 		_bounds = initial_bounds;
 		const auto initial_scale = scale_for_bounds(initial_bounds, displays());
 		const auto requested_width = std::max(1, core::round(initial_bounds.width() / initial_scale));
@@ -388,16 +398,31 @@ namespace platform::linux_detail
 
 			const auto parent_density = std::max(0.5f, parent->_density);
 			const auto origin = parent->screen_origin();
-			const auto offset_x = options.bounds.is_empty() ? 0 :
-				core::round((options.bounds.left - origin.x) / parent_density);
-			const auto offset_y = options.bounds.is_empty() ? 0 :
-				core::round((options.bounds.top - origin.y) / parent_density);
+			const auto offset_x = options.bounds.is_empty()
+			                          ? 0
+			                          : core::round((options.bounds.left - origin.x) / parent_density);
+			const auto offset_y = options.bounds.is_empty()
+			                          ? 0
+			                          : core::round((options.bounds.top - origin.y) / parent_density);
 			_sdl = SDL_CreatePopupWindow(parent->_sdl, offset_x, offset_y,
-				std::max(1, core::round(requested_width / parent_density)),
-				std::max(1, core::round(requested_height / parent_density)), flags);
+			                             std::max(1, core::round(requested_width / parent_density)),
+			                             std::max(1, core::round(requested_height / parent_density)), flags);
 		}
 
 		if (!_sdl) return;
+
+		if (_kind == window_kind::app)
+		{
+			const auto data = embedded_resource_data("app-icon.bmp");
+			if (auto* const icon = load_window_icon(data))
+			{
+				if (!SDL_SetWindowIcon(_sdl, icon))
+					core::log("platform", std::string("Window icon unavailable: ") + SDL_GetError());
+				SDL_DestroySurface(icon);
+			}
+			else if (!data.empty())
+				core::log("platform", std::string("Cannot decode the window icon: ") + SDL_GetError());
+		}
 
 		_id = SDL_GetWindowID(_sdl);
 		SDL_SetWindowHitTest(_sdl, &sdl_window::hit_test_callback, this);
@@ -415,7 +440,7 @@ namespace platform::linux_detail
 		if (!minimum.is_empty())
 		{
 			SDL_SetWindowMinimumSize(_sdl, std::max(1, core::round(minimum.cx / _density)),
-				std::max(1, core::round(minimum.cy / _density)));
+			                         std::max(1, core::round(minimum.cy / _density)));
 		}
 
 		if (!initial_bounds.is_empty()) set_bounds(initial_bounds, options.offscreen ? false : options.visible);
@@ -557,7 +582,9 @@ namespace platform::linux_detail
 		const auto maximize = events.hit_test(loc) == platform::hit_region::maximize_button;
 		if (maximize == _caption_hover) return;
 		_caption_hover = maximize;
-		events.caption_button(maximize ? platform::caption_button_action::hover : platform::caption_button_action::leave, loc);
+		events.caption_button(maximize ? platform::caption_button_action::hover
+		                               : platform::caption_button_action::leave,
+		                      loc);
 	}
 
 	void sdl_window::paint_now()
@@ -634,9 +661,9 @@ namespace platform::linux_detail
 					const auto density = std::max(0.5f, parent->_density);
 					const auto origin = parent->screen_origin();
 					SDL_SetWindowPosition(_sdl, core::round((bounds.left - origin.x) / density),
-						core::round((bounds.top - origin.y) / density));
+					                      core::round((bounds.top - origin.y) / density));
 					SDL_SetWindowSize(_sdl, std::max(1, core::round(bounds.width() / density)),
-						std::max(1, core::round(bounds.height() / density)));
+					                  std::max(1, core::round(bounds.height() / density)));
 				}
 			}
 			else
@@ -652,7 +679,7 @@ namespace platform::linux_detail
 					update_metrics(false);
 				}
 				SDL_SetWindowSize(_sdl, std::max(1, core::round(bounds.width() / density)),
-					std::max(1, core::round(bounds.height() / density)));
+				                  std::max(1, core::round(bounds.height() / density)));
 			}
 		}
 
@@ -822,6 +849,11 @@ namespace platform::linux_detail
 		case platform::sys_command_type::MINIMIZE: SDL_MinimizeWindow(_sdl); break;
 		case platform::sys_command_type::MAXIMIZE: SDL_MaximizeWindow(_sdl); break;
 		case platform::sys_command_type::RESTORE: SDL_RestoreWindow(_sdl); break;
+		case platform::sys_command_type::ACTIVATE:
+			if (SDL_GetWindowFlags(_sdl) & SDL_WINDOW_MINIMIZED) SDL_RestoreWindow(_sdl);
+			SDL_ShowWindow(_sdl);
+			if (!SDL_RaiseWindow(_sdl)) core::log("window", SDL_GetError());
+			break;
 		}
 	}
 
@@ -837,10 +869,9 @@ namespace platform::linux_detail
 		_text_area = caret;
 		if (active && !caret.is_empty())
 		{
-			const SDL_Rect area{
-				core::round(caret.left / _density), core::round(caret.top / _density),
-				std::max(1, core::round(caret.width() / _density)),
-				std::max(1, core::round(caret.height() / _density))};
+			const SDL_Rect area{core::round(caret.left / _density), core::round(caret.top / _density),
+			                    std::max(1, core::round(caret.width() / _density)),
+			                    std::max(1, core::round(caret.height() / _density))};
 			SDL_SetTextInputArea(_sdl, &area, 0);
 		}
 
@@ -849,7 +880,6 @@ namespace platform::linux_detail
 		if (active) SDL_StartTextInput(_sdl);
 		else SDL_StopTextInput(_sdl);
 	}
-
 
 	void sdl_window::save_placement(const platform::setting_file_ptr& store, const std::string_view name)
 	{
@@ -862,7 +892,7 @@ namespace platform::linux_detail
 		SDL_GetWindowSize(_sdl, &cx, &cy);
 		const auto maximized = (SDL_GetWindowFlags(_sdl) & SDL_WINDOW_MAXIMIZED) != 0;
 		store->write({}, name.empty() ? placement_setting_name() : name,
-			std::format("{} {} {} {} {}", x, y, cx, cy, maximized ? 1 : 0));
+		             std::format("{} {} {} {} {}", x, y, cx, cy, maximized ? 1 : 0));
 	}
 
 	void sdl_window::handle_event(const SDL_Event& event)
@@ -881,12 +911,8 @@ namespace platform::linux_detail
 			}
 			else _visible = true;
 			break;
-		case SDL_EVENT_WINDOW_HIDDEN:
-			_visible = false;
-			break;
-		case SDL_EVENT_WINDOW_MOVED:
-			sync_geometry(false);
-			break;
+		case SDL_EVENT_WINDOW_HIDDEN: _visible = false; break;
+		case SDL_EVENT_WINDOW_MOVED: sync_geometry(false); break;
 		case SDL_EVENT_WINDOW_RESIZED:
 		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 		case SDL_EVENT_WINDOW_METAL_VIEW_RESIZED:
@@ -925,9 +951,7 @@ namespace platform::linux_detail
 			invalidate({});
 			break;
 		}
-		case SDL_EVENT_WINDOW_OCCLUDED:
-			_occluded = true;
-			break;
+		case SDL_EVENT_WINDOW_OCCLUDED: _occluded = true; break;
 		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
 		{
 			const auto id = _id;
@@ -978,12 +1002,8 @@ namespace platform::linux_detail
 			if (!captured) events->pointer_leave();
 			break;
 		}
-		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-			events->close_requested();
-			break;
-		case SDL_EVENT_WINDOW_DESTROYED:
-			native_destroyed();
-			break;
+		case SDL_EVENT_WINDOW_CLOSE_REQUESTED: events->close_requested(); break;
+		case SDL_EVENT_WINDOW_DESTROYED: native_destroyed(); break;
 		case SDL_EVENT_MOUSE_MOTION:
 		{
 			platform::ticks_since_last_user_action = 0;
@@ -1002,7 +1022,7 @@ namespace platform::linux_detail
 			const auto down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 			const auto caption_region = _drawn_caption ? events->hit_test(loc) : platform::hit_region::client;
 			if (_drawn_caption && button == platform::pointer_button::left &&
-				(caption_region == platform::hit_region::maximize_button || (!down && _caption_pressed)))
+			    (caption_region == platform::hit_region::maximize_button || (!down && _caption_pressed)))
 			{
 				if (down)
 				{
@@ -1028,8 +1048,7 @@ namespace platform::linux_detail
 				const auto id = _id;
 				events->pointer_up(button, loc, key_state_of(SDL_GetModState()));
 				if (button == platform::pointer_button::left && window_for(id) == this) release_capture(false);
-				if (button == platform::pointer_button::right)
-					events->context_menu(screen, false);
+				if (button == platform::pointer_button::right) events->context_menu(screen, false);
 			}
 			break;
 		}
@@ -1052,22 +1071,21 @@ namespace platform::linux_detail
 			if (!key || !_enabled) break;
 			auto keys = key_state_of(event.key.mod);
 			keys.repeat = event.type == SDL_EVENT_KEY_DOWN && event.key.repeat;
-			if (key != platform::keys::LEFT && key != platform::keys::RIGHT)
-				platform::ticks_since_last_user_action = 0;
+			if (key != platform::keys::LEFT && key != platform::keys::RIGHT) platform::ticks_since_last_user_action = 0;
 			const auto system = keys.alt || key == 0x79;
 			if (event.type == SDL_EVENT_KEY_DOWN)
 			{
 				if (event.key.key == SDLK_APPLICATION ||
-					(event.key.key == SDLK_F10 && (event.key.mod & SDL_KMOD_SHIFT)))
+				    (event.key.key == SDLK_F10 && (event.key.mod & SDL_KMOD_SHIFT)))
 				{
 					events->context_menu({-1, -1}, true);
 					break;
 				}
-				events->key_down(static_cast<int>(key), keys, system);
+				events->key_down(key, keys, system);
 			}
 			else
 			{
-				events->key_up(static_cast<int>(key), keys, system);
+				events->key_up(key, keys, system);
 			}
 			break;
 		}
@@ -1079,13 +1097,13 @@ namespace platform::linux_detail
 		case SDL_EVENT_PINCH_END:
 		{
 			const auto begins = event.type == SDL_EVENT_PINCH_BEGIN;
-			const auto delta = begins || event.type == SDL_EVENT_PINCH_END ? 0 :
-				static_cast<int>(std::lround((event.pinch.scale - 1.0f) * 120.0f));
+			const auto delta = begins || event.type == SDL_EVENT_PINCH_END
+			                       ? 0
+			                       : static_cast<int>(std::lround((event.pinch.scale - 1.0f) * 120.0f));
 			events->pinch(cursor_location(), delta, begins);
 			break;
 		}
-		default:
-			break;
+		default: break;
 		}
 	}
 }

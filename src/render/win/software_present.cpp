@@ -1,15 +1,13 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The Windows half of the CPU software backend: the GDI present target (BitBlt, and
-// UpdateLayeredWindow for layered popups), the DirectWrite text engine that rasterises glyph alpha
-// bitmaps and blends them into the canvas, and the drop shadow from libdesktop-render's embedded
-// resources. The draw context itself is portable (render_software_context.cpp).
+// UpdateLayeredWindow for layered popups) and the DirectWrite text engine that rasterises glyph alpha
+// bitmaps and blends them into the canvas. The draw context itself is portable (software_context.cpp).
 
 #include "libdesktop/render.h"
 #include "libdesktop/platform/win32.h"
@@ -47,19 +45,11 @@ class gdi_present_target final : public render::software_present_target
 	core::sizei _layered_size;
 
 public:
-	gdi_present_target(const HWND hwnd, const bool layered) : _hwnd(hwnd), _layered(layered)
-	{
-	}
+	gdi_present_target(const HWND hwnd, const bool layered) : _hwnd(hwnd), _layered(layered) {}
 
-	~gdi_present_target() override
-	{
-		release_buffer();
-	}
+	~gdi_present_target() override { release_buffer(); }
 
-	bool is_layered() const override
-	{
-		return _layered;
-	}
+	bool is_layered() const override { return _layered; }
 
 	render::software_buffer acquire_buffer(const core::sizei extent) override
 	{
@@ -143,8 +133,8 @@ public:
 	{
 		if (!_present_dc) return;
 
-		BitBlt(_present_dc, tile.left, tile.top, tile.width(), tile.height(),
-		       _mem_dc, tile.left - buffer_origin.x, tile.top - buffer_origin.y, SRCCOPY);
+		BitBlt(_present_dc, tile.left, tile.top, tile.width(), tile.height(), _mem_dc, tile.left - buffer_origin.x,
+		       tile.top - buffer_origin.y, SRCCOPY);
 	}
 
 	void end_present(const int layer_alpha) override
@@ -283,8 +273,7 @@ class software_text_renderer final : public core::no_copy, public IDWriteTextRen
 	std::atomic<int> _ref_count = 0;
 
 public:
-	explicit software_text_renderer(font_renderer_ptr font)
-		: _font(std::move(font))
+	explicit software_text_renderer(font_renderer_ptr font) : _font(std::move(font))
 	{
 		_line_height = _font->calc_line_height();
 		_base_line_height = _font->calc_base_line_height();
@@ -308,8 +297,9 @@ public:
 		_font->draw(_dc, this, text, bounds, style, c, bg);
 	}
 
-	void draw_text(const std::string_view text, const std::vector<render::text_highlight_t>& highlights, const core::recti bounds,
-	               const render::text_style style, const core::color clr, const core::color bg)
+	void draw_text(const std::string_view text, const std::vector<render::text_highlight_t>& highlights,
+	               const core::recti bounds, const render::text_style style, const core::color clr,
+	               const core::color bg)
 	{
 		_clr = clr;
 		const auto converted = render::utf8_to_utf16(text, highlights);
@@ -343,7 +333,7 @@ public:
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
 		if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWritePixelSnapping) ||
-			riid == __uuidof(IDWriteTextRenderer))
+		    riid == __uuidof(IDWriteTextRenderer))
 		{
 			*ppvObject = static_cast<IDWriteTextRenderer*>(this);
 			AddRef();
@@ -391,8 +381,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, const FLOAT baselineOriginX, const FLOAT baselineOriginY,
 	                                       DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN* glyphRun,
-	                                       const DWRITE_GLYPH_RUN_DESCRIPTION* glyphRunDescription,
-	                                       IUnknown*) override
+	                                       const DWRITE_GLYPH_RUN_DESCRIPTION* glyphRunDescription, IUnknown*) override
 	{
 		if (!glyphRun) return S_OK;
 
@@ -400,9 +389,9 @@ public:
 		const auto text_length = glyphRunDescription ? glyphRunDescription->stringLength : glyphRun->glyphCount;
 		const auto* const cluster_map = glyphRunDescription ? glyphRunDescription->clusterMap : nullptr;
 		const auto cluster_spans = _highlights.empty()
-			                           ? std::vector<render::text_cluster_span>{}
-			                           : render::text_cluster_spans_for_glyph_run(
-				                           glyphRun->glyphCount, cluster_map, text_length, text_position);
+		                               ? std::vector<render::text_cluster_span>{}
+		                               : render::text_cluster_spans_for_glyph_run(glyphRun->glyphCount, cluster_map,
+		                                                                          text_length, text_position);
 
 		const auto ty = std::floor(baselineOriginY + 0.5f);
 		const auto is_left_to_right = (glyphRun->bidiLevel & 0x01) == 0;
@@ -420,7 +409,7 @@ public:
 			{
 				sx += glyphRun->glyphOffsets[i].advanceOffset;
 				sy = render::glyph_top_from_baseline(static_cast<float>(ty), _base_line_height,
-				                                  glyphRun->glyphOffsets[i].ascenderOffset);
+				                                     glyphRun->glyphOffsets[i].ascenderOffset);
 			}
 
 			sx = is_left_to_right ? baselineOriginX + sx - _spacing : baselineOriginX - sx - ax - _spacing;
@@ -453,8 +442,8 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE
-	DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) override
+	HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL,
+	                                           IUnknown*) override
 	{
 		return S_OK;
 	}
@@ -492,9 +481,7 @@ class dwrite_text_engine final : public render::software_text_engine
 	}
 
 public:
-	dwrite_text_engine(factories_ptr f, const int base_font_size) : _f(std::move(f)), _base_font_size(base_font_size)
-	{
-	}
+	dwrite_text_engine(factories_ptr f, const int base_font_size) : _f(std::move(f)), _base_font_size(base_font_size) {}
 
 	void base_font_size(const int size) override
 	{
@@ -504,7 +491,7 @@ public:
 	}
 
 	core::sizei measure_text(const std::string_view text, const render::font_face face, const render::text_style style,
-	                   const int cx, const int cy) override
+	                         const int cx, const int cy) override
 	{
 		const auto fr = font(face);
 		return fr ? fr->measure(text, style, cx, cy) : core::sizei{};
@@ -528,9 +515,9 @@ public:
 		return fr ? std::make_shared<text_layout_impl>(fr, face) : nullptr;
 	}
 
-	void draw_text(render::draw_context& dc, render::software_canvas& canvas, const std::string_view text, const core::recti bounds,
-	               const render::font_face face, const render::text_style style, const core::color c,
-	               const core::color bg) override
+	void draw_text(render::draw_context& dc, render::software_canvas& canvas, const std::string_view text,
+	               const core::recti bounds, const render::font_face face, const render::text_style style,
+	               const core::color c, const core::color bg) override
 	{
 		auto* const tr = renderer_for(dc, canvas, face);
 		if (tr) tr->draw_text(text, bounds, style, c, bg);
@@ -555,19 +542,19 @@ public:
 	}
 };
 
-render::draw_context_device_ptr create_software_draw_context(const factories_ptr& f, const HWND hwnd, const bool layered,
-                                                     const int base_font_size)
+render::draw_context_device_ptr create_software_draw_context(const factories_ptr& f, const HWND hwnd,
+                                                             const bool layered, const int base_font_size)
 {
 	return render::create_software_draw_context(std::make_shared<dwrite_text_engine>(f, base_font_size),
-	                                        std::make_shared<gdi_present_target>(hwnd, layered), base_font_size);
+	                                            std::make_shared<gdi_present_target>(hwnd, layered), base_font_size);
 }
 
 render::draw_context_device_ptr create_software_draw_context(const factories_ptr& f,
-                                                     std::shared_ptr<render::software_present_target> target,
-                                                     const int base_font_size)
+                                                             std::shared_ptr<render::software_present_target> target,
+                                                             const int base_font_size)
 {
 	return render::create_software_draw_context(std::make_shared<dwrite_text_engine>(f, base_font_size),
-	                                        std::move(target), base_font_size);
+	                                            std::move(target), base_font_size);
 }
 
 // A private factories instance, as probe_font_cache makes one: the engine needs DirectWrite alone, so
@@ -575,9 +562,11 @@ render::draw_context_device_ptr create_software_draw_context(const factories_ptr
 render::software_text_engine_ptr render::create_text_engine(const int base_font_size)
 {
 	auto f = std::make_shared<factories>();
+	f->standalone = true;
 
 	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-		reinterpret_cast<IUnknown**>(f->dwrite.GetAddressOf()))) || !f->dwrite)
+	                               reinterpret_cast<IUnknown**>(f->dwrite.GetAddressOf()))) ||
+	    !f->dwrite)
 	{
 		return nullptr;
 	}

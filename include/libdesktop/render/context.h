@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Draw and measure contexts, textures, text layout, and render hooks.
 
@@ -24,10 +23,7 @@ namespace render
 	{
 		int n;
 
-		int operator*(const double scale) const noexcept
-		{
-			return core::round(n * scale * 10.0);
-		}
+		int operator*(const double scale) const noexcept { return core::round(n * scale * 10.0); }
 	};
 
 	// The widths a form's columns of labels and values align to, shared by its rows as they are measured
@@ -106,33 +102,121 @@ namespace render
 
 		return "?";
 	}
+	// The colour grade one pixel takes, on the gamma-encoded RGB it is stored as, each channel 0 to 1: white
+	// balance gains that keep a neutral's luma; the tone curve on BT.709 luma - sRGB's own primaries - with
+	// every channel scaled by the same ratio, so a change of tone leaves saturation alone; saturation and
+	// vibrance about that luma, vibrance weighted to the least saturated colours and away from skin; and last
+	// a fit into the cube that desaturates towards the luma rather than clipping a channel, which keeps hue
+	// and lightness. The curve holds the tone at i / (curve_len - 1) and is read between entries.
+	// color_adjust::apply and the software renderer share this; texture_transform.hlsli repeats it.
+	template <typename T>
+	void grade_color(T& r, T& g, T& b, const T* const curve, const int curve_len, const T saturation, const T vibrance,
+	                 const T red_gain, const T green_gain, const T blue_gain) noexcept
+	{
+		r *= red_gain;
+		g *= green_gain;
+		b *= blue_gain;
+
+		const auto y = T(0.2126) * r + T(0.7152) * g + T(0.0722) * b;
+		const auto position = std::clamp(y, T(0), T(1)) * static_cast<T>(curve_len - 1);
+		const auto index = std::min(static_cast<int>(position), curve_len - 2);
+		const auto luma = curve[index] + (curve[index + 1] - curve[index]) * (position - static_cast<T>(index));
+
+		if (y > T(1e-6))
+		{
+			const auto ratio = luma / y;
+			r *= ratio;
+			g *= ratio;
+			b *= ratio;
+		}
+		else
+		{
+			r += luma - y;
+			g += luma - y;
+			b += luma - y;
+		}
+
+		auto factor = saturation;
+
+		if (vibrance != T(0))
+		{
+			const auto high = std::max(r, std::max(g, b));
+			const auto low = std::min(r, std::min(g, b));
+			const auto chroma = high > T(1e-6) ? std::clamp((high - low) / high, T(0), T(1)) : T(0);
+			// The hue on the opponent axes, red at 0, against skin's at 25 degrees, wrapped to a half turn. A grey
+			// has no hue - nor chroma for the factor to scale - and atan2(0, 0) is undefined on a GPU.
+			constexpr auto skin_hue = T(0.43633231);
+			constexpr auto skin_width = T(0.31415927);
+			constexpr auto turn = T(6.28318531);
+			auto from_skin = std::atan2(T(0.8660254) * (g - b), r - T(0.5) * (g + b)) - skin_hue;
+			from_skin -= turn * std::round(from_skin / turn);
+			const auto skin = chroma > T(0) ? std::exp(-(from_skin * from_skin) / (skin_width * skin_width)) : T(0);
+			factor *= T(1) + vibrance * (T(1) - chroma) * (T(1) - chroma) * (T(1) - T(0.7) * skin);
+		}
+
+		r = luma + (r - luma) * factor;
+		g = luma + (g - luma) * factor;
+		b = luma + (b - luma) * factor;
+
+		if (luma >= T(1))
+		{
+			r = g = b = T(1);
+			return;
+		}
+
+		if (luma <= T(0))
+		{
+			r = g = b = T(0);
+			return;
+		}
+
+		auto fit = T(1);
+
+		for (const auto c : {r, g, b})
+		{
+			if (c > T(1)) fit = std::min(fit, (T(1) - luma) / (c - luma));
+			else if (c < T(0)) fit = std::min(fit, luma / (luma - c));
+		}
+
+		r = luma + (r - luma) * fit;
+		g = luma + (g - luma) * fit;
+		b = luma + (b - luma) * fit;
+	}
+
 	class color_adjust
 	{
+	public:
 		static constexpr int curve_len = 0x1000;
 
-		double _curve[curve_len];
-		double _saturation = 0;
-		double _vibrance = 0;
-		double _temperature = 0;
-		double _tint = 0;
+		color_adjust() noexcept;
 
-	public:
+		// Each control from -1 to 1, 0 leaving the picture alone; values past that range are held to it.
 		void color_params(double vibrance, double saturation, double darks, double midtones, double lights,
 		                  double contrast, double brightness, double temperature = 0, double tint = 0);
-		// False when the token stopped it part-way, which leaves the rows it never reached holding
-		// whatever the destination allocation came with. A cancelled result is not a picture.
+		// Rows of the source's own format, a byte or sixteen bits a channel, written to dst with the fourth
+		// channel unchanged. False for a planar source, and when the token stopped it part-way, which leaves
+		// the rows it never reached holding whatever the destination allocation came with. A cancelled
+		// result is not a picture.
 		bool apply(const core::const_surface_ptr& src, uint8_t* dst, size_t dst_stride,
 		           const core::cancel_token& token) const;
 		void populate_texture_transform(struct texture_transform& transform) const;
+		// The tone curve at x, 0 to 1, as apply reads it.
+		double tone(double x) const noexcept;
 
 	private:
-		core::color32 adjust_color(double y, double u, double v, double a) const;
+		std::array<double, curve_len> _curve{};
+		double _saturation = 1;
+		double _vibrance = 0;
+		double _red_gain = 1;
+		double _green_gain = 1;
+		double _blue_gain = 1;
 	};
 
 	struct texture_transform
 	{
 		static constexpr int curve_len = 0x100;
 
+		// The tone curve at i / (curve_len - 1), read between entries as grade_color reads it.
 		std::array<float, curve_len> curve{};
 		float perspective_horizontal = 0;
 		float perspective_vertical = 0;
@@ -155,10 +239,7 @@ namespace render
 		// Lets a backend reuse the transform it already uploaded instead of re-staging the curve.
 		bool operator==(const texture_transform&) const = default;
 
-		bool has_changes() const
-		{
-			return has_perspective || has_color_changes;
-		}
+		bool has_changes() const { return has_perspective || has_color_changes; }
 	};
 
 	enum class texture_update_result
@@ -178,6 +259,7 @@ namespace render
 		int height = 0;
 		core::orientation orientation = core::orientation::top_left;
 		core::color_space color_space = core::color_space::rec601_limited;
+		core::chroma_siting chroma_siting = core::chroma_siting::center;
 		core::tone_map_lut_ptr tone_map;
 		void* texture = nullptr;
 		uintptr_t index = 0;
@@ -227,39 +309,29 @@ namespace render
 		core::texture_format _format = core::texture_format::None;
 		core::orientation _orientation = core::orientation::top_left;
 		core::color_space _cs = core::color_space::rec601_limited;
+		core::chroma_siting _chroma = core::chroma_siting::center;
 
 		virtual ~texture() = default;
 
-		const core::sizei dimensions() const
-		{
-			return _dimensions;
-		}
+		const core::sizei dimensions() const { return _dimensions; }
 
-		core::texture_format format() const
-		{
-			return _format;
-		}
+		core::texture_format format() const { return _format; }
 
-		bool has_alpha() const
-		{
-			return _format == core::texture_format::ARGB;
-		}
+		bool has_alpha() const { return core::has_alpha(_format); }
 
-		core::sizei source_extent() const
-		{
-			return _src_extent.is_empty() ? _dimensions : _src_extent;
-		}
+		core::sizei source_extent() const { return _src_extent.is_empty() ? _dimensions : _src_extent; }
 
 		virtual texture_update_result update(const video_frame_ptr& frame) = 0;
 		virtual texture_update_result update(const core::const_surface_ptr& surface) = 0;
-		virtual texture_update_result update(core::sizei dims, core::texture_format format, core::orientation orientation,
-		                                     const uint8_t* pixels, size_t stride, size_t buffer_size) = 0;
+		virtual texture_update_result update(core::sizei dims, core::texture_format format,
+		                                     core::orientation orientation, const uint8_t* pixels, size_t stride,
+		                                     size_t buffer_size) = 0;
 
 		// Uploads with a full mip chain, for a source that will be minified a long way - a projected
 		// panorama samples thousands of pixels of sphere into one viewport. Separate from update()
 		// because every other texture in the app is drawn at or near its own size and would pay for a
 		// chain it never reads. A backend with no answer refuses, and the caller rasterises instead.
-		virtual texture_update_result update_mipped(const core::const_surface_ptr& surface)
+		virtual texture_update_result update_mipped(const core::const_surface_ptr& /*surface*/)
 		{
 			return texture_update_result::failed;
 		}
@@ -320,17 +392,128 @@ namespace render
 		core::color fill;
 	};
 
+	enum class paint_kind
+	{
+		solid,
+		linear,
+		radial
+	};
+
+	// What fills a shape: one colour, or a gradient between two - along the line from start to end, or out
+	// from start, its centre, to radius. A gradient holds its end colours beyond its ends, one with no length
+	// is its end colour throughout, and colours mix premultiplied, so one fading to transparent keeps its hue.
+	// Points are the context's pixels, as the shape's are.
+	struct paint
+	{
+		paint_kind kind = paint_kind::solid;
+		// The solid colour, or the gradient's at start.
+		core::color color;
+		// The gradient's colour at end, or at radius from start.
+		core::color end_color;
+		core::pointd start;
+		core::pointd end;
+		double radius = 0.0;
+
+		paint() = default;
+
+		paint(const core::color c) : color(c), end_color(c) {}
+
+		static paint linear(const core::pointd from, const core::color from_color, const core::pointd to,
+		                    const core::color to_color)
+		{
+			paint result(from_color);
+			result.kind = paint_kind::linear;
+			result.end_color = to_color;
+			result.start = from;
+			result.end = to;
+			return result;
+		}
+
+		static paint radial(const core::pointd centre, const double r, const core::color centre_color,
+		                    const core::color edge_color)
+		{
+			paint result(centre_color);
+			result.kind = paint_kind::radial;
+			result.end_color = edge_color;
+			result.start = centre;
+			result.radius = r;
+			return result;
+		}
+
+		bool is_visible() const { return color.a > 0.0f || (kind != paint_kind::solid && end_color.a > 0.0f); }
+
+		// How far along the gradient a point is: 0 at start, 1 at end or radius, and past them beyond.
+		double position(const core::pointd p) const
+		{
+			if (kind == paint_kind::linear)
+			{
+				const auto along = end - start;
+				const auto length_sq = along.dot(along);
+				return length_sq > 1e-12 ? (p - start).dot(along) / length_sq : 1.0;
+			}
+
+			if (kind == paint_kind::radial)
+			{
+				return radius > 1e-6 ? (p - start).dist({}) / radius : 1.0;
+			}
+
+			return 0.0;
+		}
+
+		// The colour at a gradient position, held to its ends and mixed premultiplied.
+		core::color at(const double position) const
+		{
+			if (kind == paint_kind::solid) return color;
+
+			const auto t = static_cast<float>(std::clamp(position, 0.0, 1.0));
+			const auto a = color.a + (end_color.a - color.a) * t;
+			if (a <= 0.0f) return {color.r, color.g, color.b, 0.0f};
+
+			const auto mix = [&](const float from, const float to)
+			{
+				return (from * color.a + (to * end_color.a - from * color.a) * t) / a;
+			};
+			return {mix(color.r, end_color.r), mix(color.g, end_color.g), mix(color.b, end_color.b), a};
+		}
+	};
+
+	// How a polygon is drawn: its fill, then a border centred on its outline - half inside, half outside -
+	// mitred at its corners, or bevelled where a mitre would reach past four times the border's half width.
+	struct polygon_style
+	{
+		paint fill;
+		core::color border;
+		double border_width = 0.0;
+		// Anti-aliased edges. Crisp ones fill exactly the pixels whose centres are inside, so polygons that
+		// share an edge meet with neither gap nor overlap, as a mesh of them needs.
+		bool smooth = true;
+
+		bool has_border() const { return border.a > 0.0f && border_width > 0.0; }
+	};
+
+	// A polygon a vertices object draws: an outline, read during the update and not kept, and its style.
+	struct vertex_polygon
+	{
+		std::span<const core::pointd> outline;
+		polygon_style style;
+	};
+
 	// Geometry a scene draws by reference, so an owner can change it and re-present the scene with
 	// redraw() rather than recording the scene again. Each update replaces what the last one drew.
 	class vertices
 	{
 	public:
 		virtual ~vertices() = default;
-		// Raised bars, drawn in order: each over a drop shadow, its fill brightening toward its centre. The
-		// hardware backend draws up to 1,024 of them.
+		// Bars, drawn in order, each set off the wall by its shadow. The software renderer draws the classic bars:
+		// raised over a soft shadow and brightening toward their centres. Direct3D draws each as a rounded block of
+		// coloured glass, a little narrower than its rect - flat-faced, bevelled and lit from the upper left - whose
+		// soft shadow falls down and to the right, tinted with its colour: the backends' one deliberate difference.
+		// The hardware backend draws up to 1,024.
 		virtual void update_bars(std::span<const vertex_rect> bars) = 0;
 		// Flat rectangles, drawn in order. The hardware backend draws up to 16,384 of them.
 		virtual void update_rects(std::span<const vertex_rect> rects) = 0;
+		// Polygons, drawn in order as draw_polygon draws them.
+		virtual void update_polygons(std::span<const vertex_polygon> polygons) = 0;
 	};
 
 	using texture_ptr = std::shared_ptr<texture>;
@@ -380,7 +563,7 @@ namespace render
 	}
 
 	inline utf16_text_highlights utf8_to_utf16(const std::string_view text,
-	                                          const std::vector<text_highlight_t>& highlights)
+	                                           const std::vector<text_highlight_t>& highlights)
 	{
 		utf16_text_highlights result;
 		result.text.reserve(text.size());
@@ -459,8 +642,7 @@ namespace render
 	}
 
 	inline text_cluster_span text_cluster_span_for_glyph(const uint32_t glyph_index, const uint32_t glyph_count,
-	                                                     const uint16_t* const cluster_map,
-	                                                     const uint32_t text_length,
+	                                                     const uint16_t* const cluster_map, const uint32_t text_length,
 	                                                     const uint32_t text_position)
 	{
 		const auto spans = text_cluster_spans_for_glyph_run(glyph_count, cluster_map, text_length, text_position);
@@ -468,7 +650,7 @@ namespace render
 	}
 
 	inline core::color text_cluster_color(const core::color base, const text_cluster_span cluster,
-	                                const std::vector<text_highlight_t>& highlights)
+	                                      const std::vector<text_highlight_t>& highlights)
 	{
 		for (const auto& highlight : highlights)
 		{
@@ -495,8 +677,8 @@ namespace render
 	class measure_context : public core::no_copy
 	{
 	public:
-		virtual core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style, int cx,
-		                           int cy = 0) = 0;
+		virtual core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style,
+		                                 int cx, int cy = 0) = 0;
 		virtual int text_line_height(render::font_face font) = 0;
 		// From the top of a line of this face to its baseline, in context pixels: the font's ascent with
 		// any line gap above it, so text_line_height less this is the descent. Every text backend knows
@@ -505,13 +687,33 @@ namespace render
 		virtual int text_baseline(render::font_face font) { return core::mul_div(text_line_height(font), 4, 5); }
 		virtual text_layout_ptr create_text_layout(render::font_face font) = 0;
 
+		// The sizes below at a UI scale of 1, which a window multiplies by its display's scale and the user's
+		// font size.
+		static constexpr int base_icon_cxy = 18;
+		static constexpr int base_padding2 = 8;
+		static constexpr int base_padding1 = 4;
+		static constexpr int base_handle_cxy = 12;
+		static constexpr int base_scroll_width = 20;
+
+		// Measures at a UI scale, as a window does at its display's scale and the user's font size, and as a
+		// picture drawn at another size than a window's does.
+		void scale_metrics(const double ui_scale)
+		{
+			scale_factor = ui_scale;
+			icon_cxy = core::round(base_icon_cxy * ui_scale);
+			padding2 = core::round(base_padding2 * ui_scale);
+			padding1 = core::round(base_padding1 * ui_scale);
+			handle_cxy = core::round(base_handle_cxy * ui_scale);
+			scroll_width = core::round(base_scroll_width * ui_scale);
+		}
+
 		double scale_factor = 1.0;
 
-		int icon_cxy = 18;
-		int padding2 = 8;
-		int padding1 = 4;
-		int handle_cxy = 12;
-		int scroll_width = 20;
+		int icon_cxy = base_icon_cxy;
+		int padding2 = base_padding2;
+		int padding1 = base_padding1;
+		int handle_cxy = base_handle_cxy;
+		int scroll_width = base_scroll_width;
 		column_widths col_widths;
 	};
 
@@ -526,27 +728,25 @@ namespace render
 
 		virtual void clear(core::color c) = 0;
 
+		// The UI's highlight shape: its colour emphasized and its soft edge a little outside bounds, the same on
+		// every renderer. A shape that must be exactly its bounds and colour is a draw_polygon.
 		virtual void draw_rounded_rect(core::recti bounds, core::color c, int radius) = 0;
-		// Fills a convex polygon; backends anti-alias its edges where their rasterizer does.
-		virtual void fill_polygon(std::span<const core::pointd> points, core::color c)
-		{
-		}
-		// Stretches the shadow artwork over bounds, putting its width-pixel band inside the edge;
-		// draw_shadow({0, 0, w, h}, 32, 1.0f) is stretch_shadow(shadow, {0, 0, w, h}, 32, 1.0f).
-		virtual void draw_shadow(core::recti bounds, int width, float alpha)
-		{
-		}
+		// A polygon - convex or concave, but not crossing itself - closed from its last point to its first, and
+		// filled and bordered as style says. An outline that encloses nothing draws nothing.
+		virtual void draw_polygon(std::span<const core::pointd> outline, const polygon_style& style) = 0;
 		virtual void draw_rect(core::recti bounds, core::color c) = 0;
 		virtual void draw_line(core::pointd a, core::pointd b, core::color c, double width = 1.0) = 0;
 		virtual void draw_polyline(std::span<const core::pointd> points, core::color c, double width = 1.0) = 0;
 		virtual void draw_ellipse(core::recti bounds, core::color c, double width = 1.0) = 0;
 		virtual void fill_ellipse(core::recti bounds, core::color c) = 0;
-		virtual void draw_text(std::string_view text, core::recti bounds, render::font_face font, render::text_style style,
-		                       core::color c, core::color bg) = 0;
-		virtual void draw_text(std::string_view text, const std::vector<text_highlight_t>& highlights, core::recti bounds,
-		                       render::font_face font, render::text_style style, core::color clr, core::color bg) = 0;
+		virtual void draw_text(std::string_view text, core::recti bounds, render::font_face font,
+		                       render::text_style style, core::color c, core::color bg) = 0;
+		virtual void draw_text(std::string_view text, const std::vector<text_highlight_t>& highlights,
+		                       core::recti bounds, render::font_face font, render::text_style style, core::color clr,
+		                       core::color bg) = 0;
 		virtual void draw_text(const text_layout_ptr& tl, core::recti bounds, core::color clr, core::color bg) = 0;
-		virtual void draw_border(core::recti inside, core::recti outside, core::color c_inside, core::color c_outside) = 0;
+		virtual void draw_border(core::recti inside, core::recti outside, core::color c_inside,
+		                         core::color c_outside) = 0;
 		virtual void draw_texture(const texture_ptr& t, core::recti dst, float alpha = 1.0f,
 		                          texture_sampler sampler = texture_sampler::point) = 0;
 		virtual void draw_texture(const texture_ptr& t, core::recti dst, core::recti src, float alpha = 1.0f,
@@ -560,14 +760,15 @@ namespace render
 		// False when the backend has no projection of its own, which is the CPU renderer's answer: the
 		// caller then rasterises it in software. Optional rather than pure so a backend gains the
 		// projection by implementing it, never by being obliged to.
-		virtual bool draw_panorama(const texture_ptr& t, core::recti dst, const panorama_params& params, float alpha)
+		virtual bool draw_panorama(const texture_ptr& /*t*/, core::recti /*dst*/, const panorama_params& /*params*/,
+		                           float /*alpha*/)
 		{
 			return false;
 		}
 		virtual void draw_vertices(const vertices_ptr& v) = 0;
 
 		core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style, int width,
-		                   int height = 0) override = 0;
+		                         int height = 0) override = 0;
 		int text_line_height(render::font_face type) override = 0;
 
 		virtual texture_ptr create_texture() = 0;
@@ -609,11 +810,10 @@ namespace render
 
 		virtual present_result render() = 0;
 
-		// Discards any damage limit, so the next render covers the whole client. Needed by callers
-		// that re-present an existing scene whose textures changed underneath it.
-		virtual void reset_damage()
-		{
-		}
+		// The damage the next render covers when it re-presents the scene already recorded - because its
+		// textures or vertices changed underneath it - region, or the whole client when region is empty. A
+		// backend that redraws every pixel anyway has nothing to limit.
+		virtual void reset_damage(core::recti /*region*/ = {}) {}
 
 		virtual void resize(core::sizei size) = 0;
 		virtual bool is_valid() const = 0;
@@ -621,15 +821,11 @@ namespace render
 		// Releases every reference this context holds on the swap-chain back buffer. Must be
 		// called before the buffers are resized - a still-bound render target view makes that fail.
 		// No-op on a CPU backend.
-		virtual void release_back_buffer_references()
-		{
-		}
+		virtual void release_back_buffer_references() {}
 
 		// Software-rendering extensions (only implemented by the CPU backend used for layered
 		// bubble popups; no-ops on a hardware backend).
-		virtual void set_layer_alpha(int alpha)
-		{
-		}
+		virtual void set_layer_alpha(int /*alpha*/) {}
 	};
 
 	using draw_context_device_ptr = std::shared_ptr<draw_context_device>;
@@ -643,21 +839,10 @@ namespace render
 		draw_context& _dc;
 
 	public:
-		scoped_clip(draw_context& dc, const core::recti bounds) : _dc(dc)
-		{
-			_dc.clip_bounds(bounds);
-		}
+		scoped_clip(draw_context& dc, const core::recti bounds) : _dc(dc) { _dc.clip_bounds(bounds); }
 
-		~scoped_clip() override
-		{
-			_dc.restore_clip();
-		}
+		~scoped_clip() override { _dc.restore_clip(); }
 	};
-	// Decodes an image the application embeds - the PNGs the chrome draws - with the application's
-	// own decoder, so every backend draws the same pixels with or without WIC. The application sets
-	// it at startup; until then nothing decodes, and decode_embedded answers null.
-	extern std::function<core::surface_ptr(core::cspan data)> decode_embedded_image;
-	core::surface_ptr decode_embedded(core::cspan data);
 
 	// Makes a texture's scaler, the application's. The application sets it at startup; a renderer
 	// without one converts with its own plain code where it has some, and refuses what it cannot.

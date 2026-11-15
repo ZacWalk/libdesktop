@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Platform movie, audio, and window-capture services.
 
@@ -12,7 +11,7 @@
 
 namespace platform
 {
-		///////////////////////////////////////////////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////////////////////////////////////////////
 	// Writing a movie.
 	//
 	// The intention is "take these finished frames and samples and leave one playable video file at
@@ -166,10 +165,7 @@ namespace platform
 
 	std::vector<sound_device> list_audio_playback_devices();
 
-	// What a window shows now, as a surface. Windows answers in Debug builds alone; Linux always, from
-	// the window's own pixels.
-#if defined(_DEBUG) || !defined(_WIN32)
+	// What a window shows now, as a surface: on Windows its own composed content, on Linux the window's own pixels.
 	core::surface_ptr capture_window_surface(const std::any& window_handle);
-#endif
 
 }

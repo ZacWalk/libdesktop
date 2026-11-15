@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: A two-pane flex-tree element with a draggable splitter bar.
 
@@ -42,16 +41,14 @@ namespace ui
 		element_ptr _second;
 		const view_theme* _theme = nullptr;
 
-		split_element(element_ptr first, element_ptr second,
-		              orientation orient = orientation::vertical, double initial_ratio = 0.5,
+		split_element(element_ptr first, element_ptr second, orientation orient = orientation::vertical,
+		              double initial_ratio = 0.5, const view_theme* theme = nullptr) noexcept;
+		split_element(orientation orient, double initial_ratio = 0.5, element_ptr first = {}, element_ptr second = {},
 		              const view_theme* theme = nullptr) noexcept;
-		split_element(orientation orient, double initial_ratio = 0.5,
-		              element_ptr first = {}, element_ptr second = {},
-		              const view_theme* theme = nullptr) noexcept;
-		split_element(element_ptr first, element_ptr second,
-		              orientation orient, double initial_ratio, const view_theme& theme) noexcept;
-		split_element(orientation orient, double initial_ratio, element_ptr first,
-		              element_ptr second, const view_theme& theme) noexcept;
+		split_element(element_ptr first, element_ptr second, orientation orient, double initial_ratio,
+		              const view_theme& theme) noexcept;
+		split_element(orientation orient, double initial_ratio, element_ptr first, element_ptr second,
+		              const view_theme& theme) noexcept;
 		split_element(orientation orient, double initial_ratio, const view_theme& theme) noexcept;
 
 		[[nodiscard]] int bar_width() const noexcept;

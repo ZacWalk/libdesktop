@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Shared background workers, serial executors, and command-line helpers.
 
@@ -118,10 +117,7 @@ namespace
 			if (_worker.joinable()) _worker.detach();
 		}
 
-		bool post(std::function<void()> task) override
-		{
-			return enqueue_task(_state, std::move(task));
-		}
+		bool post(std::function<void()> task) override { return enqueue_task(_state, std::move(task)); }
 
 		void stop() override
 		{
@@ -164,10 +160,7 @@ namespace
 			}
 		}
 
-		void post(std::function<void()> task)
-		{
-			enqueue_task(_state, std::move(task));
-		}
+		void post(std::function<void()> task) { enqueue_task(_state, std::move(task)); }
 
 		void stop(const bool bounded)
 		{
@@ -178,16 +171,15 @@ namespace
 
 			const auto self = std::this_thread::get_id();
 			const bool on_worker = std::any_of(_workers.begin(), _workers.end(),
-				[self](const auto& worker) { return worker.get_id() == self; });
+			                                   [self](const auto& worker) { return worker.get_id() == self; });
 			bool finished = on_worker ? false : true;
 			if (finished)
 			{
 				std::unique_lock lock(_state->mutex);
 				if (bounded)
 					finished = _state->finished.wait_for(lock, std::chrono::seconds(5),
-						[&] { return _state->workers == 0; });
-				else
-					_state->finished.wait(lock, [&] { return _state->workers == 0; });
+					                                     [&] { return _state->workers == 0; });
+				else _state->finished.wait(lock, [&] { return _state->workers == 0; });
 			}
 
 			for (auto& worker : _workers)
@@ -291,8 +283,7 @@ namespace platform
 
 	std::string quote_command_arg(const std::string_view arg)
 	{
-		if (!arg.empty() && arg.find_first_of(" \t\n\v\"") == std::string_view::npos)
-			return std::string(arg);
+		if (!arg.empty() && arg.find_first_of(" \t\n\v\"") == std::string_view::npos) return std::string(arg);
 
 		std::string result;
 		result.reserve(arg.size() + 2);

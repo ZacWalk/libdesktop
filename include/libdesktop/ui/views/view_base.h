@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Control-backed viewport state and scrollbar input shared by text views.
 
@@ -44,15 +43,9 @@ namespace ui
 			_vscroll.update(_content_extent.cy, _view_extent.cy, _scroll_offset.y);
 		}
 
-		[[nodiscard]] core::recti client_rect() const noexcept
-		{
-			return {0, 0, _view_extent.cx, _view_extent.cy};
-		}
+		[[nodiscard]] core::recti client_rect() const noexcept { return {0, 0, _view_extent.cx, _view_extent.cy}; }
 
-		[[nodiscard]] int max_scroll_y() const noexcept
-		{
-			return std::max(0, _content_extent.cy - _view_extent.cy);
-		}
+		[[nodiscard]] int max_scroll_y() const noexcept { return std::max(0, _content_extent.cy - _view_extent.cy); }
 
 		void scroll_to(core::pointi offset)
 		{
@@ -71,10 +64,7 @@ namespace ui
 
 		// Derived views put document pixels here.  Keeping the hook in the base lets
 		// a view remain a normal control while its scroll chrome stays consistent.
-		virtual void draw_view(render::draw_context& dc) const
-		{
-			(void)dc;
-		}
+		virtual void draw_view(render::draw_context& dc) const { (void)dc; }
 
 	public:
 		[[nodiscard]] const scrollbar& vert_scrollbar() const noexcept { return _vscroll; }
@@ -183,15 +173,24 @@ namespace ui
 			if (_vscroll.set_hover(false) | _hscroll.set_hover(false)) invalidate();
 		}
 
+		// A scrollbar dragged when the pointer was taken stays where it was dragged to.
+		void on_capture_lost() override
+		{
+			if (!_vscroll._tracking && !_hscroll._tracking) return;
+			_vscroll.end_tracking();
+			_hscroll.end_tracking();
+			_vscroll._hover_tracking = false;
+			_hscroll._hover_tracking = false;
+			invalidate();
+		}
+
 		bool on_wheel(const core::pointi loc, const int delta, const platform::key_state keys) override
 		{
 			(void)loc;
 			if (delta == 0) return false;
 			const auto before = _scroll_offset;
-			if (keys.shift)
-				_scroll_offset.x += delta;
-			else
-				_scroll_offset.y -= delta;
+			if (keys.shift) _scroll_offset.x += delta;
+			else _scroll_offset.y -= delta;
 			clamp_scroll_offset();
 			if (_scroll_offset == before) return false;
 			invalidate();

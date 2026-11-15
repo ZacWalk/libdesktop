@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UTF-8 text lines with shared immutable backing storage.
 
@@ -30,29 +29,19 @@ namespace ui
 	public:
 		text_line() = default;
 
-		explicit text_line(std::string line) : _text(std::move(line))
+		explicit text_line(std::string line) : _text(std::move(line)) {}
+
+		text_line(const std::string_view text) : _text(text) {}
+
+		text_line(text_bytes_ptr bytes, const uint32_t offset, const uint32_t length) :
+			_bytes(std::move(bytes)), _offset(offset), _length(length)
 		{
 		}
 
-		text_line(const std::string_view text) : _text(text)
-		{
-		}
-
-		text_line(text_bytes_ptr bytes, const uint32_t offset, const uint32_t length)
-			: _bytes(std::move(bytes)), _offset(offset), _length(length)
-		{
-		}
-
-		[[nodiscard]] bool empty() const
-		{
-			return _bytes ? _length == 0 : _text.empty();
-		}
+		[[nodiscard]] bool empty() const { return _bytes ? _length == 0 : _text.empty(); }
 
 		// Byte length of the UTF-8 text; O(1).
-		[[nodiscard]] size_t size() const
-		{
-			return _bytes ? _length : _text.size();
-		}
+		[[nodiscard]] size_t size() const { return _bytes ? _length : _text.size(); }
 
 		void render(std::string& text_out) const
 		{

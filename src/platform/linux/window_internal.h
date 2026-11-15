@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Internal SDL window state shared by the Linux window and application-loop translation units.
 
@@ -16,6 +15,8 @@
 
 namespace platform::linux_detail
 {
+	SDL_Surface* load_window_icon(std::span<const uint8_t> data);
+
 	class sdl_window final : public platform::window, public std::enable_shared_from_this<sdl_window>
 	{
 		struct timer
@@ -96,7 +97,10 @@ namespace platform::linux_detail
 		void dispatch(const SDL_Event& event) { handle_event(event); }
 		core::pointi event_location(float x, float y) const { return point_from_window(x, y); }
 		void shutdown_native();
-		void notify_created() { if (const auto events = _events.lock()) events->created(*this); }
+		void notify_created()
+		{
+			if (const auto events = _events.lock()) events->created(*this);
+		}
 
 		std::any native_handle() const override;
 		platform::window_kind kind() const override { return _kind; }
@@ -127,7 +131,10 @@ namespace platform::linux_detail
 		platform::window* root() override;
 		bool is_minimized() const override { return _minimized; }
 		bool is_maximized() const override { return _maximized; }
-		bool is_occluded() const override { return _offscreen ? !_sdl || _minimized : _occluded || _minimized || !_visible; }
+		bool is_occluded() const override
+		{
+			return _offscreen ? !_sdl || _minimized : _occluded || _minimized || !_visible;
+		}
 		void sys_command(platform::sys_command_type command) override;
 		void full_screen(bool full) override;
 		bool is_full_screen() const override { return _full_screen; }

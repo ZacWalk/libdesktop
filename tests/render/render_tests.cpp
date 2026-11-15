@@ -5,6 +5,8 @@
 #include "test.h"
 
 #include <clocale>
+#include <format>
+#include <set>
 
 using namespace std::literals;
 
@@ -51,7 +53,7 @@ static void should_leave_colour_unchanged_when_neutral()
 		}
 	}
 
-	// One level of slack for the RGB -> YUV -> RGB round trip; two would hide a real curve error.
+	// One level of slack for floating point; two would hide a real curve error.
 	assert_equal(true, worst <= 1, "neutral adjustment leaves the picture alone");
 
 	// The residual must also be unbiased. A worst-case bound alone cannot see truncation, which costs
@@ -91,9 +93,246 @@ static void should_desaturate_to_grey()
 		const auto g = static_cast<int>(out[x * 4 + 1]);
 		const auto r = static_cast<int>(out[x * 4 + 2]);
 
-		assert_equal(true, std::abs(r - g) <= 1 && std::abs(g - b) <= 1,
-		             "saturation of -1 leaves every pixel grey");
+		assert_equal(true, std::abs(r - g) <= 1 && std::abs(g - b) <= 1, "saturation of -1 leaves every pixel grey");
 		assert_equal(255u, static_cast<uint32_t>(out[x * 4 + 3]), "alpha survives desaturation");
+	}
+}
+
+// One opaque pixel through apply, answered red, green, blue.
+static std::array<int, 3> grade_pixel(const render::color_adjust& adjust, const int r, const int g, const int b)
+{
+	const auto src = std::make_shared<core::surface>();
+	const auto dst = std::make_shared<core::surface>();
+	src->alloc(1, 1, core::texture_format::RGB);
+	dst->alloc(1, 1, core::texture_format::RGB);
+
+	auto* const in = src->pixels_line(0);
+	in[0] = static_cast<uint8_t>(b);
+	in[1] = static_cast<uint8_t>(g);
+	in[2] = static_cast<uint8_t>(r);
+	in[3] = 255;
+	adjust.apply(src, dst->pixels(), dst->stride(), {});
+
+	const auto* const out = dst->pixels_line(0);
+	return {out[2], out[1], out[0]};
+}
+
+static double hue_degrees(const std::array<int, 3>& c)
+{
+	return std::atan2(0.8660254 * (c[1] - c[2]), c[0] - 0.5 * (c[1] + c[2])) * 180.0 / 3.14159265358979;
+}
+
+static double hsv_saturation(const std::array<int, 3>& c)
+{
+	const auto high = std::max({c[0], c[1], c[2]});
+	return high > 0 ? (high - std::min({c[0], c[1], c[2]})) / static_cast<double>(high) : 0.0;
+}
+
+static double bt709_luma(const std::array<int, 3>& c)
+{
+	return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+// No setting can fold the curve back, which inverts contrast somewhere in the picture, or flatten a run of
+// tones into black or white. A natural spline through clamped knots did both at the far end of the
+// brightness and contrast sliders.
+static void should_build_tone_curves_that_neither_fold_back_nor_clip()
+{
+	constexpr double settings[] = {-1.0, 0.0, 1.0};
+	auto folded = 0;
+	auto pinned = 0;
+
+	for (const auto darks : settings)
+		for (const auto midtones : settings)
+			for (const auto lights : settings)
+				for (const auto contrast : settings)
+					for (const auto brightness : settings)
+					{
+						render::color_adjust adjust;
+						adjust.color_params(0, 0, darks, midtones, lights, contrast, brightness);
+
+						if (std::abs(adjust.tone(0.0)) > 1e-12 || std::abs(adjust.tone(1.0) - 1.0) > 1e-12) ++pinned;
+
+						for (auto i = 1; i <= 1024; ++i)
+						{
+							const auto x = i / 1024.0;
+							if (adjust.tone(x) <= adjust.tone((i - 1) / 1024.0)) ++folded;
+							if (i < 1024 && (adjust.tone(x) <= 0.0 || adjust.tone(x) >= 1.0)) ++folded;
+						}
+					}
+
+	assert_equal(0, pinned, "black and white stay where they are");
+	assert_equal(0, folded, "every curve rises strictly, inside black and white");
+}
+
+// Vibrance weights the least saturated colours and spares skin, and never turns a hue: a negative setting
+// once ran the multiplier below zero and inverted vivid colours to their complements.
+static void should_vibrance_muted_colours_and_keep_every_hue()
+{
+	const std::array<std::array<int, 3>, 7> colours{
+		{{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {0, 255, 255}, {70, 130, 220}, {100, 115, 140}, {230, 180, 150}}};
+
+	for (const auto vibrance : {-1.0, 1.0})
+	{
+		render::color_adjust adjust;
+		adjust.color_params(vibrance, 0, 0, 0, 0, 0, 0);
+
+		for (const auto& c : colours)
+		{
+			const auto out = grade_pixel(adjust, c[0], c[1], c[2]);
+			auto turn = std::abs(hue_degrees(out) - hue_degrees(c));
+			turn = std::min(turn, 360.0 - turn);
+			assert_equal(true, turn <= 4.0,
+			             std::format("vibrance {} keeps the hue of {},{},{}", vibrance, c[0], c[1], c[2]));
+		}
+	}
+
+	render::color_adjust more;
+	more.color_params(1.0, 0, 0, 0, 0, 0, 0);
+	const auto gain = [&](const int r, const int g, const int b)
+	{
+		return hsv_saturation(grade_pixel(more, r, g, b)) / hsv_saturation({r, g, b});
+	};
+
+	assert_equal(true, gain(100, 115, 140) > gain(70, 130, 220) + 0.1, "a muted colour gains more than a vivid one");
+	assert_equal(true, gain(230, 180, 150) + 0.1 < gain(150, 200, 230), "skin gains less than a colour as saturated");
+}
+
+// A change of tone scales every channel by the luma's ratio, so darkening leaves a colour as saturated as it
+// was instead of driving it to a clipped primary, and brightening does not wash it out.
+static void should_keep_saturation_through_a_change_of_tone()
+{
+	const std::array foliage{60, 90, 40};
+
+	for (const auto brightness : {-1.0, 1.0})
+	{
+		render::color_adjust adjust;
+		adjust.color_params(0, 0, 0, 0, 0, 0, brightness);
+		const auto out = grade_pixel(adjust, foliage[0], foliage[1], foliage[2]);
+
+		assert_equal(true, std::abs(hsv_saturation(out) - hsv_saturation(foliage)) < 0.03,
+		             std::format("brightness {} keeps the saturation", brightness));
+		assert_equal(true,
+		             brightness > 0 ? bt709_luma(out) > bt709_luma(foliage) + 40
+		                            : bt709_luma(out) < bt709_luma(foliage) - 20,
+		             std::format("brightness {} moves the tone", brightness));
+	}
+}
+
+// White balance moves the colour, not the exposure: a neutral keeps its luma, and a highlight warmed past
+// white is fitted back towards its luma, keeping its hue, rather than clipped in one channel.
+static void should_keep_a_neutral_luma_through_white_balance()
+{
+	for (const auto temperature : {-1.0, 1.0})
+	{
+		for (const auto tint : {-1.0, 0.0, 1.0})
+		{
+			render::color_adjust adjust;
+			adjust.color_params(0, 0, 0, 0, 0, 0, 0, temperature, tint);
+			const auto grey = grade_pixel(adjust, 128, 128, 128);
+
+			assert_equal(true, std::abs(bt709_luma(grey) - 128.0) <= 1.0,
+			             std::format("temperature {} tint {} keeps a grey's luma", temperature, tint));
+			assert_equal(true, temperature > 0 ? grey[0] > grey[2] : grey[0] < grey[2], "and warms or cools it");
+		}
+	}
+
+	render::color_adjust warm;
+	warm.color_params(0, 0, 0, 0, 0, 0, 0, 1.0, 0);
+	const auto highlight = grade_pixel(warm, 250, 250, 250);
+	assert_equal(true, std::abs(bt709_luma(highlight) - 250.0) <= 1.5, "a warmed highlight keeps its luma");
+	assert_equal(true, highlight[0] >= highlight[1] && highlight[1] >= highlight[2] && highlight[0] > highlight[2],
+	             "and its warmth, fitted below white");
+}
+
+// A wide picture is graded at its own precision: neutral settings leave every sixteen-bit value where it was,
+// and a steep curve over a smooth ramp keeps far more distinct tones than a byte can hold.
+static void should_grade_sixteen_bit_pictures_at_their_own_precision()
+{
+	constexpr auto width = 4096;
+	const auto src = std::make_shared<core::surface>();
+	const auto dst = std::make_shared<core::surface>();
+	assert_equal(true, src->alloc(width, 1, core::texture_format::RGBX16) != nullptr, "wide ramp allocated");
+	assert_equal(true, dst->alloc(width, 1, core::texture_format::RGBX16) != nullptr, "wide result allocated");
+
+	auto* const ramp = std::bit_cast<uint16_t*>(src->pixels_line(0));
+	for (auto x = 0; x < width; ++x)
+	{
+		ramp[x * 4 + 0] = ramp[x * 4 + 1] = ramp[x * 4 + 2] = static_cast<uint16_t>(x * 16);
+		ramp[x * 4 + 3] = 0xffff;
+	}
+
+	render::color_adjust neutral;
+	neutral.color_params(0, 0, 0, 0, 0, 0, 0);
+	assert_equal(true, neutral.apply(src, dst->pixels(), dst->stride(), {}), "a wide picture is graded");
+
+	const auto* const out = std::bit_cast<const uint16_t*>(dst->pixels_line(0));
+	auto worst = 0;
+	for (auto i = 0; i < width * 4; ++i) worst = std::max(worst, std::abs(out[i] - ramp[i]));
+	assert_equal(0, worst, "neutral settings leave sixteen bits alone");
+
+	render::color_adjust steep;
+	steep.color_params(0, 0, 0, 0, 0, 1.0, 0);
+	steep.apply(src, dst->pixels(), dst->stride(), {});
+
+	std::set<uint16_t> tones;
+	for (auto x = 0; x < width; ++x) tones.insert(out[x * 4]);
+	assert_equal(true, tones.size() > 1000, "a steep curve keeps more tones than a byte holds");
+}
+
+// The software renderer grades with the template apply saves with, so the two agree within a level - for a
+// byte source, and for a wide one, which it samples at its own sixteen bits.
+static void should_grade_the_software_preview_as_apply_saves()
+{
+	render::color_adjust adjust;
+	adjust.color_params(0.6, 0.3, -0.4, 0.2, 0.5, 0.7, -0.3, 0.4, -0.2);
+	render::texture_transform transform;
+	adjust.populate_texture_transform(transform);
+
+	constexpr auto side = 16;
+	const auto src = std::make_shared<core::surface>();
+	assert_equal(true, src->alloc(side, side, core::texture_format::RGB) != nullptr, "source allocated");
+
+	for (auto y = 0; y < side; ++y)
+	{
+		auto* const row = src->pixels_line(y);
+		for (auto x = 0; x < side; ++x)
+		{
+			row[x * 4 + 0] = static_cast<uint8_t>(x * 16);
+			row[x * 4 + 1] = static_cast<uint8_t>(y * 16);
+			row[x * 4 + 2] = static_cast<uint8_t>((x * 37 + y * 53) & 0xff);
+			row[x * 4 + 3] = 255;
+		}
+	}
+
+	for (const auto wide : {false, true})
+	{
+		const auto source = wide ? core::to_16_bit(src) : core::const_surface_ptr(src);
+		const auto saved = std::make_shared<core::surface>();
+		assert_equal(true, saved->alloc(side, side, source->format()) != nullptr, "saved result allocated");
+		adjust.apply(source, saved->pixels(), saved->stride(), {});
+		const auto expected = core::to_8_bit(saved);
+
+		core::surface target;
+		assert_equal(true, target.alloc(side, side, core::texture_format::ARGB) != nullptr, "preview allocated");
+		target.make_blank();
+		const render::software_canvas canvas(target);
+		canvas.blit_quad(*source, core::recti(0, 0, side, side), core::quadd(core::sizei{side, side}), 1.0f,
+		                 render::texture_sampler::point, false, &transform);
+
+		auto worst = 0;
+		for (auto y = 0; y < side; ++y)
+		{
+			for (auto i = 0; i < side * 4; i += 4)
+			{
+				for (auto c = 0; c < 3; ++c)
+				{
+					worst = std::max(worst, std::abs(target.pixels_line(y)[i + c] - expected->pixels_line(y)[i + c]));
+				}
+			}
+		}
+
+		assert_equal(true, worst <= 1, std::format("the {} preview matches the saved grade", wide ? "wide" : "byte"));
 	}
 }
 
@@ -249,9 +488,13 @@ static void should_measure_text_by_one_set_of_rules()
 	assert_equal(true, engine != nullptr, "the platform has a text engine");
 	if (!engine) return;
 
-	const auto near = [](const int a, const int b) { return std::abs(a - b) <= 1; };
+	const auto near = [](const int a, const int b)
+	{
+		return std::abs(a - b) <= 1;
+	};
 	const auto line = engine->text_line_height(face);
-	assert_equal(true, line >= render::default_font_size && line <= render::default_font_size * 2, "a line is a little over the font size");
+	assert_equal(true, line >= render::default_font_size && line <= render::default_font_size * 2,
+	             "a line is a little over the font size");
 
 	const auto one = engine->measure_text("Ag", face, render::text_style::single_line, 1000, 0);
 	assert_equal(true, near(line, one.cy), "one line measures one line height");
@@ -296,7 +539,7 @@ static void should_draw_text_inside_its_box()
 	constexpr core::sizei extent{240, 80};
 	const auto target = render::create_memory_present_target();
 	const auto ctx = render::create_software_draw_context(render::create_text_engine(render::default_font_size), target,
-	                                                  render::default_font_size);
+	                                                      render::default_font_size);
 	const core::recti box(40, 20, 200, 60);
 
 	const auto draw = [&](const std::vector<render::text_highlight_t>& highlights)
@@ -358,12 +601,11 @@ static void should_draw_text_inside_its_box()
 	assert_equal(true, whites > 10, "and leaves the rest in the text's colour");
 }
 
-
-
 #ifdef _WIN32
 void register_render_win_tests(test_registry& tests);
 #endif
 void register_render_primitives_tests(test_registry& tests);
+void register_render_polygon_tests(test_registry& tests);
 
 static void register_tests(test_registry& tests)
 {
@@ -371,10 +613,21 @@ static void register_tests(test_registry& tests)
 	register_render_win_tests(tests);
 #endif
 	register_render_primitives_tests(tests);
+	register_render_polygon_tests(tests);
 	tests.add("Should leave colour unchanged when neutral"s, should_leave_colour_unchanged_when_neutral);
 	tests.add("Should desaturate to grey"s, should_desaturate_to_grey);
-	tests.add("Should present vertex rectangles updated after the scene"s, should_present_vertex_rectangles_updated_after_the_scene);
-	tests.add("Should bound the software buffer as the client grows"s, should_bound_the_software_buffer_as_the_client_grows);
+	tests.add("Should build tone curves that neither fold back nor clip"s,
+	          should_build_tone_curves_that_neither_fold_back_nor_clip);
+	tests.add("Should vibrance muted colours and keep every hue"s, should_vibrance_muted_colours_and_keep_every_hue);
+	tests.add("Should keep saturation through a change of tone"s, should_keep_saturation_through_a_change_of_tone);
+	tests.add("Should keep a neutral luma through white balance"s, should_keep_a_neutral_luma_through_white_balance);
+	tests.add("Should grade sixteen bit pictures at their own precision"s,
+	          should_grade_sixteen_bit_pictures_at_their_own_precision);
+	tests.add("Should grade the software preview as apply saves"s, should_grade_the_software_preview_as_apply_saves);
+	tests.add("Should present vertex rectangles updated after the scene"s,
+	          should_present_vertex_rectangles_updated_after_the_scene);
+	tests.add("Should bound the software buffer as the client grows"s,
+	          should_bound_the_software_buffer_as_the_client_grows);
 	tests.add("Should render styled text with its outline"s, should_render_styled_text_with_its_outline);
 	tests.add("Should measure text by one set of rules"s, should_measure_text_by_one_set_of_rules);
 	tests.add("Should draw text inside its box"s, should_draw_text_inside_its_box);

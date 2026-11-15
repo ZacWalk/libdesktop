@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The pixel scrollbar used by portable text views and split controls.
 
@@ -48,39 +47,25 @@ namespace ui
 		double _dpi_scale = 1.0;
 
 		constexpr scrollbar() noexcept = default;
-		constexpr explicit scrollbar(const orientation o) noexcept : _orient(o)
-		{
-		}
+		constexpr explicit scrollbar(const orientation o) noexcept : _orient(o) {}
 
 		[[nodiscard]] int thumb_thickness() const noexcept
 		{
 			return static_cast<int>(base_thumb_thickness * _dpi_scale);
 		}
 
-		[[nodiscard]] int edge_margin() const noexcept
-		{
-			return static_cast<int>(base_edge_margin * _dpi_scale);
-		}
+		[[nodiscard]] int edge_margin() const noexcept { return static_cast<int>(base_edge_margin * _dpi_scale); }
 
 		[[nodiscard]] int hover_track_width() const noexcept
 		{
 			return static_cast<int>(base_hover_track_width * _dpi_scale);
 		}
 
-		[[nodiscard]] int hit_margin() const noexcept
-		{
-			return static_cast<int>(base_hit_margin * _dpi_scale);
-		}
+		[[nodiscard]] int hit_margin() const noexcept { return static_cast<int>(base_hit_margin * _dpi_scale); }
 
-		void set_dpi_scale(double scale) noexcept
-		{
-			_dpi_scale = scale;
-		}
+		void set_dpi_scale(double scale) noexcept { _dpi_scale = scale; }
 
-		[[nodiscard]] bool can_scroll() const noexcept
-		{
-			return _content_size > _page_size && _page_size > 0;
-		}
+		[[nodiscard]] bool can_scroll() const noexcept { return _content_size > _page_size && _page_size > 0; }
 
 		void update(int content_size, int page_size, int position) noexcept
 		{
@@ -104,7 +89,7 @@ namespace ui
 			const auto length = std::max(core::mul_div(_page_size, track_extent, _content_size), thumb_thickness());
 			const auto limit = std::max(track_start, track_start + track_extent - length);
 			const auto start = std::clamp(core::mul_div(_position, track_extent, _content_size) + track_start,
-			                             track_start, limit);
+			                              track_start, limit);
 			return {start, std::min(length, track_extent)};
 		}
 
@@ -113,13 +98,13 @@ namespace ui
 			if (_orient == orientation::vertical)
 			{
 				const auto span = thumb(client.top, client.height());
-				return {client.right - thumb_thickness() - edge_margin(), span.start,
-				        client.right - edge_margin(), span.start + span.length};
+				return {client.right - thumb_thickness() - edge_margin(), span.start, client.right - edge_margin(),
+				        span.start + span.length};
 			}
 
 			const auto span = thumb(client.left, client.width());
-			return {span.start, client.bottom - thumb_thickness() - edge_margin(),
-			        span.start + span.length, client.bottom - edge_margin()};
+			return {span.start, client.bottom - thumb_thickness() - edge_margin(), span.start + span.length,
+			        client.bottom - edge_margin()};
 		}
 
 		[[nodiscard]] bool hit_test(core::pointi point, core::recti client) const noexcept

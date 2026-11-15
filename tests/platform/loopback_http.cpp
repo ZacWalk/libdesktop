@@ -49,8 +49,8 @@ namespace
 			auto end = headers.find("\r\n", start);
 			if (end == std::string_view::npos) end = headers.size();
 			const auto line = headers.substr(start, end - start);
-			if (const auto colon = line.find(':'); colon != std::string_view::npos &&
-				iequal(line.substr(0, colon), name))
+			if (const auto colon = line.find(':');
+			    colon != std::string_view::npos && iequal(line.substr(0, colon), name))
 				return std::string(trim(line.substr(colon + 1)));
 			start = end + 2;
 		}
@@ -174,8 +174,8 @@ loopback::server::server() : _impl(std::make_unique<impl>())
 
 	int size = sizeof(address);
 	if (bind(_impl->listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
-		listen(_impl->listener, SOMAXCONN) != 0 ||
-		getsockname(_impl->listener, reinterpret_cast<sockaddr*>(&address), &size) != 0)
+	    listen(_impl->listener, SOMAXCONN) != 0 ||
+	    getsockname(_impl->listener, reinterpret_cast<sockaddr*>(&address), &size) != 0)
 	{
 		closesocket(_impl->listener);
 		_impl->listener = INVALID_SOCKET;

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The element tree's out-of-line parts: hit testing through containers, the background an
 // element's state paints and fades to, links, and the scroller's track and anchors.
@@ -25,8 +24,7 @@ namespace ui
 	}
 
 	controller_ptr element::controller_from_location(const element_host_ptr& host, const core::pointi loc,
-	                                                 const core::pointi element_offset,
-	                                                 hit_test_context& ctx)
+	                                                 const core::pointi element_offset, hit_test_context& ctx)
 	{
 		controller_ptr result;
 		if (!bounds.contains(loc - element_offset)) return result;
@@ -41,6 +39,42 @@ namespace ui
 		return result;
 	}
 
+	namespace
+	{
+		// Held weakly: a dialog closed while one of its backgrounds fades goes at once, rather than when the fade
+		// ends - or, where nothing steps the animations, at exit, after the statics its destructor uses have gone.
+		struct background_transition
+		{
+			std::weak_ptr<element_host_base> view;
+			std::weak_ptr<element> item;
+			core::color target;
+
+			bool operator()() const
+			{
+				const auto v = view.lock();
+				const auto e = item.lock();
+				if (!v || !e) return false;
+
+				const auto delta = target - e->_bg_color;
+				if (delta.abs_sum() > core::color::color_epsilon)
+				{
+					e->_bg_color += render::animations_enabled ? delta * ui::animation_step_factor : delta;
+					v->invalidate_element(e);
+					return true;
+				}
+				return false;
+			}
+		};
+
+		// The fade running for an element. One left at its address by an element that has gone is not its own.
+		background_transition* running_fade(element* const e)
+		{
+			const auto found = ui::animations.find(e);
+			if (found == ui::animations.end()) return nullptr;
+			auto* const fade = found->second.target<background_transition>();
+			return fade && fade->item.lock().get() == e ? fade : nullptr;
+		}
+	}
 
 	static core::color calc_clr(const element_style& style)
 	{
@@ -88,7 +122,14 @@ namespace ui
 
 	void element::update_background_color()
 	{
-		_bg_target = _bg_color = calc_clr(style);
+		_bg_color = calc_clr(style);
+		if (auto* const fade = running_fade(this)) fade->target = _bg_color;
+	}
+
+	void element::cancel_background_animation()
+	{
+		const auto found = ui::animations.find(this);
+		if (found != ui::animations.end() && found->second.target<background_transition>()) ui::animations.erase(found);
 	}
 
 	void element::set_style_bit(const element_style mask, const bool state)
@@ -111,7 +152,6 @@ namespace ui
 		}
 	}
 
-
 	void element::set_style_bit(const element_style mask, const bool state, const element_host_base_ptr& view,
 	                            const element_ptr& e)
 	{
@@ -133,47 +173,31 @@ namespace ui
 
 			if (view)
 			{
-				if (_bg_target != bg && e)
+				const auto* const transition = running_fade(this);
+				const auto previous_target = transition ? transition->target : _bg_color;
+				if (previous_target != bg && e)
 				{
+					auto target = bg;
 					if (core::is_alpha_zero(_bg_color.a))
 					{
 						_bg_color.r = bg.r;
 						_bg_color.g = bg.g;
 						_bg_color.b = bg.b;
-						_bg_target = bg;
 					}
 					else if (core::is_alpha_zero(bg.a))
 					{
-						_bg_target.a = 0.0f;
-					}
-					else
-					{
-						_bg_target = bg;
+						target = previous_target;
+						target.a = 0.0f;
 					}
 
-					ui::animations[this] = [view, e]
-					{
-						const auto dd = e->_bg_target - e->_bg_color;
-						bool invalidate = false;
-
-						if (dd.abs_sum() > core::color::color_epsilon)
-						{
-							// Gated and timed as animate_alpha is: under the CPU renderer the colour is
-							// taken at once, and elsewhere the fade lasts as long at any refresh rate.
-							e->_bg_color += render::animations_enabled ? dd * ui::animation_step_factor : dd;
-							view->invalidate_element(e);
-							invalidate = true;
-						}
-
-						return invalidate;
-					};
+					ui::animations[this] = background_transition{view, e, target};
 
 					view->invalidate(ui::host_invalid::animations);
 				}
 			}
 			else
 			{
-				_bg_target = _bg_color = calc_clr(style);
+				update_background_color();
 			}
 		}
 	}
@@ -213,7 +237,7 @@ namespace ui
 		}
 	}
 
-	void link_element::tooltip(hover_bubble& hover, const core::pointi loc, const core::pointi element_offset) const
+	void link_element::tooltip(hover_bubble& hover, const core::pointi /*loc*/, const core::pointi element_offset) const
 	{
 		if (_tooltip)
 		{
@@ -228,8 +252,7 @@ namespace ui
 	}
 
 	controller_ptr link_element::controller_from_location(const element_host_ptr& host, const core::pointi loc,
-	                                                      const core::pointi element_offset,
-	                                                      hit_test_context& ctx)
+	                                                      const core::pointi element_offset, hit_test_context& ctx)
 	{
 		return default_controller_from_location(*this, host, loc, element_offset, ctx);
 	}
@@ -270,8 +293,8 @@ namespace ui
 				}
 				else if (!so->text.empty() && band_bottom - band_top > text_line_height)
 				{
-					dc.draw_text(so->text, rr, render::font_face::dialog,
-					             render::text_style::single_line_center, label_color, {});
+					dc.draw_text(so->text, rr, render::font_face::dialog, render::text_style::single_line_center,
+					             label_color, {});
 				}
 			});
 		}
@@ -317,6 +340,22 @@ namespace ui
 
 	namespace
 	{
+		// A polygon moved by an origin: its outline and the points its paint is reckoned from.
+		render::polygon_style moved_style(render::polygon_style style, const core::pointi origin)
+		{
+			style.fill.start = style.fill.start.offset(origin.x, origin.y);
+			style.fill.end = style.fill.end.offset(origin.x, origin.y);
+			return style;
+		}
+
+		void move_outline(const std::span<const core::pointd> outline, const core::pointi origin,
+		                  std::vector<core::pointd>& moved)
+		{
+			moved.clear();
+			moved.reserve(outline.size());
+			for (const auto point : outline) moved.emplace_back(point.offset(origin.x, origin.y));
+		}
+
 		// The geometry a vertices object is handed moves with the context that made it.
 		class offset_vertices final : public render::vertices
 		{
@@ -324,8 +363,8 @@ namespace ui
 			render::vertices_ptr _inner;
 			std::shared_ptr<core::pointi> _origin;
 
-			offset_vertices(render::vertices_ptr inner, std::shared_ptr<core::pointi> origin) : _inner(std::move(inner)),
-				_origin(std::move(origin))
+			offset_vertices(render::vertices_ptr inner, std::shared_ptr<core::pointi> origin) :
+				_inner(std::move(inner)), _origin(std::move(origin))
 			{
 			}
 
@@ -342,11 +381,26 @@ namespace ui
 				for (auto& r : moved) r.bounds = r.bounds.offset(*_origin);
 				_inner->update_rects(moved);
 			}
+
+			void update_polygons(const std::span<const render::vertex_polygon> polygons) override
+			{
+				std::vector<std::vector<core::pointd>> outlines(polygons.size());
+				std::vector<render::vertex_polygon> moved;
+				moved.reserve(polygons.size());
+
+				for (size_t i = 0; i < polygons.size(); ++i)
+				{
+					move_outline(polygons[i].outline, *_origin, outlines[i]);
+					moved.push_back({outlines[i], moved_style(polygons[i].style, *_origin)});
+				}
+
+				_inner->update_polygons(moved);
+			}
 		};
 	}
 
-	offset_draw_context::offset_draw_context(render::draw_context& dc, std::shared_ptr<core::pointi> origin) : _dc(dc),
-		_origin(std::move(origin))
+	offset_draw_context::offset_draw_context(render::draw_context& dc, std::shared_ptr<core::pointi> origin) :
+		_dc(dc), _origin(std::move(origin))
 	{
 		scale_factor = dc.scale_factor;
 		icon_cxy = dc.icon_cxy;
@@ -370,17 +424,12 @@ namespace ui
 		_dc.draw_rounded_rect(to_dc(bounds), c, radius);
 	}
 
-	void offset_draw_context::fill_polygon(const std::span<const core::pointd> points, const core::color c)
+	void offset_draw_context::draw_polygon(const std::span<const core::pointd> outline,
+	                                       const render::polygon_style& style)
 	{
 		std::vector<core::pointd> moved;
-		moved.reserve(points.size());
-		for (const auto point : points) moved.emplace_back(point.offset(_origin->x, _origin->y));
-		_dc.fill_polygon(std::span<const core::pointd>(moved), c);
-	}
-
-	void offset_draw_context::draw_shadow(const core::recti bounds, const int width, const float alpha)
-	{
-		_dc.draw_shadow(to_dc(bounds), width, alpha);
+		move_outline(outline, *_origin, moved);
+		_dc.draw_polygon(moved, moved_style(style, *_origin));
 	}
 
 	void offset_draw_context::draw_rect(const core::recti bounds, const core::color c)
@@ -388,12 +437,14 @@ namespace ui
 		_dc.draw_rect(to_dc(bounds), c);
 	}
 
-	void offset_draw_context::draw_line(const core::pointd a, const core::pointd b, const core::color c, const double width)
+	void offset_draw_context::draw_line(const core::pointd a, const core::pointd b, const core::color c,
+	                                    const double width)
 	{
 		_dc.draw_line(a.offset(_origin->x, _origin->y), b.offset(_origin->x, _origin->y), c, width);
 	}
 
-	void offset_draw_context::draw_polyline(const std::span<const core::pointd> points, const core::color c, const double width)
+	void offset_draw_context::draw_polyline(const std::span<const core::pointd> points, const core::color c,
+	                                        const double width)
 	{
 		std::vector<core::pointd> moved;
 		moved.reserve(points.size());
@@ -411,27 +462,29 @@ namespace ui
 		_dc.fill_ellipse(to_dc(bounds), c);
 	}
 
-	void offset_draw_context::draw_text(const std::string_view text, const core::recti bounds, const render::font_face font,
-	                                    const render::text_style style, const core::color c, const core::color bg)
+	void offset_draw_context::draw_text(const std::string_view text, const core::recti bounds,
+	                                    const render::font_face font, const render::text_style style,
+	                                    const core::color c, const core::color bg)
 	{
 		_dc.draw_text(text, to_dc(bounds), font, style, c, bg);
 	}
 
-	void offset_draw_context::draw_text(const std::string_view text, const std::vector<render::text_highlight_t>& highlights,
-	                                    const core::recti bounds, const render::font_face font, const render::text_style style,
-	                                    const core::color clr, const core::color bg)
+	void offset_draw_context::draw_text(const std::string_view text,
+	                                    const std::vector<render::text_highlight_t>& highlights,
+	                                    const core::recti bounds, const render::font_face font,
+	                                    const render::text_style style, const core::color clr, const core::color bg)
 	{
 		_dc.draw_text(text, highlights, to_dc(bounds), font, style, clr, bg);
 	}
 
-	void offset_draw_context::draw_text(const render::text_layout_ptr& tl, const core::recti bounds, const core::color clr,
-	                                    const core::color bg)
+	void offset_draw_context::draw_text(const render::text_layout_ptr& tl, const core::recti bounds,
+	                                    const core::color clr, const core::color bg)
 	{
 		_dc.draw_text(tl, to_dc(bounds), clr, bg);
 	}
 
-	void offset_draw_context::draw_border(const core::recti inside, const core::recti outside, const core::color c_inside,
-	                                      const core::color c_outside)
+	void offset_draw_context::draw_border(const core::recti inside, const core::recti outside,
+	                                      const core::color c_inside, const core::color c_outside)
 	{
 		_dc.draw_border(to_dc(inside), to_dc(outside), c_inside, c_outside);
 	}
@@ -442,26 +495,27 @@ namespace ui
 		_dc.draw_texture(t, to_dc(dst), alpha, sampler);
 	}
 
-	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::recti dst, const core::recti src, const float alpha,
-	                                       const render::texture_sampler sampler, const float radius)
+	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::recti dst, const core::recti src,
+	                                       const float alpha, const render::texture_sampler sampler, const float radius)
 	{
 		_dc.draw_texture(t, to_dc(dst), src, alpha, sampler, radius);
 	}
 
-	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::quadd& dst, const core::recti src, const float alpha,
-	                                       const render::texture_sampler sampler)
+	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::quadd& dst, const core::recti src,
+	                                       const float alpha, const render::texture_sampler sampler)
 	{
 		_dc.draw_texture(t, dst.offset(_origin->x, _origin->y), src, alpha, sampler);
 	}
 
-	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::quadd& dst, const core::recti src, const float alpha,
-	                                       const render::texture_sampler sampler, const render::texture_transform& transform)
+	void offset_draw_context::draw_texture(const render::texture_ptr& t, const core::quadd& dst, const core::recti src,
+	                                       const float alpha, const render::texture_sampler sampler,
+	                                       const render::texture_transform& transform)
 	{
 		_dc.draw_texture(t, dst.offset(_origin->x, _origin->y), src, alpha, sampler, transform);
 	}
 
-	bool offset_draw_context::draw_panorama(const render::texture_ptr& t, const core::recti dst, const render::panorama_params& params,
-	                                        const float alpha)
+	bool offset_draw_context::draw_panorama(const render::texture_ptr& t, const core::recti dst,
+	                                        const render::panorama_params& params, const float alpha)
 	{
 		return _dc.draw_panorama(t, to_dc(dst), params, alpha);
 	}
@@ -473,7 +527,7 @@ namespace ui
 	}
 
 	core::sizei offset_draw_context::measure_text(const std::string_view text, const render::font_face font,
-	                                        const render::text_style style, const int width, const int height)
+	                                              const render::text_style style, const int width, const int height)
 	{
 		return _dc.measure_text(text, font, style, width, height);
 	}

@@ -1,34 +1,22 @@
 # libdesktop::core
 
 `libdesktop::core` is the vocabulary the other three libraries and their
-applications are written in: UTF-8 strings and their conversions, typed paths,
-dates, geometry, colours and pixel surfaces, hash containers and the small
-utilities every file needs. It opens no window and touches no file, so a model,
-a parser or a codec adapter can link it alone, and its suite runs anywhere a
-C++20 compiler does.
+applications are written in. It opens no window and touches no file, so a
+model, a parser or a codec adapter can link it alone, and its suite runs
+anywhere a C++20 compiler does.
 
 ## Using it
 
-```cmake
-target_link_libraries(app PRIVATE libdesktop::core)
-```
-
-```cpp
-#include "libdesktop/core.h"
-```
-
-The umbrella brings in the compiler dialect, the standard library the code is
-written against and the core headers in dependency order; the other headers
-rely on it and are not standalone, so include it first, or make it the
-precompiled header. `core/base64.h`, `core/cpu_features.h`, `core/kdtree.h`,
-`core/log.h` and `core/simd.h` are included where they are used. Each of the
-four namespaces has `std::literals` in it.
+Link `libdesktop::core` and include `libdesktop/core.h`, which brings in the
+compiler dialect, the standard library the code is written against and the
+core headers in dependency order. `core/base64.h`, `core/cpu_features.h`,
+`core/kdtree.h`, `core/log.h`, `core/mcp.h` and `core/simd.h` are included where
+they are used. Each of the four namespaces has `std::literals` in it.
 
 RapidJSON, header-only, is fetched at the pin in `cmake/dd-dependencies.json`;
 a consumer that carries the same revision points
 `FETCHCONTENT_SOURCE_DIR_RAPIDJSON` at its copy, so a program holds one. On
-Linux core links threads. MSVC consumers are compiled with `/utf-8`. The CRT is
-the consumer's choice: nothing in libdesktop sets `CMAKE_MSVC_RUNTIME_LIBRARY`.
+Linux core links threads. MSVC consumers are compiled with `/utf-8`.
 
 ## Headers
 
@@ -47,6 +35,7 @@ Each header's comments are its reference; this is where to look.
 | `core/strings.h` | UTF-8, UTF-16 and UTF-32 conversion, code-point stepping and truncation, case folding, comparison, natural ordering, wildcards, splitting, trimming, number formatting, and interned strings (`cached`) |
 | `core/base64.h` | Base64 encoding and decoding |
 | `core/json.h` | RapidJSON documents, and readers that check a value's type before taking it |
+| `core/mcp.h` | A Model Context Protocol server: the tools an application offers an agent, their schemas, calls and results |
 | **Paths, dates and collections** | |
 | `core/path.h` | `file_path` and `folder_path`, their comparison and hashing, and `is_server` |
 | `core/selector.h` | `item_selector`: files chosen by path pattern, with or without subfolders |
@@ -55,23 +44,48 @@ Each header's comments are its reference; this is where to look.
 | `core/kdtree.h` | A k-d tree over caller-owned points: nearest neighbour and rectangle queries |
 | **Geometry and pixels** | |
 | `core/geometry.h` | Points, sizes, rectangles, affine transforms and quads, in integers and doubles |
-| `core/pixels.h` | Colours (`color32`, `color`), pixel formats, orientation and colour space, `surface` and `image`, blending, resizing and tone mapping |
+| `core/pixels.h` | Colours (`color32`, `color`), pixel formats, orientation, colour space and chroma siting, `surface` and `image`, blending, resizing and tone mapping |
 | `core/simd.h` | SSE, AVX and NEON wrappers for the pixel and CRC loops |
 
 ## The application's name
 
 The application calls `core::set_app_name(name)` before anything else: the
 platform names its log, settings, app-data folder, temporary files and locks
-from it ([platform.md](platform.md#names-made-from-the-applications-name)), so
-none of the libraries ever names an application. `core::app_file_stem()` is the
-name in lower case, the stem of those files.
+from it ([platform.md](platform.md#names-made-from-the-applications-name)).
+`core::app_file_stem()` is the name in lower case, the stem of those files.
 
 `core::log(context, message)` writes a line through the sink the platform
 installs when the application starts (`platform::start_log`); with no sink the
 line goes nowhere, and a Debug build also sends it to the debugger.
 `core::log_once` keeps a message that repeats for every item of a batch to one
-line. `core::trace` is for the debugger alone and compiles to nothing in
-Release.
+line. `core::trace` is for the debugger alone, and does nothing in Release.
+`core::set_log_observer` is told each line as it is written, beside the sink -
+what an agent session keeps for its client to read; it must be quick, and must
+not log.
+
+## Serving an agent
+
+`core::mcp::server` serves an application's tools to an agent over the Model
+Context Protocol: newline-delimited JSON-RPC, a line in and a message out, over a
+transport that is the caller's. On Windows and Linux `platform::run` serves it on
+stdin and stdout ([platform.md](platform.md#the-application)). It speaks both
+revisions in use: 2026-07-28, whose requests carry their revision and the
+client's capabilities in `_meta` and which `server/discover` describes, and the
+`initialize` handshake of the three before it. It offers tools only.
+
+A `core::mcp::tool` has a name, a description for the model, JSON Schemas for its
+input and output, hints - read-only, destructive, idempotent, reaching the
+network - and a handler. The handler runs on whatever thread the server is
+connected to post to - the UI thread, from `platform::run` - and must not block:
+it holds the `core::mcp::call`, which carries the arguments, hears cancellation,
+reports progress, and is finished once, from any thread, with a text or image
+result and, where the tool has structure, the same as JSON. Arguments are checked
+against the input schema first - types, properties, required, enumerations,
+bounds, `anyOf` and `oneOf` - and an argument the schema refuses is answered as
+the tool's error, which the model can correct. A message larger than 4 MiB, more
+than 32 calls at once, a malformed request or an unknown method or tool is a
+protocol error. A cancelled call, and every call running when the input closes,
+is answered with nothing.
 
 ## Text
 
@@ -82,10 +96,10 @@ two UTF-8 sequences is kept as the character it pairs to. The code-point helpers
 (`utf8_next`, `utf8_prev`, `utf8_truncate`, `utf8_codepoint_count`) step whole
 code points, so a cut never lands inside one.
 
-`icmp` and the other case-insensitive comparisons fold case beyond ASCII,
-Cyrillic and Korean included; natural ordering compares runs of digits by value.
-`core::cached` is an interned string: a 32-bit handle into an arena reserved
-once, so a record never moves and equal handles are equal text.
+`icmp` and the other case-insensitive comparisons fold case beyond ASCII;
+natural ordering compares runs of digits by value. `core::cached` is an
+interned string: a 32-bit handle into an arena reserved once, so a record never
+moves and equal handles are equal text.
 
 ## Paths
 
@@ -125,10 +139,24 @@ Writing a `color32` into a surface, or reading one out, swaps red and blue
 unless it goes through `core::bgr` or `core::abgr`. A pixel of an ARGB surface
 with alpha 0 is invisible once the surface is drawn as a texture.
 
+A wide surface, `texture_format::RGBX16` or `RGBA16`, holds four 16-bit
+channels, red first, the fourth 65535 or straight alpha: Direct3D's
+R16G16B16A16, which a texture uploads it as. `get_pixel` and `set_pixel`
+convert to and from a packed pixel's B, G, R, A; `to_8_bit` rounds a wide
+surface to a byte a channel, and `to_16_bit` widens a packed one exactly.
+
+An NV12 or P010 surface is planar: luma rows, then a row of interleaved chroma
+for every two of them. It has no pixel to address, so `get_pixel`, `set_pixel`,
+`clear`, `draw` and `swap_rb` leave it alone, and `pixel_difference` compares
+each plane as it is stored. Its `chroma_siting` says where each chroma sample
+lies among the luma it covers - with the left column, as MPEG-2, H.264 and HEVC
+site 4:2:0, centred as JPEG does, or as a stream states - so whatever converts
+it reads the chroma there.
+
 `blend_constant_bgra` and `interpolate_bgra` run scalar, SSE2 or AVX2, chosen at
 run time; the AVX2 code is compiled in a translation unit of its own, with
 `/arch:AVX2` or `-mavx2`, and entered only after `core::has_avx2()`.
-`area_downscale` reduces a packed or NV12 surface by averaging areas,
+`area_downscale` reduces a packed, wide or NV12 surface by averaging areas,
 `bilinear_resize` enlarges, `surface::transform` turns and mirrors, and
 `tone_map_lut` shows an HDR picture as SDR with the same arithmetic on the CPU
 as the Direct3D shaders use.
@@ -145,24 +173,15 @@ core is standard C++.
 ## Tests
 
 `libdesktop_core_tests`, in `tests/core/`, under the CTest label
-`libdesktop-core`, links core alone. It covers natural ordering, UTF-16
-detection, case folding (Cyrillic and Korean among it), trimming, finding and
-formatting text, interned strings, Base64, path parsing, rotated points, dates
-parsed, refused and read alike on every platform, wildcards, k-d tree queries,
-latency buckets and cancellation tokens; and, for surfaces, unpremultiplying
-alpha, every orientation's transform, the SIMD blends against the scalar ones,
-area downscaling of packed and planar surfaces and bilinear resizing.
-
-```powershell
-.\dd.ps1 test --label libdesktop-core
-.\build\debug\libdesktop_core_tests.exe "*date*"
-```
+`libdesktop-core`, links core alone. It covers text, paths, dates, k-d tree
+queries and the surface operations, with every SIMD blend checked against the
+scalar one, and the MCP server's handshakes, tool calls, schema checks,
+progress and cancellation.
 
 ## Known gaps
 
-- The headers rely on the umbrella's includes and order.
 - A few names are global: `M_PI` (where the C library has none) and `M_PIF`,
   `log_func`, the `df_assert_*` macros and, on GCC and Clang, the MSVC CRT names
   `core/dialect.h` supplies.
-- `_snscanf_s` on GCC is a bounded `sscanf` and can read damaged text
-  differently from MSVC's ([todo](todo.md#core)).
+- On GCC and Clang, `core/dialect.h`'s `_snscanf_s` is a bounded `sscanf`, and
+  can read damaged text differently from MSVC's.

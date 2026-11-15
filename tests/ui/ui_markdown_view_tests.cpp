@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Headless tests for the source-preserving Markdown document control.
 
@@ -27,6 +26,8 @@ namespace
 	struct markdown_probe : ui::markdown_view
 	{
 		using ui::markdown_view::markdown_view;
+		using ui::markdown_view::_tables;
+		using ui::markdown_view::left_pad;
 	};
 
 	ui::text_buffer_ptr show_markdown(markdown_probe& view, ui::view_host& host, const std::string_view text,
@@ -58,8 +59,8 @@ namespace
 		assert_equal(true, body_top < second_top, "lines remain ordered");
 		assert_equal(true, second_top - body_top > body_top - title_top, "heading has extra height");
 
-		for (const auto location : {ui::text_location{0, 0}, ui::text_location{4, 1},
-		                            ui::text_location{3, 2}, ui::text_location{9, 3}})
+		for (const auto location :
+		     {ui::text_location{0, 0}, ui::text_location{4, 1}, ui::text_location{3, 2}, ui::text_location{9, 3}})
 		{
 			const auto point = view.text_to_client(location);
 			const auto back = view.text_at(point);
@@ -195,8 +196,7 @@ namespace
 		ui::test::recording_view_host host;
 		const ui::view_theme theme;
 		markdown_probe view(host, theme);
-		const auto buffer = show_markdown(view, host,
-		                                 "| name | note |\n| ---- | ---- |\n| caf\xC3\xA9 | ok |\nafter");
+		const auto buffer = show_markdown(view, host, "| name | note |\n| ---- | ---- |\n| caf\xC3\xA9 | ok |\nafter");
 
 		ui::test::fake_draw_context draw{core::recti(0, 0, 480, 320)};
 		view.paint(draw, false);
@@ -220,9 +220,9 @@ namespace
 			if (text.text.find("ok") == std::string::npos) continue;
 			for (const auto& fill : draw.fills)
 			{
-				if (fill.color == selected_background &&
-				    fill.rect.left <= text.clip.left && fill.rect.right >= text.clip.right &&
-				    fill.rect.top <= text.clip.top && fill.rect.bottom >= text.clip.bottom)
+				if (fill.color == selected_background && fill.rect.left <= text.clip.left &&
+				    fill.rect.right >= text.clip.right && fill.rect.top <= text.clip.top &&
+				    fill.rect.bottom >= text.clip.bottom)
 				{
 					saw_selected_cell = true;
 					break;
@@ -230,6 +230,39 @@ namespace
 			}
 		}
 		assert_equal(true, saw_selected_cell, "selected table row uses selection background");
+	}
+
+	void test_markdown_table_resize()
+	{
+		ui::test::recording_view_host host;
+		const ui::view_theme theme;
+		markdown_probe view(host, theme);
+		const auto source = "| Name | Value |\n| --- | --- |\n| alpha | some longer value |";
+		const auto buffer = show_markdown(view, host, source);
+		const auto widths = view._tables.front().col_widths;
+		const auto x = view.left_pad() + (widths[0] + 3) * view.font_extent().cx;
+		const auto y = view.text_to_client({0, 0}).y + 2;
+		assert_equal(true, view.cursor_at({x, y}) == platform::cursor::left_right, "table divider cursor");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x + 24, y + 500}, true);
+		assert_equal(widths[0] + 3, view._tables.front().col_widths[0], "captured header resize changes cells");
+		assert_equal(false, buffer->has_selection(), "resizing is not text selection");
+		assert_equal_strict(source, buffer->str(), "resizing never edits Markdown source");
+		assert_equal(true, view.on_key(platform::keys::ESCAPE, {}), "Escape consumes the resize");
+		assert_equal(widths[0], view._tables.front().col_widths[0], "Escape restores the table");
+		view.on_mouse_up({x + 24, y}, {});
+		assert_equal(widths[0], view._tables.front().col_widths[0], "release cannot restart cancelled drag");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x + 16, y}, true);
+		view.on_mouse_up({x + 16, y}, {});
+		view.layout();
+		assert_equal(widths[0] + 2, view._tables.front().col_widths[0], "size survives document relayout");
+		view.on_double_click({x + 16, y}, {});
+		assert_equal(widths[0], view._tables.front().col_widths[0], "double click fits content");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x + 32, y}, true);
+		view.on_mouse_move({x + 32, y}, false);
+		assert_equal(widths[0], view._tables.front().col_widths[0], "capture loss restores the width");
 	}
 
 	void test_markdown_view_keeps_text_clear_of_the_scrollbar()
@@ -249,8 +282,8 @@ namespace
 		}
 
 		assert_equal(true, right > extent.cx / 2, "wrapped row uses most of the width");
-		assert_equal(true, right <= extent.cx - ui::scrollbar::base_thumb_thickness -
-		                              2 * ui::scrollbar::base_edge_margin,
+		assert_equal(true,
+		             right <= extent.cx - ui::scrollbar::base_thumb_thickness - 2 * ui::scrollbar::base_edge_margin,
 		             "wrapped row leaves scrollbar room");
 	}
 
@@ -259,8 +292,7 @@ namespace
 		ui::test::recording_view_host host;
 		const ui::view_theme theme;
 		markdown_probe view(host, theme);
-		const std::string source =
-			"- aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr\nafter";
+		const std::string source = "- aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr\nafter";
 		const auto buffer = show_markdown(view, host, source, {160, 320});
 
 		assert_equal(2, static_cast<int>(buffer->size()), "wrapped source line count");
@@ -302,13 +334,13 @@ namespace
 			[[nodiscard]] core::color32 style_color(const ui::text_style style) const override
 			{
 				return style == ui::text_style::md_quote ? core::rgba(0x60, 0xa0, 0xff)
-				                                      : ui::view_theme::style_color(style);
+				                                         : ui::view_theme::style_color(style);
 			}
 		};
 
 		const ui::view_theme plain;
-		assert_equal(true, plain.style_color(ui::text_style::md_quote) ==
-		                       plain.style_color(ui::text_style::normal_text),
+		assert_equal(true,
+		             plain.style_color(ui::text_style::md_quote) == plain.style_color(ui::text_style::normal_text),
 		             "default quote colour is normal text");
 
 		quote_theme theme;
@@ -357,7 +389,6 @@ namespace
 		assert_equal_strict("first line\nsecond line", buffer->str(), "read-only keyboard cut preserves source");
 	}
 
-
 }
 
 void register_ui_markdown_view_tests(test_registry& tests)
@@ -368,8 +399,11 @@ void register_ui_markdown_view_tests(test_registry& tests)
 	tests.add(std::string("Should activate Markdown links"), test_markdown_view_links);
 	tests.add(std::string("Should report Markdown link occurrences"), test_markdown_view_reports_which_link_was_hit);
 	tests.add(std::string("Should draw Markdown tables"), test_markdown_view_tables);
-	tests.add(std::string("Should leave Markdown rows clear of scrollbars"), test_markdown_view_keeps_text_clear_of_the_scrollbar);
-	tests.add(std::string("Should wrap Markdown without editing it"), test_markdown_view_wraps_without_touching_the_buffer);
+	tests.add(std::string("Should resize Markdown table columns"), test_markdown_table_resize);
+	tests.add(std::string("Should leave Markdown rows clear of scrollbars"),
+	          test_markdown_view_keeps_text_clear_of_the_scrollbar);
+	tests.add(std::string("Should wrap Markdown without editing it"),
+	          test_markdown_view_wraps_without_touching_the_buffer);
 	tests.add(std::string("Should keep Markdown UTF-8 positions"), test_markdown_view_utf8_positions);
 	tests.add(std::string("Should style Markdown quotes"), test_markdown_view_styles_a_quote);
 	tests.add(std::string("Should copy Markdown source with the keyboard"), test_markdown_view_copies_with_keyboard);

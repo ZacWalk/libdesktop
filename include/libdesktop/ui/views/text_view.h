@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The control-backed text view contract shared by document views.
 
@@ -58,8 +57,7 @@ namespace ui
 
 		text_view(view_host& host, const view_theme& theme, view_context* context = nullptr,
 		          text_clipboard* clipboard = nullptr);
-		text_view(const view_theme& theme, view_context* context = nullptr,
-		          text_clipboard* clipboard = nullptr);
+		text_view(const view_theme& theme, view_context* context = nullptr, text_clipboard* clipboard = nullptr);
 
 		[[nodiscard]] static view_host& default_view_host();
 		[[nodiscard]] render::font_face body_face() const;
@@ -112,7 +110,7 @@ namespace ui
 		void select_all_text() { select_all(); }
 
 		[[nodiscard]] virtual bool word_wrap() const { return false; }
-		virtual void set_word_wrap(bool enabled) { (void)enabled; }
+		virtual void set_word_wrap(bool /*enabled*/) {}
 		virtual void toggle_word_wrap() {}
 		virtual void layout() {}
 		virtual void update_caret() {}
@@ -136,7 +134,7 @@ namespace ui
 		void on_placed(render::measure_context& mc) override;
 		void on_focus(bool focused, bool select_all) override;
 		void on_keyboard(bool has_keyboard) override;
-		bool on_key(int key, platform::key_state keys) override;
+		bool on_key(char32_t key, platform::key_state keys) override;
 		bool on_text(std::string_view text) override;
 		bool on_wheel(core::pointi loc, int delta, platform::key_state keys) override;
 		std::vector<command_ptr> context_commands(core::pointi loc) override;

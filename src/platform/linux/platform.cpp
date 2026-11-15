@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The Linux backend's processes, synchronization, locale and known folders. Windows are in
 // window.cpp, and what has no Linux counterpart yet is in desktop.cpp; docs/platform.md describes both.
@@ -12,13 +11,16 @@
 #include "libdesktop/platform.h"
 #include "libdesktop/core/cpu_features.h"
 #include "primitives.h"
+#include "../agent.h"
 #include <SDL3/SDL.h>
 
-
 #include <condition_variable>
+#include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -49,11 +51,9 @@ std::filesystem::path platform::to_stream_path(const core::folder_path path)
 	return {std::string(path.text())};
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Events
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
 
 namespace
 {
@@ -148,7 +148,7 @@ namespace
 	std::optional<int64_t> local_utc_offset_seconds(const uint64_t ts)
 	{
 		const auto seconds = static_cast<int64_t>(ts / core::detail::ft_ticks_per_second) -
-			static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
+		                     static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
 		auto when = static_cast<time_t>(seconds);
 		tm local = {};
 		if (static_cast<int64_t>(when) != seconds || localtime_r(&when, &local) == nullptr)
@@ -179,7 +179,7 @@ uint64_t platform::local_to_utc(const uint64_t ts)
 {
 	if (ts == 0) return 0;
 	const auto seconds = static_cast<int64_t>(ts / core::detail::ft_ticks_per_second) -
-		static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
+	                     static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
 	const auto wall_time = static_cast<time_t>(seconds);
 	tm local = {};
 	if (static_cast<int64_t>(wall_time) != seconds || !gmtime_r(&wall_time, &local))
@@ -193,7 +193,8 @@ uint64_t platform::local_to_utc(const uint64_t ts)
 	const auto utc = mktime(&local);
 	const auto shifted = static_cast<int64_t>(utc) + static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
 	if (errno == EOVERFLOW || shifted < 0 ||
-		static_cast<uint64_t>(shifted) > (UINT64_MAX - ts % core::detail::ft_ticks_per_second) / core::detail::ft_ticks_per_second)
+	    static_cast<uint64_t>(shifted) >
+	        (UINT64_MAX - ts % core::detail::ft_ticks_per_second) / core::detail::ft_ticks_per_second)
 	{
 		core::log_once(__FUNCTION__, "Cannot convert local timestamp to UTC");
 		return ts;
@@ -226,34 +227,28 @@ core::folder_path platform::known_path(const known_folder f)
 	switch (f)
 	{
 	case known_folder::running_app_folder:
-		{
-			char buffer[PATH_MAX] = {};
-			const auto len = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-			if (len <= 0) return core::folder_path(home);
-			const std::string_view exe(buffer, static_cast<size_t>(len));
-			const auto slash = exe.find_last_of('/');
-			return core::folder_path(slash == std::string_view::npos ? exe : exe.substr(0, slash));
-		}
+	{
+		char buffer[PATH_MAX] = {};
+		const auto len = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+		if (len <= 0) return core::folder_path(home);
+		const std::string_view exe(buffer, static_cast<size_t>(len));
+		const auto slash = exe.find_last_of('/');
+		return core::folder_path(slash == std::string_view::npos ? exe : exe.substr(0, slash));
+	}
 	case known_folder::app_data:
-		return core::folder_path(std::format("{}/{}", env_or("XDG_DATA_HOME", home + "/.local/share"), core::app_file_stem()));
-	case known_folder::roaming_app_data:
-		return core::folder_path(env_or("XDG_CONFIG_HOME", home + "/.config"));
+		return core::folder_path(
+			std::format("{}/{}", env_or("XDG_DATA_HOME", home + "/.local/share"), core::app_file_stem()));
+	case known_folder::roaming_app_data: return core::folder_path(env_or("XDG_CONFIG_HOME", home + "/.config"));
 	case known_folder::app_cache_data:
-		return core::folder_path(std::format("{}/{}", env_or("XDG_CACHE_HOME", home + "/.cache"), core::app_file_stem()));
-	case known_folder::test_files_folder:
-		return known_path(known_folder::running_app_folder).combine("test");
-	case known_folder::downloads:
-		return core::folder_path(env_or("XDG_DOWNLOAD_DIR", home + "/Downloads"));
-	case known_folder::pictures:
-		return core::folder_path(env_or("XDG_PICTURES_DIR", home + "/Pictures"));
-	case known_folder::video:
-		return core::folder_path(env_or("XDG_VIDEOS_DIR", home + "/Videos"));
-	case known_folder::music:
-		return core::folder_path(env_or("XDG_MUSIC_DIR", home + "/Music"));
-	case known_folder::documents:
-		return core::folder_path(env_or("XDG_DOCUMENTS_DIR", home + "/Documents"));
-	case known_folder::desktop:
-		return core::folder_path(env_or("XDG_DESKTOP_DIR", home + "/Desktop"));
+		return core::folder_path(
+			std::format("{}/{}", env_or("XDG_CACHE_HOME", home + "/.cache"), core::app_file_stem()));
+	case known_folder::test_files_folder: return known_path(known_folder::running_app_folder).combine("test");
+	case known_folder::downloads: return core::folder_path(env_or("XDG_DOWNLOAD_DIR", home + "/Downloads"));
+	case known_folder::pictures: return core::folder_path(env_or("XDG_PICTURES_DIR", home + "/Pictures"));
+	case known_folder::video: return core::folder_path(env_or("XDG_VIDEOS_DIR", home + "/Videos"));
+	case known_folder::music: return core::folder_path(env_or("XDG_MUSIC_DIR", home + "/Music"));
+	case known_folder::documents: return core::folder_path(env_or("XDG_DOCUMENTS_DIR", home + "/Documents"));
+	case known_folder::desktop: return core::folder_path(env_or("XDG_DESKTOP_DIR", home + "/Desktop"));
 
 	// Cloud provider folders are Windows shell locations with no Linux equivalent. An empty path is
 	// how the rest of the app already expresses "this location does not exist here".
@@ -261,8 +256,7 @@ core::folder_path platform::known_path(const known_folder f)
 	case known_folder::onedrive_pictures:
 	case known_folder::onedrive_video:
 	case known_folder::onedrive_music:
-	case known_folder::onedrive_camera_roll:
-		return {};
+	case known_folder::onedrive_camera_roll: return {};
 	}
 
 	return {};
@@ -289,7 +283,6 @@ bool platform::exists(const core::folder_path path)
 // Calendar conversion. Timestamps are FILETIME ticks, so the epoch shift is applied on both sides.
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 std::string platform::format_date(const core::date_t d)
 {
 	const auto day = core::to_date(d._i);
@@ -309,8 +302,8 @@ std::string platform::number_dec_sep()
 {
 	const auto* const conv = ::localeconv();
 	return conv != nullptr && conv->decimal_point != nullptr && *conv->decimal_point != 0
-		       ? std::string(conv->decimal_point)
-		       : ".";
+	           ? std::string(conv->decimal_point)
+	           : ".";
 }
 
 std::string platform::utf8_to_a(const std::string_view utf8)
@@ -366,8 +359,8 @@ namespace
 			return -1;
 		}
 
-		return static_cast<int>(::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(),
-		                                  RENAME_NOREPLACE));
+		return static_cast<int>(
+			::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE));
 	}
 
 	int link_no_replace(const std::string& from, const std::string& to)
@@ -395,8 +388,8 @@ platform::file_op_result platform::move_file(const core::file_path existing, con
 	const auto to = destination.str();
 	const auto failure = [](const int error)
 	{
-		file_op_result result{error == EEXIST ? file_op_result_code::ALREADY_EXISTS :
-			file_op_result_code::FAILED, std::string(::strerror(error))};
+		file_op_result result{error == EEXIST ? file_op_result_code::ALREADY_EXISTS : file_op_result_code::FAILED,
+		                      std::string(::strerror(error))};
 		result.error = {error, std::generic_category()};
 		return result;
 	};
@@ -454,7 +447,7 @@ platform::file_op_result platform::move_file(const core::file_path existing, con
 		}
 
 		if (allow_copy &&
-			(errno == EXDEV || errno == EPERM || errno == EOPNOTSUPP || errno == EMLINK || errno == ENOSYS))
+		    (errno == EXDEV || errno == EPERM || errno == EOPNOTSUPP || errno == EMLINK || errno == ENOSYS))
 		{
 			return copy_then_unlink();
 		}
@@ -507,7 +500,6 @@ void platform::test_linux_clear_move_file_failures()
 	test_linux_move_file_failures({});
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Media services unavailable on the SDL/Linux backend.
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -531,7 +523,6 @@ std::vector<platform::sound_device> platform::list_audio_playback_devices()
 {
 	return {};
 }
-
 
 core::pointi platform::cursor_position()
 {
@@ -585,4 +576,79 @@ void platform::write_stdout(const std::string_view text)
 size_t platform::read_stdin(char* const buffer, const size_t capacity)
 {
 	return buffer && capacity ? std::fread(buffer, 1, capacity, stdin) : 0;
+}
+
+namespace
+{
+	int agent_input = -1;
+	int agent_output = -1;
+
+	// How long a read waits before looking again whether the session is stopping.
+	constexpr int agent_poll_ms = 100;
+}
+
+bool platform::detail::claim_agent_stdio()
+{
+	std::fflush(stdout);
+	agent_input = dup(STDIN_FILENO);
+	agent_output = dup(STDOUT_FILENO);
+	if (agent_input < 0 || agent_output < 0) return false;
+
+	// Only the protocol reaches the client's end of stdout; whatever else writes there goes to stderr.
+	if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
+	{
+		const auto null = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+		if (null >= 0)
+		{
+			dup2(null, STDOUT_FILENO);
+			close(null);
+		}
+	}
+
+	// A client that closes its end mid-message must not end the process with SIGPIPE: the write fails instead.
+	std::signal(SIGPIPE, SIG_IGN);
+	return true;
+}
+
+std::optional<size_t> platform::detail::read_agent_input(char* const buffer, const size_t capacity)
+{
+	pollfd input{agent_input, POLLIN, 0};
+	const auto ready = poll(&input, 1, agent_poll_ms);
+	if (ready == 0 || (ready < 0 && errno == EINTR)) return std::nullopt;
+	if (ready < 0) return 0;
+
+	const auto read_bytes = read(agent_input, buffer, capacity);
+	if (read_bytes < 0) return errno == EINTR || errno == EAGAIN ? std::nullopt : std::optional<size_t>(0);
+	return static_cast<size_t>(read_bytes);
+}
+
+bool platform::detail::write_agent_output(const std::string_view bytes)
+{
+	size_t offset = 0;
+
+	while (offset < bytes.size())
+	{
+		const auto written = write(agent_output, bytes.data() + offset, bytes.size() - offset);
+
+		if (written < 0)
+		{
+			if (errno == EINTR) continue;
+			return false;
+		}
+
+		offset += static_cast<size_t>(written);
+	}
+
+	return true;
+}
+
+void platform::detail::interrupt_agent_input(std::thread& /*reader*/)
+{
+	// The read polls, so it notices the session stopping by itself.
+}
+
+void platform::detail::write_agent_diagnostic(const std::string_view text)
+{
+	std::fprintf(stderr, "%.*s\n", static_cast<int>(text.size()), text.data());
+	std::fflush(stderr);
 }

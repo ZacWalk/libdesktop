@@ -125,6 +125,9 @@ function(libdesktop_add_app target)
 
         set(rc_file "${generated_dir}/${target}.rc")
         file(GENERATE OUTPUT "${rc_file}" CONTENT "${rc}")
+        if(LDA_ICON)
+            set_source_files_properties("${rc_file}" PROPERTIES OBJECT_DEPENDS "${icon_path}")
+        endif()
         list(APPEND sources "${rc_file}")
     endif()
 

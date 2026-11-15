@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows platform abstraction layer. Provides OS-specific implementations for
 // file system, threading, networking, and shell integration.
@@ -14,14 +13,15 @@
 #include "libdesktop/platform/win32.h"
 #include "os.h"
 #include "primitives.h"
+#include "../agent.h"
 
 #include <psapi.h>
 #include <Shlwapi.h>
 #include <commdlg.h>
 #include <Thumbcache.h>
-#include <shobjidl.h>   // SHGetPropertyStoreFromParsingName, etc
-#include <propkey.h>    // PKEY_Music_AlbumArtist
-#include <propvarutil.h>// InitPropVariantFromString, needs shlwapi.lib
+#include <shobjidl.h>    // SHGetPropertyStoreFromParsingName, etc
+#include <propkey.h>     // PKEY_Music_AlbumArtist
+#include <propvarutil.h> // InitPropVariantFromString, needs shlwapi.lib
 #include <lm.h>
 #include <WinIoCtl.h>
 #include <SetupAPI.h>
@@ -35,7 +35,6 @@
 
 #pragma comment(lib, "SetupAPI")
 #pragma comment(lib, "Cfgmgr32")
-
 
 #include "libdesktop/core/util.h"
 #include "libdesktop/core/strings.h"
@@ -135,15 +134,13 @@ static std::string string_var(const PROPVARIANT& propVariant)
 // Maximum thumbnail size
 static constexpr int max_thumbnail_bytes = 0x1000000;
 
-platform::get_cached_file_properties_response platform::read_shell_properties(
-	const core::file_path path, shell_properties& properties_out)
+platform::get_cached_file_properties_response platform::read_shell_properties(const core::file_path path,
+                                                                              shell_properties& properties_out)
 {
 	auto result = get_cached_file_properties_response::fail;
 
-
 	ComPtr<IShellItem2> item;
-	HRESULT hr = SHCreateItemFromParsingName(to_shell_path(path).c_str(), nullptr /*bindContext*/,
-	                                         IID_PPV_ARGS(&item));
+	HRESULT hr = SHCreateItemFromParsingName(to_shell_path(path).c_str(), nullptr /*bindContext*/, IID_PPV_ARGS(&item));
 
 	if (SUCCEEDED(hr))
 	{
@@ -321,9 +318,11 @@ platform::get_cached_file_properties_response platform::read_shell_properties(
 												{
 													ULONG bytes_read = 0;
 
-													if (FAILED(stream->Read(blob.data() + total_read,
-													                        static_cast<ULONG>(blob.size() - total_read),
-													                        &bytes_read)) || bytes_read == 0)
+													if (FAILED(
+															stream->Read(blob.data() + total_read,
+													                     static_cast<ULONG>(blob.size() - total_read),
+													                     &bytes_read)) ||
+													    bytes_read == 0)
 													{
 														break;
 													}
@@ -366,9 +365,10 @@ platform::get_cached_file_properties_response platform::read_shell_properties(
 	return result;
 }
 
-platform::get_cached_file_properties_response platform::get_shell_thumbnail(
-	const core::file_path path, const core::sizei requested_extent, const bool allow_network,
-	bgra_pixels& thumbnail_out)
+platform::get_cached_file_properties_response platform::get_shell_thumbnail(const core::file_path path,
+                                                                            const core::sizei requested_extent,
+                                                                            const bool allow_network,
+                                                                            bgra_pixels& thumbnail_out)
 {
 	// Fetch a thumbnail via IShellItemImageFactory -- the same mechanism Windows Explorer uses.
 	// For a OneDrive (Files On-Demand) placeholder this returns the cloud provider's thumbnail
@@ -402,7 +402,10 @@ platform::get_cached_file_properties_response platform::get_shell_thumbnail(
 	HBITMAP hbitmap = nullptr;
 	hr = factory->GetImage(size, flags, &hbitmap);
 
-	const core::scope_exit free_bitmap([&hbitmap] { if (hbitmap) DeleteObject(hbitmap); });
+	const core::scope_exit free_bitmap([&hbitmap]
+	{
+		if (hbitmap) DeleteObject(hbitmap);
+	});
 
 	if (hr == WTS_E_EXTRACTIONPENDING || hr == E_PENDING)
 	{
@@ -433,8 +436,8 @@ platform::get_cached_file_properties_response platform::get_shell_thumbnail(
 
 	if (SUCCEEDED(hr))
 	{
-		hr = converter->Initialize(wic_bitmap.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
-		                           nullptr, 0.0f, WICBitmapPaletteTypeMedianCut);
+		hr = converter->Initialize(wic_bitmap.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr,
+		                           0.0f, WICBitmapPaletteTypeMedianCut);
 	}
 
 	uint32_t w = 0;
@@ -453,7 +456,7 @@ platform::get_cached_file_properties_response platform::get_shell_thumbnail(
 		pixels.pixels.resize(stride * h);
 
 		if (SUCCEEDED(converter->CopyPixels(nullptr, static_cast<uint32_t>(stride),
-			static_cast<uint32_t>(pixels.pixels.size()), pixels.pixels.data())))
+		                                    static_cast<uint32_t>(pixels.pixels.size()), pixels.pixels.data())))
 		{
 			// Reject the shell's generic file-type icon (returned while OneDrive has not yet
 			// produced a cloud thumbnail). A real photo/video thumbnail is fully opaque; the generic
@@ -491,7 +494,6 @@ platform::get_cached_file_properties_response platform::get_shell_thumbnail(
 	return result;
 }
 
-
 platform::drives platform::scan_drives()
 {
 	drives results;
@@ -519,14 +521,10 @@ platform::drives platform::scan_drives()
 
 			switch (::GetDriveType(szDrive))
 			{
-			case DRIVE_REMOVABLE: d.type = drive_type::removable;
-				break;
-			case DRIVE_REMOTE: d.type = drive_type::remote;
-				break;
-			case DRIVE_CDROM: d.type = drive_type::cdrom;
-				break;
-			default: d.type = drive_type::fixed;
-				break;
+			case DRIVE_REMOVABLE: d.type = drive_type::removable; break;
+			case DRIVE_REMOTE: d.type = drive_type::remote; break;
+			case DRIVE_CDROM: d.type = drive_type::cdrom; break;
+			default: d.type = drive_type::fixed; break;
 			}
 
 			// Volume and size details are unavailable for an empty card reader or optical drive; the
@@ -567,7 +565,6 @@ platform::drives platform::scan_drives()
 
 	return results;
 }
-
 
 static constexpr LCID default_locale = LOCALE_USER_DEFAULT;
 std::atomic_bool number_format_invalid = true;
@@ -633,8 +630,8 @@ static number_format_snapshot read_number_format()
 	result.thousand_sep = thousand_sep;
 
 	// LOCALE_RETURN_NUMBER writes a DWORD, and cchData counts wchar_t.
-	GetLocaleInfoW(default_locale, LOCALE_RETURN_NUMBER | LOCALE_ILZERO,
-	               std::bit_cast<LPWSTR>(&result.leading_zero), sizeof(uint32_t) / sizeof(wchar_t));
+	GetLocaleInfoW(default_locale, LOCALE_RETURN_NUMBER | LOCALE_ILZERO, std::bit_cast<LPWSTR>(&result.leading_zero),
+	               sizeof(uint32_t) / sizeof(wchar_t));
 	GetLocaleInfoW(default_locale, LOCALE_RETURN_NUMBER | LOCALE_INEGNUMBER,
 	               std::bit_cast<LPWSTR>(&result.negative_order), sizeof(uint32_t) / sizeof(wchar_t));
 
@@ -722,8 +719,8 @@ class file_impl final : public platform::file
 
 		const auto error = GetLastError();
 		const auto code = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS
-			                  ? platform::file_op_result_code::ALREADY_EXISTS
-			                  : platform::file_op_result_code::FAILED;
+		                      ? platform::file_op_result_code::ALREADY_EXISTS
+		                      : platform::file_op_result_code::FAILED;
 		auto message = platform::last_os_error();
 		if (message.empty()) message = std::format("Windows error {}", error);
 		platform::file_op_result result{code, std::move(message)};
@@ -747,13 +744,9 @@ class file_impl final : public platform::file
 	}
 
 public:
-	file_impl(const HANDLE file) : _h(file)
-	{
-	}
+	file_impl(const HANDLE file) : _h(file) {}
 
-	explicit file_impl(os::file_ptr file) : _os(std::move(file))
-	{
-	}
+	explicit file_impl(os::file_ptr file) : _os(std::move(file)) {}
 
 	~file_impl() override
 	{
@@ -850,9 +843,9 @@ public:
 	{
 		if (_os)
 		{
-			const auto origin = w == whence::begin ? os::file_whence::begin
-			                     : w == whence::current ? os::file_whence::current
-			                                            : os::file_whence::end;
+			const auto origin = w == whence::begin     ? os::file_whence::begin
+			                    : w == whence::current ? os::file_whence::current
+			                                           : os::file_whence::end;
 			return _os->seek(pos, origin);
 		}
 		LARGE_INTEGER result = {0, 0};
@@ -863,18 +856,13 @@ public:
 
 		switch (w)
 		{
-		case whence::begin:
-			break;
-		case whence::current:
-			method = FILE_CURRENT;
-			break;
-		case whence::end:
-			method = FILE_END;
-			break;
-		default: ;
+		case whence::begin: break;
+		case whence::current: method = FILE_CURRENT; break;
+		case whence::end: method = FILE_END; break;
+		default:;
 		}
 
-		if (!SetFilePointerEx(_h, offset, &result, method)) return -1;
+		if (!SetFilePointerEx(_h, offset, &result, method)) return static_cast<uint64_t>(-1);
 		return result.QuadPart;
 	}
 
@@ -883,7 +871,7 @@ public:
 		if (_os) return _os->position();
 		LARGE_INTEGER result = {0, 0};
 		constexpr LARGE_INTEGER offset = {0, 0};
-		if (!SetFilePointerEx(_h, offset, &result, FILE_CURRENT)) return -1;
+		if (!SetFilePointerEx(_h, offset, &result, FILE_CURRENT)) return static_cast<uint64_t>(-1);
 		return result.QuadPart;
 	}
 
@@ -973,9 +961,11 @@ platform::file_ptr platform::open_file_lock(const core::file_path path, const fi
 	if (attributes == INVALID_FILE_ATTRIBUTES) return {};
 	const bool reading = mode == file_lock_mode::read;
 	const auto flags = FILE_FLAG_OPEN_REPARSE_POINT |
-		((attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN);
-	const auto access = reading ? GENERIC_READ :
-		(attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_READ_ATTRIBUTES | DELETE : GENERIC_READ | DELETE;
+	                   ((attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS
+	                                                            : FILE_FLAG_SEQUENTIAL_SCAN);
+	const auto access = reading                                   ? GENERIC_READ
+	                    : (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_READ_ATTRIBUTES | DELETE
+	                                                              : GENERIC_READ | DELETE;
 	const auto share = FILE_SHARE_READ | (reading ? FILE_SHARE_DELETE : 0);
 	auto* handle = CreateFileW(path_w.c_str(), access, share, nullptr, OPEN_EXISTING, flags, nullptr);
 	if (handle == INVALID_HANDLE_VALUE) return {};
@@ -1003,20 +993,18 @@ platform::file_ptr platform::open_file_lock(const core::file_path path, const fi
 	return result;
 }
 
-platform::file_op_result platform::move_file(const platform::file_ptr& existing,
-                                             const core::file_path destination, const bool fail_if_exists)
+platform::file_op_result platform::move_file(const platform::file_ptr& existing, const core::file_path destination,
+                                             const bool fail_if_exists)
 {
 	const auto locked = std::dynamic_pointer_cast<file_impl>(existing);
-	if (!locked)
-		return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
+	if (!locked) return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
 	return locked->rename_to(destination, fail_if_exists);
 }
 
 platform::file_op_result platform::delete_file(const platform::file_ptr& existing)
 {
 	const auto locked = std::dynamic_pointer_cast<file_impl>(existing);
-	if (!locked)
-		return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
+	if (!locked) return {file_op_result_code::FAILED, "The file handle is not an identity-pinned Windows token.", {}};
 	return locked->remove();
 }
 
@@ -1064,8 +1052,8 @@ class mapped_file_impl final : public platform::mapped_file
 	}
 
 public:
-	mapped_file_impl(const HANDLE file, const HANDLE section, const uint64_t file_size) noexcept
-		: _file(file), _section(section), _file_size(file_size)
+	mapped_file_impl(const HANDLE file, const HANDLE section, const uint64_t file_size) noexcept :
+		_file(file), _section(section), _file_size(file_size)
 	{
 	}
 
@@ -1076,15 +1064,9 @@ public:
 		if (_file != INVALID_HANDLE_VALUE) CloseHandle(_file);
 	}
 
-	uint64_t file_size() const override
-	{
-		return _file_size;
-	}
+	uint64_t file_size() const override { return _file_size; }
 
-	core::cspan data() const override
-	{
-		return _span;
-	}
+	core::cspan data() const override { return _span; }
 
 	core::cspan set_window(const uint64_t offset, const uint64_t len) override
 	{
@@ -1106,8 +1088,7 @@ public:
 
 		if (map_len > std::numeric_limits<size_t>::max()) return {};
 
-		_view = static_cast<const uint8_t*>(MapViewOfFile(_section, FILE_MAP_READ,
-		                                                  static_cast<DWORD>(aligned >> 32),
+		_view = static_cast<const uint8_t*>(MapViewOfFile(_section, FILE_MAP_READ, static_cast<DWORD>(aligned >> 32),
 		                                                  static_cast<DWORD>(aligned & 0xFFFFFFFFull),
 		                                                  static_cast<SIZE_T>(map_len)));
 
@@ -1216,7 +1197,6 @@ std::optional<uint32_t> platform::file_crc32_checked(const core::file_path path,
 		DWORD dwReadChunk = 0UL;
 		uint64_t total_read = 0ULL;
 
-
 		while (total_read < size && !token.is_cancelled())
 		{
 			const auto read_size = static_cast<DWORD>(std::min<uint64_t>(max_chunk, size - total_read));
@@ -1248,9 +1228,10 @@ std::optional<uint32_t> platform::file_crc32_checked(const core::file_path path,
 
 // GUID_DEVINTERFACE_DISK. Defined here because the SDK only declares it and which import library
 // supplies the symbol varies between SDK versions.
-static constexpr GUID guid_devinterface_disk = {
-	0x53f56307, 0xb6bf, 0x11d0, {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}
-};
+static constexpr GUID guid_devinterface_disk = {0x53f56307,
+                                                0xb6bf,
+                                                0x11d0,
+                                                {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
 
 static bool volume_device_number(const HANDLE device, STORAGE_DEVICE_NUMBER& result)
 {
@@ -1306,8 +1287,8 @@ static bool find_disk_devinst(const STORAGE_DEVICE_NUMBER& volume_device, DEVINS
 
 		STORAGE_DEVICE_NUMBER disk_device = {};
 		const auto matched = volume_device_number(disk, disk_device) &&
-			disk_device.DeviceType == volume_device.DeviceType &&
-			disk_device.DeviceNumber == volume_device.DeviceNumber;
+		                     disk_device.DeviceType == volume_device.DeviceType &&
+		                     disk_device.DeviceNumber == volume_device.DeviceNumber;
 
 		CloseHandle(disk);
 
@@ -1381,7 +1362,7 @@ static bool request_device_eject(const wchar_t drive_letter)
 		if (attempt + 1 == attempts)
 		{
 			core::log(__FUNCTION__, std::format("CM_Request_Device_Eject vetoed by {} ({})",
-			                                  core::utf16_to_utf8(veto_name), static_cast<int>(veto_type)));
+			                                    core::utf16_to_utf8(veto_name), static_cast<int>(veto_type)));
 		}
 		else
 		{
@@ -1525,9 +1506,7 @@ static void add_library_paths(REFIID libraryId, core::unique_folders& results)
 
 				if (SUCCEEDED(pFolders->EnumItems(&spEnum)))
 				{
-					for (ComPtr<IShellItem> spPrinter;
-					     spEnum->Next(1, &spPrinter, nullptr) == S_OK;
-					     spPrinter.Reset())
+					for (ComPtr<IShellItem> spPrinter; spEnum->Next(1, &spPrinter, nullptr) == S_OK; spPrinter.Reset())
 					{
 						wchar_t* spszName = nullptr;
 
@@ -1688,12 +1667,11 @@ static core::folder_path onedrive_root_folder()
 	DWORD dwLen = sizeof(path) - sizeof(wchar_t); // leave room for a terminator the value may omit
 	DWORD dwType = 0;
 
-	if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\OneDrive", 0,
-	                                  KEY_QUERY_VALUE, &hKey))
+	if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\OneDrive", 0, KEY_QUERY_VALUE, &hKey))
 	{
-		if (ERROR_SUCCESS == RegQueryValueEx(hKey, L"UserFolder", nullptr, &dwType, std::bit_cast<LPBYTE>(&path[0]),
-		                                     &dwLen)
-			&& dwType == REG_SZ)
+		if (ERROR_SUCCESS ==
+		        RegQueryValueEx(hKey, L"UserFolder", nullptr, &dwType, std::bit_cast<LPBYTE>(&path[0]), &dwLen) &&
+		    dwType == REG_SZ)
 		{
 			result = core::folder_path(core::utf16_to_utf8(path));
 		}
@@ -1752,7 +1730,7 @@ core::folder_path platform::known_path(const known_folder f)
 	case known_folder::onedrive_video: return onedrive("video");
 	case known_folder::onedrive_music: return onedrive("music");
 	case known_folder::onedrive_camera_roll: return onedrive("pictures", "Camera Roll");
-	default: ;
+	default:;
 	}
 
 	return {};
@@ -1780,16 +1758,17 @@ core::unique_folders platform::known_folders()
 
 	result.emplace(known_path(known_folder::desktop));
 
-
 	const auto folder = known_path(known_folder::downloads);
 	if (!folder.is_empty()) result.emplace(folder);
 
-	if (platform::exists(known_path(known_folder::dropbox_photos))) result.emplace(known_path(known_folder::dropbox_photos));
+	if (platform::exists(known_path(known_folder::dropbox_photos)))
+		result.emplace(known_path(known_folder::dropbox_photos));
 	if (platform::exists(known_path(known_folder::onedrive_pictures)))
-		result.emplace(
-			known_path(known_folder::onedrive_pictures));
-	if (platform::exists(known_path(known_folder::onedrive_video))) result.emplace(known_path(known_folder::onedrive_video));
-	if (platform::exists(known_path(known_folder::onedrive_music))) result.emplace(known_path(known_folder::onedrive_music));
+		result.emplace(known_path(known_folder::onedrive_pictures));
+	if (platform::exists(known_path(known_folder::onedrive_video)))
+		result.emplace(known_path(known_folder::onedrive_video));
+	if (platform::exists(known_path(known_folder::onedrive_music)))
+		result.emplace(known_path(known_folder::onedrive_music));
 
 	const auto drives = scan_drives();
 
@@ -1857,15 +1836,13 @@ std::string platform::user_language()
 	wchar_t country[16]{};
 
 	// Both calls return 0 on failure, otherwise the character count including the terminating null.
-	const auto language_len = GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SISO639LANGNAME, language,
-	                                        std::size(language));
+	const auto language_len = GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SISO639LANGNAME, language, std::size(language));
 
 	if (language_len < 2) return {};
 
 	std::wstring result(language, static_cast<size_t>(language_len) - 1);
 
-	const auto country_len = GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SISO3166CTRYNAME, country,
-	                                       std::size(country));
+	const auto country_len = GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SISO3166CTRYNAME, country, std::size(country));
 
 	if (country_len >= 2)
 	{
@@ -1931,7 +1908,7 @@ platform::mapi_send_result platform::mapi_send(const std::string_view to, const 
 
 				fd.lpszPathName = const_cast<wchar_t*>(a.second.c_str());
 				fd.lpszFileName = const_cast<wchar_t*>(a.first.c_str());
-				fd.nPosition = -1;
+				fd.nPosition = static_cast<ULONG>(-1);
 
 				files.emplace_back(fd);
 			}
@@ -2028,7 +2005,6 @@ uint32_t platform::caret_blink_time()
 	return milliseconds == INFINITE ? 0 : milliseconds;
 }
 
-
 uint32_t platform::process_id()
 {
 	return GetCurrentProcessId();
@@ -2079,7 +2055,6 @@ platform::thread_init::~thread_init()
 	if (SUCCEEDED(_hr)) CoUninitialize();
 }
 
-
 platform::media_thread_priority::media_thread_priority()
 {
 	// Join the MMCSS "Pro Audio" class so the OS scheduler keeps this audio thread
@@ -2093,7 +2068,6 @@ platform::media_thread_priority::~media_thread_priority()
 	os::leave_pro_audio_class(_task);
 	_task = nullptr;
 }
-
 
 namespace
 {
@@ -2120,10 +2094,9 @@ namespace
 		FILETIME result = {};
 
 		if (!FileTimeToSystemTime(&ft, &source) ||
-			!(to_local
-				  ? SystemTimeToTzSpecificLocalTime(&rules, &source, &converted)
-				  : TzSpecificLocalTimeToSystemTime(&rules, &source, &converted)) ||
-			!SystemTimeToFileTime(&converted, &result))
+		    !(to_local ? SystemTimeToTzSpecificLocalTime(&rules, &source, &converted)
+		               : TzSpecificLocalTimeToSystemTime(&rules, &source, &converted)) ||
+		    !SystemTimeToFileTime(&converted, &result))
 		{
 			return {};
 		}
@@ -2161,8 +2134,7 @@ namespace
 		FILETIME first_time = {};
 		FILETIME next_time = {};
 
-		if (year >= 30827 || !SystemTimeToFileTime(&first, &first_time) ||
-			!SystemTimeToFileTime(&next, &next_time))
+		if (year >= 30827 || !SystemTimeToFileTime(&first, &first_time) || !SystemTimeToFileTime(&next, &next_time))
 		{
 			return {};
 		}
@@ -2223,10 +2195,10 @@ namespace
 	bool same_zone(const DYNAMIC_TIME_ZONE_INFORMATION& a, const DYNAMIC_TIME_ZONE_INFORMATION& b)
 	{
 		return a.Bias == b.Bias && a.StandardBias == b.StandardBias && a.DaylightBias == b.DaylightBias &&
-			a.DynamicDaylightTimeDisabled == b.DynamicDaylightTimeDisabled &&
-			memcmp(&a.StandardDate, &b.StandardDate, sizeof(SYSTEMTIME)) == 0 &&
-			memcmp(&a.DaylightDate, &b.DaylightDate, sizeof(SYSTEMTIME)) == 0 &&
-			wcsncmp(a.TimeZoneKeyName, b.TimeZoneKeyName, std::size(a.TimeZoneKeyName)) == 0;
+		       a.DynamicDaylightTimeDisabled == b.DynamicDaylightTimeDisabled &&
+		       memcmp(&a.StandardDate, &b.StandardDate, sizeof(SYSTEMTIME)) == 0 &&
+		       memcmp(&a.DaylightDate, &b.DaylightDate, sizeof(SYSTEMTIME)) == 0 &&
+		       wcsncmp(a.TimeZoneKeyName, b.TimeZoneKeyName, std::size(a.TimeZoneKeyName)) == 0;
 	}
 
 	// Tabulated years belong to the zone they were sampled in. The zone is rechecked at most once a
@@ -2238,7 +2210,7 @@ namespace
 		auto checked = zone_checked_at.load(std::memory_order_relaxed);
 
 		if ((checked == 0 || now - checked >= recheck_ms) &&
-			zone_checked_at.compare_exchange_strong(checked, std::max<uint64_t>(now, 1), std::memory_order_relaxed))
+		    zone_checked_at.compare_exchange_strong(checked, std::max<uint64_t>(now, 1), std::memory_order_relaxed))
 		{
 			DYNAMIC_TIME_ZONE_INFORMATION current = {};
 
@@ -2262,7 +2234,7 @@ namespace
 		DYNAMIC_TIME_ZONE_INFORMATION current = {};
 
 		if (GetDynamicTimeZoneInformation(&current) == TIME_ZONE_ID_INVALID ||
-			!GetTimeZoneInformationForYear(year, &current, &rules))
+		    !GetTimeZoneInformationForYear(year, &current, &rules))
 		{
 			return false;
 		}
@@ -2312,8 +2284,7 @@ namespace
 	}
 }
 
-static uint64_t convert_time_zone(const uint64_t ts, const TIME_ZONE_INFORMATION* zone,
-                                  const bool to_local)
+static uint64_t convert_time_zone(const uint64_t ts, const TIME_ZONE_INFORMATION* zone, const bool to_local)
 {
 	if (ts == 0) return 0;
 	const auto ft = ts_to_ft(ts);
@@ -2359,8 +2330,7 @@ uint64_t platform::local_to_utc(const uint64_t ts)
 }
 
 std::vector<uint64_t> platform::tabulated_time_zone_conversions(const std::span<const uint64_t> stamps,
-                                                                const TIME_ZONE_INFORMATION& zone,
-                                                                const bool to_local)
+                                                                const TIME_ZONE_INFORMATION& zone, const bool to_local)
 {
 	std::map<WORD, year_offsets> years;
 	std::vector<uint64_t> result;
@@ -2433,9 +2403,7 @@ std::string platform::format_date(const core::date_t d)
 	constexpr DWORD flags = DATE_SHORTDATE;
 	const auto ft = ts_to_ft(d._i);
 
-	if (d.is_valid() &&
-		FileTimeToSystemTime(&ft, &st) &&
-		GetDateFormatW(locale, flags, &st, nullptr, sz, size))
+	if (d.is_valid() && FileTimeToSystemTime(&ft, &st) && GetDateFormatW(locale, flags, &st, nullptr, sz, size))
 	{
 		return core::utf16_to_utf8(sz);
 	}
@@ -2451,8 +2419,7 @@ std::string platform::format_time(const core::date_t d)
 	SYSTEMTIME st;
 	const auto ft = ts_to_ft(d._i);
 
-	if (FileTimeToSystemTime(&ft, &st) &&
-		GetTimeFormatW(locale, 0, &st, nullptr, sz, size))
+	if (FileTimeToSystemTime(&ft, &st) && GetTimeFormatW(locale, 0, &st, nullptr, sz, size))
 	{
 		return core::utf16_to_utf8(sz);
 	}
@@ -2460,15 +2427,13 @@ std::string platform::format_time(const core::date_t d)
 	return {};
 }
 
-
 bool platform::created_date(const core::file_path path, const core::date_t dt)
 {
 	const auto w = to_file_system_path(path);
 
 	BOOL result = FALSE;
 	const HANDLE h = CreateFile(w.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-	                            FILE_ATTRIBUTE_NORMAL,
-	                            nullptr);
+	                            FILE_ATTRIBUTE_NORMAL, nullptr);
 
 	if (h != INVALID_HANDLE_VALUE)
 	{
@@ -2479,7 +2444,6 @@ bool platform::created_date(const core::file_path path, const core::date_t dt)
 
 	return result != FALSE;
 }
-
 
 static thread_local bool t_is_ui_thread = false;
 
@@ -2495,8 +2459,8 @@ bool platform::is_ui_thread()
 
 uint32_t platform::wait_for_timeout = WAIT_TIMEOUT - WAIT_OBJECT_0;
 
-uint32_t platform::wait_for(const std::vector<std::reference_wrapper<core::thread_event>>& events, const uint32_t timeout_ms,
-                            const bool wait_all)
+uint32_t platform::wait_for(const std::vector<std::reference_wrapper<core::thread_event>>& events,
+                            const uint32_t timeout_ms, const bool wait_all)
 {
 	constexpr auto max_events = 64;
 	core::assert_true(events.size() <= max_events);
@@ -2515,17 +2479,13 @@ uint32_t platform::wait_for(const std::vector<std::reference_wrapper<core::threa
 	return wait_result - WAIT_OBJECT_0;
 }
 
-
 bool platform::is_valid_file_name(const std::string_view name)
 {
 	static constexpr std::string_view invalid_chars = "\\/:*?\"<>|"; // Common invalid characters
-	static constexpr std::string_view reserved_names[] = {
-		"CON", "PRN", "AUX", "NUL",
-		"COM1", "COM2", "COM3", "COM4",
-		"COM5", "COM6", "COM7", "COM8", "COM9",
-		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-		"LPT6", "LPT7", "LPT8", "LPT9"
-	};
+	static constexpr std::string_view reserved_names[] = {"CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2",
+	                                                      "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+	                                                      "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+	                                                      "LPT6", "LPT7", "LPT8", "LPT9"};
 
 	if (name.empty())
 	{
@@ -2563,11 +2523,12 @@ bool platform::is_valid_file_name(const std::string_view name)
 	return true;
 }
 
-
 namespace
 {
 	void bind_console_streams()
 	{
+		// An agent session's stdout is the protocol's and its stderr the client's: there is no console to find.
+		if (platform::is_agent_session()) return;
 		const auto output = GetStdHandle(STD_OUTPUT_HANDLE);
 		DWORD mode = 0;
 		if (output && output != INVALID_HANDLE_VALUE)
@@ -2576,8 +2537,8 @@ namespace
 			if (type == FILE_TYPE_PIPE || type == FILE_TYPE_DISK || GetConsoleMode(output, &mode)) return;
 		}
 		if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
-		const auto console = CreateFileW(L"CONOUT$", GENERIC_WRITE,
-		                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+		const auto console = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+		                                 OPEN_EXISTING, 0, nullptr);
 		if (console != INVALID_HANDLE_VALUE)
 		{
 			SetStdHandle(STD_OUTPUT_HANDLE, console);
@@ -2612,9 +2573,9 @@ std::string platform::last_error_message()
 	if (!error) return {};
 	LPWSTR buffer = nullptr;
 	const auto length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-	                                      FORMAT_MESSAGE_IGNORE_INSERTS,
-	                                  nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-	                                  reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+	                                       FORMAT_MESSAGE_IGNORE_INSERTS,
+	                                   nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+	                                   reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
 	if (!length || !buffer) return {};
 	const std::string result = core::utf16_to_utf8(std::wstring_view(buffer, length));
 	LocalFree(buffer);
@@ -2623,6 +2584,12 @@ std::string platform::last_error_message()
 
 void platform::show_error(const std::string_view text)
 {
+	if (is_agent_session())
+	{
+		detail::write_agent_diagnostic(text);
+		return;
+	}
+
 	const auto title = core::utf8_to_utf16(core::app_name());
 	MessageBoxW(nullptr, core::utf8_to_utf16(text).c_str(), title.c_str(), MB_OK | MB_ICONERROR);
 }

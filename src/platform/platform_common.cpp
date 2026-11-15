@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Portable platform services whose implementation uses the OS-neutral core/platform contracts.
 
@@ -39,7 +38,9 @@ void platform::start_log()
 		log_started = true;
 
 		const auto module_folder = platform::known_path(platform::known_folder::running_app_folder);
-		const auto folder = platform::is_writable(module_folder) ? module_folder : platform::known_path(platform::known_folder::app_data);
+		const auto folder = platform::is_writable(module_folder)
+		                        ? module_folder
+		                        : platform::known_path(platform::known_folder::app_data);
 		log_path = folder.combine_file(std::format("{}.log", core::app_file_stem()));
 		previous_log_path = folder.combine_file(std::format("{}.previous.log", core::app_file_stem()));
 
@@ -77,8 +78,8 @@ std::string platform::format_size(const core::file_size& size)
 {
 	const auto rounded = core::round_size(size.to_int64());
 	return rounded.dec == 0
-		       ? std::format("{} {}", rounded.n, rounded.unit)
-		       : std::format("{}{}{} {}", rounded.n, platform::number_dec_sep(), rounded.dec, rounded.unit);
+	           ? std::format("{} {}", rounded.n, rounded.unit)
+	           : std::format("{}{}{} {}", rounded.n, platform::number_dec_sep(), rounded.dec, rounded.unit);
 }
 
 core::json::json_doc platform::json_from_file(const core::file_path path)
@@ -92,18 +93,15 @@ core::json::json_doc platform::json_from_file(const core::file_path path)
 
 namespace
 {
-	constexpr std::array<uint32_t, 64> sha256_round_constants = {
-		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-		0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-		0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-		0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-		0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-		0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-		0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-		0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-		0xc67178f2
-	};
+	constexpr std::array<uint32_t, 64> sha256_round_constants =
+		{0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	     0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	     0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
 	constexpr uint32_t rotr(const uint32_t value, const uint32_t amount)
 	{
@@ -112,10 +110,8 @@ namespace
 
 	class sha256_state
 	{
-		std::array<uint32_t, 8> _state = {
-			0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-			0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-		};
+		std::array<uint32_t, 8> _state = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+		                                  0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
 		std::array<uint8_t, 64> _block = {};
 		size_t _block_size = 0;
 		uint64_t _bytes = 0;
@@ -126,10 +122,8 @@ namespace
 			for (size_t i = 0; i != 16; ++i)
 			{
 				const auto offset = i * 4;
-				words[i] = static_cast<uint32_t>(block[offset]) << 24 |
-				           static_cast<uint32_t>(block[offset + 1]) << 16 |
-				           static_cast<uint32_t>(block[offset + 2]) << 8 |
-				           block[offset + 3];
+				words[i] = static_cast<uint32_t>(block[offset]) << 24 | static_cast<uint32_t>(block[offset + 1]) << 16 |
+				           static_cast<uint32_t>(block[offset + 2]) << 8 | block[offset + 3];
 			}
 			for (size_t i = 16; i != words.size(); ++i)
 			{
@@ -206,8 +200,7 @@ namespace
 			}
 			std::fill(copy._block.begin() + copy._block_size, copy._block.begin() + 56, 0);
 			const auto bits = copy._bytes * 8;
-			for (size_t i = 0; i != 8; ++i)
-				copy._block[56 + i] = static_cast<uint8_t>(bits >> (56 - i * 8));
+			for (size_t i = 0; i != 8; ++i) copy._block[56 + i] = static_cast<uint8_t>(bits >> (56 - i * 8));
 			copy.transform(copy._block.data());
 
 			core::sha256_digest result = {};
@@ -314,14 +307,13 @@ bool platform::blob_save_to_file(const core::cspan data, const core::file_path p
 
 	return true;
 }
-std::optional<core::sha256_digest> platform::file_sha256(const core::file_path path,
-                                                             const core::cancel_token& token)
+std::optional<core::sha256_digest> platform::file_sha256(const core::file_path path, const core::cancel_token& token)
 {
 	return platform::file_sha256(platform::open_file_lock(path, platform::file_lock_mode::read), token);
 }
 
 std::optional<core::sha256_digest> platform::file_sha256(const platform::file_ptr& file,
-                                                             const core::cancel_token& token)
+                                                         const core::cancel_token& token)
 {
 	if (!file) return {};
 
@@ -342,7 +334,6 @@ std::optional<core::sha256_digest> platform::file_sha256(const platform::file_pt
 	if (total != expected || file->size() != expected || token.is_cancelled()) return {};
 	return hash.finish();
 }
-
 
 bool core::item_selector::can_iterate() const
 {

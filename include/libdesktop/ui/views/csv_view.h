@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: An aligned, source-preserving CSV table built on the document view.
 
@@ -24,6 +23,7 @@ namespace ui
 	public:
 		csv_view(view_host& host, const view_theme& theme, view_context* context = nullptr,
 		         text_clipboard* clipboard = nullptr);
+		csv_view(const view_theme& theme, view_context* context = nullptr, text_clipboard* clipboard = nullptr);
 		~csv_view() override;
 
 		[[nodiscard]] bool allows_drag_selection() const override { return true; }
@@ -33,12 +33,21 @@ namespace ui
 		void recalc_vert_scrollbar() override;
 		void layout() override;
 		[[nodiscard]] text_location client_to_text(const core::pointi& point) const override;
+		void on_mouse_down(core::pointi point, platform::key_state keys) override;
+		void on_mouse_move(core::pointi point, bool captured) override;
+		void on_mouse_up(core::pointi point, platform::key_state keys) override;
+		void on_double_click(core::pointi point, platform::key_state keys) override;
+		bool on_key(char32_t key, platform::key_state keys) override;
+		void on_focus(bool focused, bool select_all) override;
+		void on_capture_lost() override;
+		platform::cursor cursor_at(core::pointi point) const override;
 
 	protected:
 		void draw_view(render::draw_context& draw) const override;
 
 	private:
 		table_layout::table_block _table;
+		table_layout::resize_gesture _column_drag;
 
 		mutable std::string _line_buf;
 		mutable std::vector<std::string_view> _cells;
@@ -49,5 +58,8 @@ namespace ui
 		static void cell_breaks_fn(std::vector<int>& out, std::string_view text, int col_width);
 		[[nodiscard]] int record_visual_rows(int line_index) const;
 		void rebuild_table();
+		[[nodiscard]] int divider_at(core::pointi point) const;
+		void columns_changed();
+		bool cancel_column_drag();
 	};
 }

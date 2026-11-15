@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows platform implementation. Implements file system, shell integration,
 // registry access, and Windows-specific functionality.
@@ -15,14 +14,14 @@
 #define _WIN32_WINNT _WIN32_WINNT_WIN7
 #define _WIN32_WINDOWS _WIN32_WINNT_WIN7
 #define _WIN32_IE _WIN32_IE_IE110
-#define NTDDI_VERSION   NTDDI_WIN7
+#define NTDDI_VERSION NTDDI_WIN7
 
 #ifndef WIN32_LEAN_AND_MEAN
 // WIN32_LEAN_AND_MEAN implies NOCRYPT and NOGDI.
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
-#define NOMINMAX 
+#define NOMINMAX
 #endif
 #ifndef NOKERNEL
 #define NOKERNEL
@@ -40,7 +39,7 @@
 #ifndef STRICT
 #define STRICT
 #endif
-#define _WINSOCKAPI_    // stops windows.h including winsock.h
+#define _WINSOCKAPI_ // stops windows.h including winsock.h
 
 #include <dxgi.h>
 #include <dxgi1_4.h> // IDXGIAdapter3, for the video-memory gauge in the session perf summary
@@ -49,7 +48,10 @@
 #include <wrl.h>
 using Microsoft::WRL::ComPtr;
 
-namespace platform { class window; }
+namespace platform
+{
+	class window;
+}
 // Fixed window timer used only by the Windows platform to age user inactivity during native modal loops.
 inline constexpr UINT platform_activity_timer_id = 0x4c444154;
 namespace platform
@@ -82,7 +84,6 @@ namespace platform
 	key_state wheel_key_state(uint32_t message, WPARAM parameter, key_state keyboard);
 }
 
-
 HWND app_wnd();
 // The application's main window, which the window layer names when it creates it.
 void set_app_wnd(HWND wnd);
@@ -100,8 +101,8 @@ void set_app_window_enabled_sync(void (*sync)());
 // How the window layer waits on the UI thread while still handling the window's messages; it installs
 // this when it starts. platform::wait_for asks it first, and waits plainly when it answers nothing,
 // as it does on any other thread.
-using ui_thread_wait = std::optional<uint32_t> (*)(const std::vector<std::reference_wrapper<core::thread_event>>& events,
-                                                   bool wait_all, uint32_t timeout_ms);
+using ui_thread_wait = std::optional<uint32_t> (*)(
+	const std::vector<std::reference_wrapper<core::thread_event>>& events, bool wait_all, uint32_t timeout_ms);
 void set_ui_thread_wait(ui_thread_wait wait);
 
 // The release the running system reports. Reads no files, so the UI thread may ask.
@@ -119,7 +120,7 @@ namespace platform
 	// Test seams for the current zone's yearly offset tables: a rule set converted through its own
 	// tables (0 where a year could not be tabulated), and the system conversions made on this thread.
 	std::vector<uint64_t> tabulated_time_zone_conversions(std::span<const uint64_t> stamps,
-	                                                     const TIME_ZONE_INFORMATION& zone, bool to_local);
+	                                                      const TIME_ZONE_INFORMATION& zone, bool to_local);
 	uint64_t time_zone_system_queries();
 }
 
@@ -146,21 +147,24 @@ namespace platform
 	// are clipboard format ids, and the paths come back in the shell's own UTF-16.
 	struct data_object_probe
 	{
-		std::vector<uint32_t> enum_formats; // cfFormat ids, in EnumFormatEtc (source-preference) order
-		int hdrop_enum_index = -1; // position of CF_HDROP within enum_formats (-1 = absent)
-		int shell_id_list_enum_index = -1; // position of CFSTR_SHELLIDLIST within enum_formats (-1 = absent)
-		bool advertises_hdrop = false; // QueryGetData(CF_HDROP)
+		std::vector<uint32_t> enum_formats;    // cfFormat ids, in EnumFormatEtc (source-preference) order
+		int hdrop_enum_index = -1;             // position of CF_HDROP within enum_formats (-1 = absent)
+		int shell_id_list_enum_index = -1;     // position of CFSTR_SHELLIDLIST within enum_formats (-1 = absent)
+		bool advertises_hdrop = false;         // QueryGetData(CF_HDROP)
 		bool advertises_shell_id_list = false; // QueryGetData(CFSTR_SHELLIDLIST)
-		int hdrop_count = -1; // files parsed from CF_HDROP (-1 = no data returned)
-		int shell_id_list_count = -1; // CIDA cidl from CFSTR_SHELLIDLIST (-1 = no data returned)
+		int hdrop_count = -1;                  // files parsed from CF_HDROP (-1 = no data returned)
+		int shell_id_list_count = -1;          // CIDA cidl from CFSTR_SHELLIDLIST (-1 = no data returned)
 		std::vector<std::wstring> hdrop_paths;
 		std::vector<std::wstring> shell_id_list_paths;
 		std::vector<uint32_t> image_formats;
 		std::vector<uint32_t> image_tymed;
 		bool advertises_bitmap = false;
 		bool advertises_dib = false;
+		bool advertises_png = false;
 		bool bitmap_retrieved = false;
 		bool dib_retrieved = false;
+		// The PNG's bytes, as GetData gave them; empty when it gave none.
+		std::vector<uint8_t> png;
 		core::sizei bitmap_dimensions;
 		core::sizei dib_dimensions;
 	};
@@ -168,6 +172,9 @@ namespace platform
 	data_object_probe probe_drag_data_object(const std::vector<core::file_path>& files,
 	                                         const std::vector<core::folder_path>& folders);
 	data_object_probe probe_drag_data_object(const clipboard_image_ptr& image);
+	// Pastes what a copy of image offers, as Paste reads the clipboard, into folder under name.
+	file_op_result probe_paste_image(const clipboard_image_ptr& image, core::folder_path folder, std::string_view name,
+	                                 bool as_png);
 	struct clipboard_contract_probe
 	{
 		bool clone_keeps_position = false;
@@ -178,6 +185,7 @@ namespace platform
 	};
 	clipboard_contract_probe probe_clipboard_contracts();
 	std::wstring dialog_default_extension(std::string_view extension);
+	uint32_t dialog_filter_index(const std::vector<file_dialog_filter>& filters, std::string_view path);
 
 	shell_operation_probe probe_shell_file_operation_w(shell_file_operation_w_fn op);
 	shell_operation_probe probe_shell_file_operation_a(shell_file_operation_a_fn op);
@@ -249,20 +257,13 @@ core::blob load_resource(int id, LPCWSTR lpType);
 platform::file_op_result save_bitmap_info(core::folder_path save_path, std::string_view name, bool as_png,
                                           HBITMAP image_buffer_in);
 
-
 struct variant_t
 {
 	VARIANT v = {};
 
-	variant_t() noexcept
-	{
-		VariantInit(&v);
-	}
+	variant_t() noexcept { VariantInit(&v); }
 
-	~variant_t() noexcept
-	{
-		VariantClear(&v);
-	}
+	~variant_t() noexcept { VariantClear(&v); }
 
 	variant_t(const variant_t& other) = delete;
 	variant_t& operator=(const variant_t& other) = delete;
@@ -272,22 +273,15 @@ struct prop_variant_t
 {
 	PROPVARIANT v = {};
 
-	prop_variant_t() noexcept
-	{
-		PropVariantInit(&v);
-	}
+	prop_variant_t() noexcept { PropVariantInit(&v); }
 
-	~prop_variant_t() noexcept
-	{
-		PropVariantClear(&v);
-	}
+	~prop_variant_t() noexcept { PropVariantClear(&v); }
 
 	// PropVariantClear releases what v points to, so a copy would release it twice. The deleted pair
 	// used to name variant_t, which left this type's own copy operations generated.
 	prop_variant_t(const prop_variant_t& other) = delete;
 	prop_variant_t& operator=(const prop_variant_t& other) = delete;
 };
-
 
 struct bstr_t
 {
@@ -299,17 +293,12 @@ struct bstr_t
 	{
 	}
 
-	explicit bstr_t(const std::string_view sv) : m_str(SysAllocString(core::utf8_to_utf16(sv).c_str()))
-	{
-	}
+	explicit bstr_t(const std::string_view sv) : m_str(SysAllocString(core::utf8_to_utf16(sv).c_str())) {}
 
 	bstr_t(const bstr_t& other) = delete;
 	bstr_t& operator=(const bstr_t& other) = delete;
 
-	operator BSTR() const noexcept
-	{
-		return m_str;
-	}
+	operator BSTR() const noexcept { return m_str; }
 
 	~bstr_t() noexcept
 	{
@@ -329,10 +318,9 @@ struct bstr_t
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: What platform::run needs from process.cpp, which carries the process lifecycle around the
 // window. Windows-only, and for the application's window layer alone.

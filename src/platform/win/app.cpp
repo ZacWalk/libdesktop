@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows process setup and the UI message loop. Window objects report native events;
 // this file owns the application's lifetime, waits, timers and OS-wide notifications.
@@ -16,6 +15,7 @@ namespace platform::detail
 	void set_task_shutdown_bounded(bool bounded);
 }
 #include "libdesktop/platform/win32.h"
+#include "../agent.h"
 
 #include <Dbt.h>
 #include <ShlObj.h>
@@ -45,11 +45,103 @@ namespace
 	constexpr wchar_t ui_task_window_class_name[] = L"LIBDESKTOP_UI_TASK";
 	constexpr DWORD create_waitable_timer_high_resolution = 0x00000002;
 	constexpr size_t max_wait_handles = MAXIMUM_WAIT_OBJECTS - 1;
+	constexpr DWORD folder_watch_filter = FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_LAST_WRITE |
+	                                      FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
 
-	struct folder_watch
+	// A watched folder read with ReadDirectoryChangesW rather than a change notification, which says only
+	// that something under the folder changed, so a change in a watched subtree names the subfolder it was
+	// in. The read's event joins the loop's waits. The read writes into the buffer and OVERLAPPED until it
+	// completes, so a watch is never moved and waits for its read to be cancelled before it goes.
+	class folder_watch
 	{
-		HANDLE handle = nullptr;
-		core::folder_path path;
+		HANDLE _directory = INVALID_HANDLE_VALUE;
+		HANDLE _event = nullptr;
+		OVERLAPPED _overlapped{};
+		// 64 KB, the most a read of a network folder may ask for; DWORDs keep the records aligned.
+		std::vector<DWORD> _buffer = std::vector<DWORD>(16 * 1024);
+		bool _pending = false;
+
+		void read()
+		{
+			_overlapped = {};
+			_overlapped.hEvent = _event;
+			ResetEvent(_event);
+			_pending = ReadDirectoryChangesW(_directory, _buffer.data(),
+			                                 static_cast<DWORD>(_buffer.size() * sizeof(DWORD)),
+			                                 subfolders ? TRUE : FALSE, folder_watch_filter, nullptr, &_overlapped,
+			                                 nullptr) != FALSE;
+		}
+
+	public:
+		const core::folder_path path;
+		const bool subfolders;
+
+		folder_watch(const core::folder_path folder, const bool with_subfolders) :
+			path(folder), subfolders(with_subfolders)
+		{
+			_directory = CreateFileW(platform::to_file_system_path(path).c_str(), FILE_LIST_DIRECTORY,
+			                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+			                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+			if (_directory == INVALID_HANDLE_VALUE) return;
+			_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+			if (_event) read();
+		}
+
+		folder_watch(const folder_watch&) = delete;
+		folder_watch& operator=(const folder_watch&) = delete;
+
+		~folder_watch()
+		{
+			if (_pending)
+			{
+				CancelIoEx(_directory, &_overlapped);
+				DWORD bytes = 0;
+				GetOverlappedResult(_directory, &_overlapped, &bytes, TRUE);
+			}
+			if (_directory != INVALID_HANDLE_VALUE) CloseHandle(_directory);
+			if (_event) CloseHandle(_event);
+		}
+
+		bool is_watching() const { return _pending; }
+		HANDLE event() const { return _event; }
+
+		// The folders the completed read names, each once, before the next read starts. A read that overflowed
+		// its buffer, or failed, names nothing, so the watched folder stands for the change.
+		std::vector<core::folder_path> take()
+		{
+			std::vector<core::folder_path> changed;
+			if (!_pending) return changed;
+			DWORD bytes = 0;
+			if (!GetOverlappedResult(_directory, &_overlapped, &bytes, FALSE))
+			{
+				// Still reading: a second read must not be issued over the buffer this one owns.
+				if (GetLastError() == ERROR_IO_INCOMPLETE) return changed;
+				bytes = 0;
+			}
+			_pending = false;
+			if (bytes == 0)
+			{
+				changed.push_back(path);
+			}
+			else
+			{
+				const auto* const records = reinterpret_cast<const BYTE*>(_buffer.data());
+				for (DWORD offset = 0; offset + sizeof(FILE_NOTIFY_INFORMATION) <= bytes;)
+				{
+					const auto* const record = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(records + offset);
+					const std::wstring_view name(record->FileName, record->FileNameLength / sizeof(wchar_t));
+					const auto separator = name.find_last_of(L'\\');
+					const auto folder = separator == std::wstring_view::npos
+					                        ? path
+					                        : path.combine(core::utf16_to_utf8(name.substr(0, separator)));
+					if (std::ranges::find(changed, folder) == changed.end()) changed.push_back(folder);
+					if (record->NextEntryOffset == 0) break;
+					offset += record->NextEntryOffset;
+				}
+			}
+			read();
+			return changed;
+		}
 	};
 
 	struct queued_ui_task
@@ -69,7 +161,7 @@ namespace
 		std::shared_ptr<platform::app> app;
 		std::vector<HANDLE> event_handles;
 		std::vector<std::function<void()>> event_actions;
-		std::vector<folder_watch> folders;
+		std::vector<std::unique_ptr<folder_watch>> folders;
 		std::vector<std::function<void()>> shutdown_hooks;
 		HANDLE timer = nullptr;
 		HWND activity_window = nullptr;
@@ -87,7 +179,8 @@ namespace
 		int64_t taskbar_done = -1;
 		int64_t taskbar_total = -1;
 
-		explicit app_state(std::shared_ptr<platform::app> value) : app(std::move(value)), ui_thread(GetCurrentThreadId())
+		explicit app_state(std::shared_ptr<platform::app> value) :
+			app(std::move(value)), ui_thread(GetCurrentThreadId())
 		{
 			timer = CreateWaitableTimerExW(nullptr, nullptr, create_waitable_timer_high_resolution,
 			                               TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -97,10 +190,7 @@ namespace
 			PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
 		}
 
-		~app_state()
-		{
-			close();
-		}
+		~app_state() { close(); }
 
 		void close()
 		{
@@ -113,7 +203,9 @@ namespace
 				const auto discard_tokens = [hwnd]
 				{
 					MSG message{};
-					while (PeekMessageW(&message, hwnd, wm_platform_run_ui, wm_platform_run_ui, PM_REMOVE)) {}
+					while (PeekMessageW(&message, hwnd, wm_platform_run_ui, wm_platform_run_ui, PM_REMOVE))
+					{
+					}
 				};
 				discard_tokens();
 				DestroyWindow(hwnd);
@@ -130,10 +222,6 @@ namespace
 			{
 				KillTimer(activity_window, platform_activity_timer_id);
 				activity_window = nullptr;
-			}
-			for (const auto& folder : folders)
-			{
-				if (folder.handle && folder.handle != INVALID_HANDLE_VALUE) FindCloseChangeNotification(folder.handle);
 			}
 			folders.clear();
 			if (!screen_saver_enabled) SetThreadExecutionState(ES_CONTINUOUS);
@@ -161,7 +249,7 @@ namespace
 			SetWaitableTimer(timer, &due, frame_delay, nullptr, nullptr, FALSE);
 		}
 
-		void dispatch_ui_task(queued_ui_task task)
+		void dispatch_ui_task(const queued_ui_task& task)
 		{
 			if (closed)
 			{
@@ -203,38 +291,40 @@ namespace
 			if (timer && frame_delay > 0)
 			{
 				event_handles.push_back(timer);
-				event_actions.push_back([this] { if (app) app->frame_tick(); });
+				event_actions.push_back([this]
+				{
+					if (app) app->frame_tick();
+				});
 			}
 			event_handles.push_back(static_cast<HANDLE>(idle_event._h));
-			event_actions.push_back([this] { if (app) app->idle(); });
-			for (auto& folder : folders)
+			event_actions.push_back([this]
+			{
+				if (app) app->idle();
+			});
+			for (const auto& folder : folders)
 			{
 				if (event_handles.size() >= max_wait_handles) break;
-				event_handles.push_back(folder.handle);
-				event_actions.push_back([this, handle = folder.handle, path = folder.path]
+				if (!folder->is_watching()) continue;
+				event_handles.push_back(folder->event());
+				// The read is taken, and the next started, before the application hears of it: what the
+				// application does may replace every watch, this one among them.
+				event_actions.push_back([this, watch = folder.get()]
 				{
-					if (app) app->folder_changed(path);
-					FindNextChangeNotification(handle);
+					for (const auto& changed : watch->take())
+						if (app) app->folder_changed(changed);
 				});
 			}
 		}
 
-		void monitor_folders(const std::vector<core::folder_path>& values)
+		void monitor_folders(const std::vector<platform::watched_folder>& values)
 		{
-			for (const auto& folder : folders)
-			{
-				if (folder.handle && folder.handle != INVALID_HANDLE_VALUE) FindCloseChangeNotification(folder.handle);
-			}
 			folders.clear();
 			constexpr size_t max_folders = MAXIMUM_WAIT_OBJECTS - 4;
-			constexpr DWORD filter = FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_LAST_WRITE |
-				FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
-			for (const auto& path : values)
+			for (const auto& value : values)
 			{
 				if (folders.size() >= max_folders) break;
-				const auto wide = platform::to_file_system_path(path);
-				const auto handle = FindFirstChangeNotificationW(wide.c_str(), FALSE, filter);
-				if (handle != INVALID_HANDLE_VALUE && handle) folders.push_back({handle, path});
+				auto watch = std::make_unique<folder_watch>(value.path, value.subfolders);
+				if (watch->is_watching()) folders.push_back(std::move(watch));
 			}
 			rebuild_events();
 		}
@@ -250,8 +340,10 @@ namespace
 		{
 			if (taskbar || taskbar_unavailable) return taskbar.Get();
 			ComPtr<ITaskbarList3> candidate;
-			if (SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&candidate))) &&
-				SUCCEEDED(candidate->HrInit())) taskbar = candidate;
+			if (SUCCEEDED(
+					CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&candidate))) &&
+			    SUCCEEDED(candidate->HrInit()))
+				taskbar = candidate;
 			else taskbar_unavailable = true;
 			return taskbar.Get();
 		}
@@ -314,8 +406,8 @@ namespace
 			klass.lpszClassName = ui_task_window_class_name;
 			if (!RegisterClassExW(&klass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
 		}
-		return CreateWindowExW(0, ui_task_window_class_name, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
-		                       instance, state);
+		return CreateWindowExW(0, ui_task_window_class_name, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance,
+		                       state);
 	}
 
 	LRESULT CALLBACK ui_task_window_proc(const HWND hwnd, const UINT message, const WPARAM wparam, const LPARAM lparam)
@@ -361,7 +453,7 @@ namespace
 			platform::ticks_since_last_user_action = 0;
 		}
 		else if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) && message.wParam != VK_LEFT &&
-			message.wParam != VK_RIGHT)
+		         message.wParam != VK_RIGHT)
 		{
 			platform::ticks_since_last_user_action = 0;
 		}
@@ -395,7 +487,7 @@ namespace
 			task = std::move(ui_tasks.front());
 			ui_tasks.pop_front();
 		}
-		state.dispatch_ui_task(std::move(task));
+		state.dispatch_ui_task(task);
 	}
 
 	bool dispatch_platform_message(MSG& message)
@@ -438,9 +530,8 @@ namespace
 		action();
 	}
 
-	uint32_t wait_for_events(const std::vector<std::reference_wrapper<core::thread_event>>& caller,
-	                         const bool wait_all, const uint32_t timeout_ms,
-	                         const std::function<bool(MSG&)>& filter)
+	uint32_t wait_for_events(const std::vector<std::reference_wrapper<core::thread_event>>& caller, const bool wait_all,
+	                         const uint32_t timeout_ms, const std::function<bool(MSG&)>& filter)
 	{
 		constexpr auto wait_timeout = WAIT_TIMEOUT - WAIT_OBJECT_0;
 		if (!current_state) return wait_timeout;
@@ -455,7 +546,8 @@ namespace
 			for (const auto& event : caller) handles.push_back(static_cast<HANDLE>(event.get()._h));
 			const auto room = caller_count < max_wait_handles ? max_wait_handles - caller_count : 0;
 			const auto appended = std::min(room, current_state->event_handles.size());
-			handles.insert(handles.end(), current_state->event_handles.begin(), current_state->event_handles.begin() + appended);
+			handles.insert(handles.end(), current_state->event_handles.begin(),
+			               current_state->event_handles.begin() + appended);
 
 			DWORD wait_ms = INFINITE;
 			if (deadline != UINT64_MAX)
@@ -468,8 +560,7 @@ namespace
 			const auto result = MsgWaitForMultipleObjectsEx(static_cast<DWORD>(handles.size()), handles.data(), wait_ms,
 			                                                QS_ALLINPUT, MWMO_ALERTABLE);
 			if (result == WAIT_TIMEOUT || result == WAIT_FAILED) return wait_timeout;
-			if (result != WAIT_IO_COMPLETION && result >= WAIT_OBJECT_0 &&
-				result < WAIT_OBJECT_0 + handles.size())
+			if (result != WAIT_IO_COMPLETION && result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + handles.size())
 			{
 				const auto index = static_cast<size_t>(result - WAIT_OBJECT_0);
 				if (index < caller_count)
@@ -487,7 +578,8 @@ namespace
 			// A frame timer that is ready continuously must not starve paint, sent messages, or a worker
 			// completion that is ending this wait.
 			if (!platform::is_closing) pump_messages(filter);
-			if (!platform::is_closing && WaitForSingleObject(static_cast<HANDLE>(current_state->idle_event._h), 0) == WAIT_OBJECT_0)
+			if (!platform::is_closing &&
+			    WaitForSingleObject(static_cast<HANDLE>(current_state->idle_event._h), 0) == WAIT_OBJECT_0)
 				if (current_state->app) current_state->app->idle();
 
 			if (caller_count != 0 && !platform::is_closing)
@@ -507,8 +599,9 @@ namespace
 		return wait_timeout;
 	}
 
-	std::optional<uint32_t> ui_thread_wait_callback(const std::vector<std::reference_wrapper<core::thread_event>>& events,
-	                                       const bool wait_all, const uint32_t timeout_ms)
+	std::optional<uint32_t> ui_thread_wait_callback(
+		const std::vector<std::reference_wrapper<core::thread_event>>& events, const bool wait_all,
+		const uint32_t timeout_ms)
 	{
 		if (!current_state || !platform::is_ui_thread()) return std::nullopt;
 		return wait_for_events(events, wait_all, timeout_ms, [](MSG& message) { return pre_translate(message); });
@@ -524,8 +617,7 @@ namespace platform::detail
 		// from reading current_state, which the UI thread clears without the queue's lock.
 		if (platform::is_ui_thread() && current_state)
 		{
-			if (timeout_ms != 0)
-				MsgWaitForMultipleObjectsEx(0, nullptr, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			if (timeout_ms != 0) MsgWaitForMultipleObjectsEx(0, nullptr, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
 			if (!platform::is_closing) pump_messages([](MSG& message) { return pre_translate(message); });
 			return !platform::is_closing && !current_state->closed;
 		}
@@ -535,14 +627,23 @@ namespace platform::detail
 			std::unique_lock lock(ui_task_mutex);
 			if (ui_tasks.empty() && timeout_ms != 0)
 				ui_task_ready.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-					[&] { return !ui_tasks.empty() || !ui_accepting; });
+				                       [&] { return !ui_tasks.empty() || !ui_accepting; });
 			tasks.swap(ui_tasks);
 		}
 		for (auto& task : tasks)
 		{
-			try { if (task.action) task.action(); }
-			catch (const std::exception& error) { core::log("platform UI task", error.what()); }
-			catch (...) { core::log("platform UI task", "unknown exception"); }
+			try
+			{
+				if (task.action) task.action();
+			}
+			catch (const std::exception& error)
+			{
+				core::log("platform UI task", error.what());
+			}
+			catch (...)
+			{
+				core::log("platform UI task", "unknown exception");
+			}
 			if (task.completed) task.completed->set();
 		}
 		return ui_accepting;
@@ -658,7 +759,7 @@ namespace platform
 		return {
 			GetAsyncKeyState(VK_CONTROL) < 0,
 			GetAsyncKeyState(VK_SHIFT) < 0,
-			GetAsyncKeyState(VK_MENU) < 0
+			GetAsyncKeyState(VK_MENU) < 0,
 		};
 	}
 
@@ -675,8 +776,8 @@ namespace platform
 	key_state wheel_key_state(const uint32_t message, const WPARAM parameter, const key_state keyboard)
 	{
 		return message == 0x024e || message == 0x024f
-			? keyboard
-			: key_state{(parameter & MK_CONTROL) != 0, (parameter & MK_SHIFT) != 0, false};
+		           ? keyboard
+		           : key_state{(parameter & MK_CONTROL) != 0, (parameter & MK_SHIFT) != 0, false};
 	}
 
 	core::recti desktop_bounds(const bool work_area)
@@ -687,11 +788,13 @@ namespace platform
 		else window_rect = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 		const auto monitor = MonitorFromRect(&window_rect, MONITOR_DEFAULTTONEAREST);
 		MONITORINFO info{sizeof(info)};
-		if (monitor && GetMonitorInfoW(monitor, &info)) return {work_area ? info.rcWork.left : info.rcMonitor.left,
-			work_area ? info.rcWork.top : info.rcMonitor.top, work_area ? info.rcWork.right : info.rcMonitor.right,
-			work_area ? info.rcWork.bottom : info.rcMonitor.bottom};
-		if (work_area && SystemParametersInfoW(SPI_GETWORKAREA, 0, &window_rect, 0)) return {
-			window_rect.left, window_rect.top, window_rect.right, window_rect.bottom};
+		if (monitor && GetMonitorInfoW(monitor, &info))
+			return {work_area ? info.rcWork.left : info.rcMonitor.left,
+			        work_area ? info.rcWork.top : info.rcMonitor.top,
+			        work_area ? info.rcWork.right : info.rcMonitor.right,
+			        work_area ? info.rcWork.bottom : info.rcMonitor.bottom};
+		if (work_area && SystemParametersInfoW(SPI_GETWORKAREA, 0, &window_rect, 0))
+			return {window_rect.left, window_rect.top, window_rect.right, window_rect.bottom};
 		return {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 	}
 }
@@ -703,7 +806,10 @@ namespace
 	{
 		const auto raw = std::wstring(GetCommandLineW());
 		size_t pos = 0;
-		const auto whitespace = [](const wchar_t value) { return value == L' ' || value == L'\t'; };
+		const auto whitespace = [](const wchar_t value)
+		{
+			return value == L' ' || value == L'\t';
+		};
 		while (pos < raw.size() && whitespace(raw[pos])) ++pos;
 		if (pos < raw.size() && raw[pos] == L'\"')
 		{
@@ -768,15 +874,18 @@ namespace
 		{
 		case WM_KEYDOWN:
 		case WM_SYSKEYDOWN:
-			return filter->key_down(static_cast<int>(message.wParam), platform::current_key_state());
+			return filter->key_down(static_cast<char32_t>(message.wParam), platform::current_key_state());
 		case WM_KEYUP:
 		case WM_SYSKEYUP:
+			// A drawn menu owns the keyboard for the duration of its modal loop. Its key-down handler
+			// has already acted, so no release leaks to the host; the filter may pass it on.
+			filter->key_up(static_cast<char32_t>(message.wParam), platform::current_key_state());
+			return true;
 		case WM_CHAR:
 		case WM_SYSCHAR:
 		case WM_DEADCHAR:
 		case WM_SYSDEADCHAR:
-			// A drawn menu owns the keyboard for the duration of its modal loop. Its key-down handler
-			// has already acted, so key-up and typed-character messages must not leak to the host.
+			// Nor does a typed character.
 			return true;
 		case WM_LBUTTONDOWN:
 		case WM_RBUTTONDOWN:
@@ -793,29 +902,28 @@ namespace
 		case WM_NCLBUTTONDBLCLK:
 		case WM_NCRBUTTONDBLCLK:
 		case WM_NCMBUTTONDBLCLK:
+		{
+			const bool nonclient = message.message == WM_NCLBUTTONDOWN || message.message == WM_NCRBUTTONDOWN ||
+			                       message.message == WM_NCMBUTTONDOWN || message.message == WM_NCXBUTTONDOWN ||
+			                       message.message == WM_NCLBUTTONDBLCLK || message.message == WM_NCRBUTTONDBLCLK ||
+			                       message.message == WM_NCMBUTTONDBLCLK;
+			POINT point{GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)};
+			if (auto* target = platform_window_from_native(message.hwnd))
 			{
-				const bool nonclient = message.message == WM_NCLBUTTONDOWN || message.message == WM_NCRBUTTONDOWN ||
-				                       message.message == WM_NCMBUTTONDOWN || message.message == WM_NCXBUTTONDOWN ||
-				                       message.message == WM_NCLBUTTONDBLCLK || message.message == WM_NCRBUTTONDBLCLK ||
-				                       message.message == WM_NCMBUTTONDBLCLK;
-				POINT point{GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)};
-				if (auto* target = platform_window_from_native(message.hwnd))
-				{
-					if (!nonclient) ClientToScreen(message.hwnd, &point);
-					return filter->pointer_down(*target, {point.x, point.y});
-				}
-				// A click on a foreign window is outside every popup owned by this process.
-				filter->activation_lost();
-				return true;
+				if (!nonclient) ClientToScreen(message.hwnd, &point);
+				return filter->pointer_down(*target, {point.x, point.y});
 			}
+			// A click on a foreign window is outside every popup owned by this process.
+			filter->activation_lost();
+			return true;
+		}
 		case WM_ACTIVATEAPP:
 			if (!message.wParam) filter->activation_lost();
 			return false;
 		case WM_ACTIVATE:
 			if (LOWORD(message.wParam) == WA_INACTIVE) filter->activation_lost();
 			return false;
-		default:
-			return false;
+		default: return false;
 		}
 	}
 
@@ -841,7 +949,7 @@ namespace
 				dispatch_app_event(static_cast<size_t>(result - WAIT_OBJECT_0));
 
 			MSG message{};
-			while (!platform::is_closing && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+			while (!platform::is_closing && !done() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
 			{
 				if (message.message == WM_QUIT)
 				{
@@ -903,7 +1011,8 @@ namespace platform
 			{
 				std::lock_guard lock(ui_task_mutex);
 				ui_accepting = false;
-				for (auto& task : ui_tasks) if (task.completed) task.completed->set();
+				for (auto& task : ui_tasks)
+					if (task.completed) task.completed->set();
 				ui_tasks.clear();
 			}
 			ui_task_ready.notify_all();
@@ -921,7 +1030,8 @@ namespace platform
 			application->final_exit();
 			for (auto& hook : pending_shutdown_hooks) hooks.emplace_back(std::move(hook));
 			pending_shutdown_hooks.clear();
-			for (auto& hook : hooks) if (hook) hook();
+			for (auto& hook : hooks)
+				if (hook) hook();
 			finalized = true;
 		};
 		const core::scope_exit finish([&]
@@ -986,6 +1096,21 @@ namespace platform
 				return application->run_console_mode();
 			}
 
+			// Claimed before anything can print: from here stdout carries the protocol and nothing else.
+			std::unique_ptr<platform::detail::agent_session> agent;
+			const core::scope_exit end_agent([] { platform::detail::end_agent_session(); });
+
+			if (const auto server = application->agent_server())
+			{
+				agent = platform::detail::start_agent_session(server);
+
+				if (!agent)
+				{
+					show_fatal_error("An agent session is served on stdin and stdout, and this process has neither");
+					return 1;
+				}
+			}
+
 #if defined(_M_IX86) || defined(_M_X64)
 			if (!core::sse2_supported)
 			{
@@ -1005,13 +1130,18 @@ namespace platform
 			if (application->init(command_line))
 			{
 				show_app_windows();
-				setup_restart(application->restart_command_line());
+
+				// An agent session is its client's to restart, with the pipes Windows would not give a restarted one.
+				if (agent) agent->start_reading();
+				else setup_restart(application->restart_command_line());
+
 				exit_code = application->owns_loop() ? application->main_loop() : run_message_loop();
 			}
 			else
 			{
 				exit_code = quit_code;
 			}
+			if (agent) agent->stop();
 			application->exit();
 			return exit_code;
 		}
@@ -1053,7 +1183,7 @@ namespace platform
 		current_state->set_delay(milliseconds);
 	}
 
-	void monitor_folders(const std::vector<core::folder_path>& folders)
+	void monitor_folders(const std::vector<watched_folder>& folders)
 	{
 		if (current_state) current_state->monitor_folders(folders);
 	}
@@ -1061,7 +1191,9 @@ namespace platform
 	void enable_screen_saver(const bool enable)
 	{
 		if (current_state) current_state->enable_screen_saver(enable);
-		else SetThreadExecutionState(enable ? ES_CONTINUOUS : (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED));
+		else
+			SetThreadExecutionState(enable ? ES_CONTINUOUS
+			                               : (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED));
 	}
 
 	void show_progress(const int64_t done, const int64_t total)

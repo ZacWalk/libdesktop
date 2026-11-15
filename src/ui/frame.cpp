@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The portable frame layer. Native window events are translated into the same host, control,
 // menu and bubble behaviour for every platform; a child without a native surface is painted and hit-tested
@@ -19,8 +18,16 @@
 namespace
 {
 	class frame_impl;
+	class menu_filter;
 	std::weak_ptr<frame_impl> keyboard_frame;
+	// The native window that holds the keyboard.
+	std::weak_ptr<frame_impl> keyboard_window;
 	ui::menu_session* open_menu = nullptr;
+	// The filter of the open menu's loop, which input sent from outside passes through as the platform's does.
+	menu_filter* open_menu_filter = nullptr;
+	// The native window a press sent from outside went to, which the moves and the release after it go to wherever
+	// they are, as a window holding the pointer is given them.
+	std::weak_ptr<frame_impl> sent_press_window;
 	// Timer ids are local to each native window. Keep them fixed so a frame timer or fade can
 	// never collide with the renderer's hidden-standby timer (0xD1FF).
 	constexpr uint32_t frame_timer_id = 0x100u;
@@ -34,20 +41,27 @@ namespace
 		for (;;)
 		{
 			const auto result = next_pane_timer_id.fetch_add(1, std::memory_order_relaxed);
-			if (result != 0 && result != frame_timer_id && result != fade_timer_id &&
-				result != caret_timer_id && result != hidden_standby_timer_id) return result;
+			if (result != 0 && result != frame_timer_id && result != fade_timer_id && result != caret_timer_id &&
+			    result != hidden_standby_timer_id)
+				return result;
 		}
 	}
 
-	class frame_impl final : public ui::frame,
-	                         public platform::window_events,
-	                         public ui::control_host,
-	                         public ui::menu_host,
-	                         public ui::bubble_host,
-	                         public std::enable_shared_from_this<frame_impl>
+	class frame_impl final :
+		public ui::frame,
+		public platform::window_events,
+		public ui::control_host,
+		public ui::menu_host,
+		public ui::bubble_host,
+		public std::enable_shared_from_this<frame_impl>
 	{
 	public:
-		enum class kind { app, dialog, pane };
+		enum class kind
+		{
+			app,
+			dialog,
+			pane
+		};
 
 	private:
 		const kind _kind;
@@ -102,6 +116,9 @@ namespace
 		core::sizei extent() const;
 		bool is_shown() const;
 		bool is_enabled_here() const;
+		bool holds(const frame_impl* frame) const;
+		bool refuses_keyboard() const;
+		void release_input(bool pointer);
 		render::measure_context* measure_context();
 		frame_impl* focus_target();
 		const frame_impl* focus_target() const;
@@ -129,6 +146,7 @@ namespace
 		void stop_timer(uint32_t id);
 		void start_timer(uint32_t& slot, uint32_t id, uint32_t milliseconds);
 		void fire_timer();
+		void tick_untimed_panes();
 		void fade_to(bool visible);
 		void step_fade();
 		void show_app_menu(core::recti bounds, const std::vector<ui::command_ptr>& commands);
@@ -138,6 +156,16 @@ namespace
 		void initialise_region(const std::shared_ptr<frame_impl>& parent);
 		void add_child(const std::shared_ptr<frame_impl>& child);
 		void destroy_children();
+		// Whether the platform would give it input now: its top-level window - the application's, a dialog's or a
+		// popup's - is enabled, which a dialog holding the application's window is not.
+		bool takes_input() const;
+		void take_keyboard_as_if_pressed();
+		std::shared_ptr<frame_impl> keyboard_target();
+		// The native window input at loc, in this frame's client pixels, reaches - this frame's, or a native child of
+		// it under loc, as the platform routes real input - and loc in that window's client pixels.
+		std::pair<std::shared_ptr<frame_impl>, core::pointi> native_window_at(core::pointi loc);
+		std::shared_ptr<frame_impl> top_level_window();
+		void activate_as_if_pressed();
 
 	public:
 		frame_impl(const ui::frame_host_weak_ptr& host, const ui::weak_app_ptr& app, kind k,
@@ -145,7 +173,18 @@ namespace
 		~frame_impl() override;
 		platform::window* native_window() const;
 		ui::input_manager_ptr keyboard_controls() const;
+		// A key let go of while a menu has the keyboard: the application hears it, as it heard the press, and nothing
+		// else does.
+		void offer_key_up(char32_t key, platform::key_state keys);
 		bool initialise_native(const platform::window_options& options);
+		// Input as its window's events give it, from an agent or a test (ui::send_pointer and the rest); false where
+		// the platform would not give it either.
+		bool deliver_pointer(ui::pointer_input input, platform::pointer_button button, core::pointi loc,
+		                     platform::key_state keys);
+		bool deliver_wheel(core::pointi loc, int delta, platform::key_state keys);
+		bool deliver_context_menu(core::pointi loc);
+		bool deliver_key(char32_t key, platform::key_state keys);
+		bool deliver_text(std::string_view utf8);
 
 		std::any handle() const override;
 		void destroy() override;
@@ -161,7 +200,7 @@ namespace
 		void options_changed() override;
 		void invalidate(core::recti bounds = {}, bool erase = false) override;
 		void layout() override;
-		void redraw() override;
+		void redraw(core::recti bounds = {}) override;
 		void redraw_now() override;
 		void scroll(int dx, int dy, core::recti bounds) override;
 		void track_menu(core::recti bounds, const std::vector<ui::command_ptr>& buttons) override;
@@ -178,7 +217,7 @@ namespace
 		void focus_first() override;
 		ui::control_ptr focused_control() const override;
 		ui::frame_ptr create_dlg(ui::frame_host_weak_ptr host) override;
-		ui::frame_ptr create_frame(ui::frame_host_weak_ptr host, const ui::frame_style& style, bool menu);
+		ui::frame_ptr create_frame(const ui::frame_host_weak_ptr& host, const ui::frame_style& style, bool menu);
 		ui::frame_ptr create_frame(ui::frame_host_weak_ptr host, const ui::frame_style& style) override;
 		ui::bubble_window_ptr create_bubble() override;
 		ui::close_result wait_for_close(uint32_t timeout_ms) override;
@@ -202,8 +241,8 @@ namespace
 		void pan(core::pointi start, core::pointi current) override;
 		void pan_end(core::pointi start, core::pointi end) override;
 		bool touch_double_tap(core::pointi loc) override;
-		bool key_down(int key, platform::key_state keys, bool system) override;
-		bool key_up(int key, platform::key_state keys, bool system) override;
+		bool key_down(char32_t key, platform::key_state keys, bool system) override;
+		bool key_up(char32_t key, platform::key_state keys, bool system) override;
 		void text(std::string_view utf8) override;
 		void focus_changed(bool has_focus) override;
 		void activated(bool active) override;
@@ -213,8 +252,10 @@ namespace
 		void timer(uint32_t id) override;
 		platform::hit_region hit_test(core::pointi loc) override;
 		void caption_button(platform::caption_button_action action, core::pointi loc) override;
-		platform::drop_effect drag_over(const platform::clipboard_data& data, platform::key_state keys, core::pointi loc) override;
-		platform::drop_effect drag_drop(platform::clipboard_data& data, platform::key_state keys, core::pointi loc) override;
+		platform::drop_effect drag_over(const platform::clipboard_data& data, platform::key_state keys,
+		                                core::pointi loc) override;
+		platform::drop_effect drag_drop(platform::clipboard_data& data, platform::key_state keys,
+		                                core::pointi loc) override;
 		void drag_leave() override;
 		void system_event(platform::os_event_type event) override;
 
@@ -308,6 +349,63 @@ namespace
 		if (_disable_count != 0) return false;
 		const auto parent = _parent.lock();
 		return !parent || parent->is_enabled_here();
+	}
+
+	bool frame_impl::holds(const frame_impl* frame) const
+	{
+		for (auto current = frame; current;)
+		{
+			if (current == this) return true;
+			const auto parent = current->_parent.lock();
+			current = parent.get();
+		}
+		return false;
+	}
+
+	// SetFocus refuses a destroyed window, or one in a disabled window. Only regions are walked: a native
+	// window's own state is the platform's to enforce, and a dialog's parent is disabled while it is open.
+	bool frame_impl::refuses_keyboard() const
+	{
+		if (_destroyed) return true;
+		for (auto current = this; current && !current->_window;)
+		{
+			if (current->_disable_count != 0) return true;
+			const auto parent = current->_parent.lock();
+			current = parent.get();
+		}
+		return false;
+	}
+
+	// Windows gives the keyboard to the parent of a child window it hides, disables or destroys, and takes
+	// the pointer from one it disables or destroys. A region has no native window to lose them, so the frame
+	// does the same: the keyboard goes to the nearest region above that is live, shown and enabled, or else
+	// to the native window drawing it.
+	void frame_impl::release_input(const bool pointer)
+	{
+		if (_window) return;
+		const auto owner = native_owner_shared();
+		if (!owner || owner->_destroyed) return;
+		const auto inside = [this](const std::weak_ptr<frame_impl>& weak)
+		{
+			const auto frame = weak.lock();
+			return frame && holds(frame.get());
+		};
+		if (pointer)
+		{
+			if (inside(owner->_capture_frame) || inside(owner->_tracking_frame)) cancel_pointer_capture();
+			if (inside(owner->_pan_frame)) owner->_pan_frame.reset();
+		}
+		if (!inside(owner->_focus_frame)) return;
+
+		// A region hidden, disabled or destroyed takes all it draws with it, so the keyboard goes to the
+		// lowest region above every one that cannot take it.
+		std::shared_ptr<frame_impl> next;
+		for (auto current = _parent.lock(); current && current != owner; current = current->_parent.lock())
+		{
+			if (current->_destroyed || !current->_visible || current->_disable_count != 0) next.reset();
+			else if (!next) next = current;
+		}
+		owner->change_focus(next ? next : owner);
 	}
 
 	render::measure_context* frame_impl::measure_context()
@@ -440,6 +538,8 @@ namespace
 		{
 			const auto child = i->lock();
 			if (!child || child->_window || !child->is_shown() || !child->_bounds.contains(loc)) continue;
+			// As Windows passes a disabled child window's pointer input to its parent.
+			if (child->_disable_count != 0) return this;
 			if (auto* const deeper = child->frame_at(loc - child->_bounds.top_left())) return deeper;
 			return child.get();
 		}
@@ -461,10 +561,12 @@ namespace
 				if (child->_window->kind() != platform::window_kind::child) continue;
 				const auto bounds = child->_window->bounds();
 				if (!bounds.contains(loc)) continue;
+				if (child->_disable_count != 0) return {this, loc};
 				return child->hit_target(loc - bounds.top_left());
 			}
 
 			if (!child->_bounds.contains(loc)) continue;
+			if (child->_disable_count != 0) return {this, loc};
 			return child->hit_target(loc - child->_bounds.top_left());
 		}
 		return {this, loc};
@@ -499,7 +601,7 @@ namespace
 
 	bool frame_impl::is_in_dialog() const
 	{
-		for (auto current = this; current; )
+		for (auto current = this; current;)
 		{
 			if (current->_kind == kind::dialog) return true;
 			const auto parent = current->_parent.lock();
@@ -547,6 +649,7 @@ namespace
 		if (const auto parent = child->_parent.lock(); parent && (old_visible || placement.visible))
 			parent->invalidate(old_bounds.make_union(placement.bounds), false);
 		if (old_extent != child->extent()) child->layout();
+		if (old_visible && !placement.visible) child->release_input(false);
 	}
 
 	void frame_impl::layout_host(const bool minimized)
@@ -646,7 +749,23 @@ namespace
 	{
 		if (_timer_id == 0) return;
 		_controls->tick();
+		if (_kind != kind::pane) tick_untimed_panes();
 		if (const auto host = _host.lock()) host->tick();
+	}
+
+	// A pane ticks only as often as its style asks, and one that asks for none still holds controls waiting on work
+	// they poll for - a dictionary loading, a word added - so the window or dialog holding it ticks them. A dialog
+	// it holds ticks its own.
+	void frame_impl::tick_untimed_panes()
+	{
+		const auto children = _children;
+		for (const auto& weak : children)
+		{
+			const auto child = weak.lock();
+			if (!child || child->_kind != kind::pane || child->_destroyed) continue;
+			if (child->_timer_id == 0) child->_controls->tick();
+			child->tick_untimed_panes();
+		}
 	}
 
 	void frame_impl::fade_to(const bool visible)
@@ -686,7 +805,8 @@ namespace
 
 	void frame_impl::show_app_menu(const core::recti bounds, const std::vector<ui::command_ptr>& commands)
 	{
-		if (const auto app = _app.lock()) app->track_menu(std::static_pointer_cast<ui::frame>(self()), bounds, commands);
+		if (const auto app = _app.lock())
+			app->track_menu(std::static_pointer_cast<ui::frame>(self()), bounds, commands);
 		else track_menu(bounds, commands);
 	}
 
@@ -718,10 +838,13 @@ namespace
 	{
 		const auto owner = native_owner();
 		if (!owner) return;
+		const auto captured = owner->_capture_frame.lock();
 		owner->_tracking_frame.reset();
 		owner->_capture_frame.reset();
 		owner->_tracking = false;
 		if (owner->_window) owner->_window->capture(false);
+		// The control holding the pointer ends what its press began, rather than going on with no button held.
+		if (captured) captured->_controls->cancel_capture();
 	}
 
 	bool frame_impl::initialise_native(const platform::window_options& options)
@@ -741,7 +864,8 @@ namespace
 			if (_device)
 			{
 				if ((_window->kind() == platform::window_kind::child ||
-				     _window->kind() == platform::window_kind::popup) && options.parent)
+				     _window->kind() == platform::window_kind::popup) &&
+				    options.parent)
 				{
 					_device->scale_changed(options.parent->root()->scale());
 				}
@@ -765,6 +889,7 @@ namespace
 		_bounds = {};
 		_visible = false;
 		_focus_frame = weak_from_this();
+		start_timer(_timer_id, frame_timer_id, _style.timer_milliseconds);
 	}
 
 	void frame_impl::add_child(const std::shared_ptr<frame_impl>& child)
@@ -816,11 +941,23 @@ namespace
 	{
 		if (_destroyed) return;
 		_destroyed = true;
+		release_input(true);
 		destroy_children();
-		if (_timer_id) { stop_timer(_timer_id); _timer_id = 0; }
-		if (_fade_timer_id) { stop_timer(_fade_timer_id); _fade_timer_id = 0; }
-		if (const auto owner = native_owner(); owner && owner->_caret_owner.lock().get() == this)
-			owner->_caret_owner.reset();
+		if (_timer_id)
+		{
+			stop_timer(_timer_id);
+			_timer_id = 0;
+		}
+		if (_fade_timer_id)
+		{
+			stop_timer(_fade_timer_id);
+			_fade_timer_id = 0;
+		}
+		if (const auto owner = native_owner())
+		{
+			if (owner->_caret_owner.lock().get() == this) owner->_caret_owner.reset();
+			if (owner->_hover_frame.lock().get() == this) owner->_hover_frame.reset();
+		}
 		_controls->detach();
 		if (!_window)
 		{
@@ -843,6 +980,7 @@ namespace
 		}
 		else ++_disable_count;
 		if (_window) _window->enable(enable_value);
+		else if (!enable_value) release_input(true);
 	}
 
 	std::string frame_impl::window_text() const
@@ -861,7 +999,7 @@ namespace
 	void frame_impl::focus()
 	{
 		const auto owner = native_owner_shared();
-		if (!owner || !owner->_window) return;
+		if (!owner || !owner->_window || refuses_keyboard()) return;
 		_controls->clear_focus();
 		take_keyboard_focus();
 	}
@@ -912,6 +1050,7 @@ namespace
 		if (const auto parent = _parent.lock())
 			if (old != bounds || old_visible != visible) parent->invalidate(old.make_union(bounds), false);
 		if (old.extent() != bounds.extent()) layout();
+		if (old_visible && !visible) release_input(false);
 	}
 	void frame_impl::show(const bool show_value)
 	{
@@ -919,8 +1058,10 @@ namespace
 		else if (_window) _window->show(show_value);
 		else
 		{
+			const auto was_visible = _visible;
 			_visible = show_value;
 			if (show_value) invalidate();
+			else if (was_visible) release_input(false);
 		}
 	}
 
@@ -941,7 +1082,8 @@ namespace
 		}
 		const auto owner = native_owner();
 		if (!owner || !owner->_window) return;
-		const auto area = bounds.is_empty() ? core::recti(origin_in_native(), extent()) : bounds.offset(origin_in_native());
+		const auto area = bounds.is_empty() ? core::recti(origin_in_native(), extent())
+		                                    : bounds.offset(origin_in_native());
 		owner->_window->invalidate(area);
 	}
 
@@ -950,9 +1092,16 @@ namespace
 		layout_host(_minimized || (_window && _window->is_minimized()));
 	}
 
-	void frame_impl::redraw()
+	void frame_impl::redraw(const core::recti bounds)
 	{
-		if (const auto owner = native_owner(); owner && owner->_device) owner->_device->redraw();
+		const auto owner = native_owner();
+		if (!owner || !owner->_device) return;
+
+		// A frame composed into its owner's surface redraws its own region of it, never the whole window.
+		const auto origin = origin_in_native();
+		const auto changed = bounds.is_empty() ? (owner == this ? core::recti{} : core::recti(origin, extent()))
+		                                       : bounds.offset(origin);
+		owner->_device->redraw(changed);
 	}
 
 	void frame_impl::redraw_now()
@@ -1124,8 +1273,16 @@ namespace
 	void frame_impl::destroyed()
 	{
 		_destroyed = true;
-		if (_timer_id) { stop_timer(_timer_id); _timer_id = 0; }
-		if (_fade_timer_id) { stop_timer(_fade_timer_id); _fade_timer_id = 0; }
+		if (_timer_id)
+		{
+			stop_timer(_timer_id);
+			_timer_id = 0;
+		}
+		if (_fade_timer_id)
+		{
+			stop_timer(_fade_timer_id);
+			_fade_timer_id = 0;
+		}
 		_controls->detach();
 		if (const auto host = _host.lock()) host->on_window_destroy();
 		_visible = false;
@@ -1205,7 +1362,8 @@ namespace
 				target->_over_controls = false;
 			}
 			target->set_cursor_direct(target->_cursor);
-			if (const auto host = target->_host.lock()) host->on_mouse_move(local, owner->_tracking_frame.lock().get() == target.get());
+			if (const auto host = target->_host.lock())
+				host->on_mouse_move(local, owner->_tracking_frame.lock().get() == target.get());
 		}
 	}
 
@@ -1235,7 +1393,8 @@ namespace
 			if (owner->_window) owner->_window->capture(true);
 			const auto host = target->_host.lock();
 			if (target->_kind == kind::pane && target->_style.can_focus && !target->_style.no_focus &&
-			    (!host || host->takes_keyboard_at(local))) target->focus();
+			    (!host || host->takes_keyboard_at(local)))
+				target->focus();
 			if (host) host->on_mouse_left_button_down(local, keys);
 		}
 		else if (button == platform::pointer_button::middle)
@@ -1281,9 +1440,9 @@ namespace
 		{
 			if (const auto host = target->_host.lock())
 				host->on_mouse_other_button_up(button == platform::pointer_button::x1
-						? platform::other_mouse_button::xb1
-						: platform::other_mouse_button::xb2,
-					local, keys);
+				                                   ? platform::other_mouse_button::xb1
+				                                   : platform::other_mouse_button::xb2,
+				                               local, keys);
 		}
 	}
 
@@ -1305,12 +1464,15 @@ namespace
 		if (!target) return false;
 		if (target->wheel_frame(target_loc(target, loc), delta, axis, keys)) return true;
 
-		// Windows sends an unhandled vertical wheel message to the native parent itself.
-		// Region-only trees (SDL) have no such message propagation, so walk those frames here
-		// with each parent's own coordinates and only there.
-		if (!platform::child_windows())
-			for (auto parent = target->_parent.lock(); parent; parent = parent->_parent.lock())
-				if (parent->wheel_frame(parent->local_from_native(loc), delta, axis, keys)) return true;
+		// Composed regions bubble through their native owner; Windows handles propagation beyond it.
+		for (auto current = target; current;)
+		{
+			if (current->_window && platform::child_windows()) break;
+			const auto parent = current->_parent.lock();
+			if (!parent) break;
+			if (parent->wheel_frame(parent->local_from_native(loc), delta, axis, keys)) return true;
+			current = parent;
+		}
 		return false;
 	}
 
@@ -1337,7 +1499,8 @@ namespace
 		const auto owner = native_owner();
 		const auto target = owner ? owner->_pan_frame.lock() : nullptr;
 		if (target)
-			if (const auto host = target->_host.lock()) host->pan(target_loc(target, start), target_loc(target, current));
+			if (const auto host = target->_host.lock())
+				host->pan(target_loc(target, start), target_loc(target, current));
 	}
 
 	void frame_impl::pan_end(const core::pointi start, const core::pointi end)
@@ -1345,7 +1508,8 @@ namespace
 		const auto owner = native_owner();
 		const auto target = owner ? owner->_pan_frame.lock() : nullptr;
 		if (target)
-			if (const auto host = target->_host.lock()) host->pan_end(target_loc(target, start), target_loc(target, end));
+			if (const auto host = target->_host.lock())
+				host->pan_end(target_loc(target, start), target_loc(target, end));
 		if (owner) owner->_pan_frame.reset();
 	}
 
@@ -1357,16 +1521,20 @@ namespace
 		return false;
 	}
 
-	bool frame_impl::key_down(const int key, const platform::key_state keys, const bool system)
+	bool frame_impl::key_down(const char32_t key, const platform::key_state keys, const bool system)
 	{
 		const auto target = focus_target();
 		if (!target) return false;
 		const auto app = _app.lock();
 		const auto controls = target->_controls;
-		const auto c = static_cast<char32_t>(key);
 		const auto in_dialog = target->is_in_dialog();
-		const auto system_input = system || c == platform::keys::F10 || c == platform::keys::ALT || keys.alt;
-		const auto typing = controls && controls->is_typing() && !keys.alt;
+		const auto typist = controls && controls->is_typing();
+		// AltGr is Ctrl+Alt to Windows. A key it types a character with is text to a typing control: not a menu's
+		// marked letter, nor an application's shortcut before the control has it.
+		const auto alt_graph_text = typist && keys.alt_graph;
+		const auto system_input = !alt_graph_text &&
+		                          (system || key == platform::keys::F10 || key == platform::keys::ALT || keys.alt);
+		const auto typing = typist && (!keys.alt || alt_graph_text);
 
 		// A menu bar in its menu mode takes every key first. It may live in the application frame
 		// while focus belongs to a pane, so the focused frame and then each of its parents is asked.
@@ -1383,7 +1551,7 @@ namespace
 		if (system_input && !typing && !in_dialog && app)
 		{
 			app_offered = true;
-			if (app->key_down(c, keys)) return true;
+			if (app->key_down(key, keys)) return true;
 		}
 		if (system_input)
 			for (auto current = target->shared_from_this(); current; current = current->_parent.lock())
@@ -1394,25 +1562,28 @@ namespace
 
 		if (typing)
 		{
-			const auto leaves = c == platform::keys::ESCAPE || c == platform::keys::UP || c == platform::keys::DOWN ||
-				c == platform::keys::TAB || (c == platform::keys::RETURN && !(controls->wants_return() && !keys.control));
-			const auto offered_to_app = !in_dialog && leaves && app;
-			if (offered_to_app && app->key_down(c, keys)) return true;
+			const auto leaves = key == platform::keys::ESCAPE || key == platform::keys::UP ||
+			                    key == platform::keys::DOWN || key == platform::keys::TAB ||
+			                    (key == platform::keys::RETURN && !(controls->wants_return() && !keys.control));
+			// A key the control works something open with - an edit's list of suggestions - is its own first.
+			const auto offered_to_app = !in_dialog && leaves && app && !controls->claims_key(key, keys);
+			if (offered_to_app && app->key_down(key, keys)) return true;
 			if (controls->key_down(key, keys)) return true;
 
-			if (!in_dialog && !offered_to_app)
-				if (const auto focused = controls->focused(); focused && focused->traits.forwards_unhandled_keys && app &&
-					app->key_down(c, keys)) return true;
+			if (!in_dialog && !offered_to_app && !alt_graph_text)
+				if (const auto focused = controls->focused();
+				    focused && focused->traits.forwards_unhandled_keys && app && app->key_down(key, keys))
+					return true;
 			return false;
 		}
 		// A modal dialog owns its keys. In particular, do not let an application shortcut consume
 		// Escape, Return or navigation before the dialog's input manager sees them.
-		if (!app_offered && !in_dialog && app && app->key_down(c, keys)) return true;
+		if (!app_offered && !in_dialog && app && app->key_down(key, keys)) return true;
 		if (controls && controls->key_down(key, keys)) return true;
 		if (const auto host = target->_host.lock(); host && host->key_down(key, keys)) return true;
-		if (in_dialog && c == platform::keys::ESCAPE && !keys.alt)
+		if (in_dialog && key == platform::keys::ESCAPE && !keys.alt)
 		{
-			for (auto current = target->shared_from_this(); current; )
+			for (auto current = target->shared_from_this(); current;)
 			{
 				if (current->_kind == kind::dialog)
 				{
@@ -1425,18 +1596,30 @@ namespace
 		return false;
 	}
 
-	bool frame_impl::key_up(const int key, const platform::key_state keys, const bool system)
+	bool frame_impl::key_up(const char32_t key, const platform::key_state keys, const bool system)
 	{
 		const auto target = focus_target();
 		if (!target) return false;
-		const auto c = static_cast<char32_t>(key);
-		const auto system_input = system || c == platform::keys::F10 || c == platform::keys::ALT || keys.alt;
-		for (auto current = target->shared_from_this(); current; current = current->_parent.lock())
+		const auto system_input = system || key == platform::keys::F10 || key == platform::keys::ALT || keys.alt;
+		auto taken = false;
+		for (auto current = target->shared_from_this(); current && !taken; current = current->_parent.lock())
 		{
 			const auto manager = current->_controls;
-			if (manager && (system_input || manager->in_system_mode()) && manager->system_key(key, keys, false)) return true;
+			taken = manager && (system_input || manager->in_system_mode()) && manager->system_key(key, keys, false);
 		}
-		return false;
+
+		// The release of whatever the application holds, as its press was offered to it - even one the menu bar takes:
+		// a key held as a menu opened is let go of while the menu is open.
+		const auto app = _app.lock();
+		const auto released = app && !target->is_in_dialog() && app->key_up(key, keys);
+		return taken || released;
+	}
+
+	void frame_impl::offer_key_up(const char32_t key, const platform::key_state keys)
+	{
+		const auto target = focus_target();
+		const auto app = _app.lock();
+		if (target && app && !target->is_in_dialog()) app->key_up(key, keys);
 	}
 
 	void frame_impl::text(const std::string_view utf8)
@@ -1449,18 +1632,32 @@ namespace
 			return;
 		}
 		if (!target->is_in_dialog())
-			if (const auto app = _app.lock(); app && app->focus_mode() == ui::focus_mode::text_edit) app->text_input(utf8);
+			if (const auto app = _app.lock(); app && app->focus_mode() == ui::focus_mode::text_edit)
+				app->text_input(utf8);
 	}
 
 	void frame_impl::focus_changed(const bool has_focus_value)
 	{
 		const auto owner = native_owner();
 		if (!owner) return;
+
+		// One window holds the keyboard. The platform takes it from one window before giving it to another, but not
+		// from one the frame gave it to itself - an offscreen window, which the platform gives none - so that one
+		// gives it up here.
+		if (has_focus_value)
+		{
+			if (const auto previous = keyboard_window.lock();
+			    previous && previous.get() != owner && previous->_native_focus && !previous->_destroyed)
+				previous->focus_changed(false);
+			keyboard_window = owner->weak_from_this();
+		}
+
 		owner->_native_focus = has_focus_value;
 		const auto target = owner->focus_target();
 		if (!has_focus_value)
 		{
-			for (auto current = target ? target->shared_from_this() : owner->self(); current; current = current->_parent.lock())
+			for (auto current = target ? target->shared_from_this() : owner->self(); current;
+			     current = current->_parent.lock())
 				if (current->_controls) current->_controls->cancel_system_mode();
 		}
 		if (!target) return;
@@ -1590,7 +1787,8 @@ namespace
 		const auto id = target->_controls->caption_button_at(hit.second);
 		if (action == platform::caption_button_action::hover)
 		{
-			if (const auto tracked = owner->_caption_input.lock(); tracked && tracked != target) tracked->_controls->caption_leave();
+			if (const auto tracked = owner->_caption_input.lock(); tracked && tracked != target)
+				tracked->_controls->caption_leave();
 			if (id) target->_controls->caption_hover(id);
 			owner->_caption_input = id ? target : std::weak_ptr<frame_impl>{};
 		}
@@ -1601,7 +1799,8 @@ namespace
 		}
 		else if (action == platform::caption_button_action::release)
 		{
-			if (const auto tracked = owner->_caption_input.lock()) tracked->_controls->caption_release(tracked == target ? id : 0);
+			if (const auto tracked = owner->_caption_input.lock())
+				tracked->_controls->caption_release(tracked == target ? id : 0);
 			owner->_caption_input.reset();
 		}
 	}
@@ -1659,9 +1858,12 @@ namespace
 	void frame_impl::take_keyboard_focus()
 	{
 		const auto owner = native_owner_shared();
-		if (!owner || !owner->_window) return;
+		if (!owner || !owner->_window || refuses_keyboard()) return;
 		owner->change_focus(self());
 		owner->_window->focus();
+		// The platform tells a window it has given the keyboard nothing when asked again, though the frame took the
+		// keyboard from it for an offscreen window it gave the keyboard itself (take_keyboard_as_if_pressed).
+		if (!owner->_native_focus && owner->_window->has_focus()) owner->focus_changed(true);
 		if (owner->_native_focus) focus_gained();
 	}
 
@@ -1774,7 +1976,8 @@ namespace
 		{
 			for (const auto& popup : session.popups())
 			{
-				if (const auto frame = dynamic_cast<frame_impl*>(popup.get()); frame && frame->native_window() == &target)
+				if (const auto frame = dynamic_cast<frame_impl*>(popup.get());
+				    frame && frame->native_window() == &target)
 					return true;
 			}
 			return false;
@@ -1782,10 +1985,9 @@ namespace
 
 	public:
 		explicit menu_filter(frame_impl& owner, ui::menu_session& session) : _owner(owner), _session(session) {}
-		bool key_down(const int key, const platform::key_state keys) override
+		bool key_down(const char32_t key, const platform::key_state keys) override
 		{
-			const auto horizontal = key == static_cast<int>(platform::keys::LEFT) ||
-				key == static_cast<int>(platform::keys::RIGHT);
+			const auto horizontal = key == platform::keys::LEFT || key == platform::keys::RIGHT;
 			if (horizontal)
 			{
 				if (_session.takes_horizontal_key(key)) return _session.key_down(key, keys);
@@ -1803,23 +2005,240 @@ namespace
 			_session.cancel();
 			return true;
 		}
+		void key_up(const char32_t key, const platform::key_state keys) override { _owner.offer_key_up(key, keys); }
 		void activation_lost() override { _session.cancel(); }
 	};
 
 	void frame_impl::run_menu_loop(ui::menu_session& session)
 	{
 		const auto previous = open_menu;
+		const auto previous_filter = open_menu_filter;
 		open_menu = &session;
 		menu_filter filter(*this, session);
+		open_menu_filter = &filter;
 		platform::run_modal_loop([&session] { return session.done(); }, &filter);
 		open_menu = previous;
+		open_menu_filter = previous_filter;
 	}
+
+	// The filter of a menu whose loop is still taking input: once the menu is done, input goes where it would without
+	// it, though its loop has yet to return.
+	menu_filter* live_menu_filter()
+	{
+		return open_menu && !open_menu->done() ? open_menu_filter : nullptr;
+	}
+
+	// Input given from outside is a user's, as the platform's own is: it holds off what waits for the user to go idle
+	// - a media view's controls fading - by the platform's rule, under which Left and Right, stepping through what is
+	// shown, do not count.
+	void count_user_action(const char32_t key = 0)
+	{
+		if (key != platform::keys::LEFT && key != platform::keys::RIGHT) platform::ticks_since_last_user_action = 0;
+	}
+
+	bool frame_impl::takes_input() const
+	{
+		for (auto current = this; current;)
+		{
+			if (current->_destroyed) return false;
+			if (current->_window && current->_window->kind() != platform::window_kind::child)
+				return current->_window->is_enabled();
+			const auto parent = current->_parent.lock();
+			current = parent.get();
+		}
+
+		return false;
+	}
+
+	bool frame_impl::deliver_pointer(const ui::pointer_input input, const platform::pointer_button button,
+	                                 const core::pointi loc, const platform::key_state keys)
+	{
+		if (!takes_input()) return false;
+		auto [window, native] = native_window_at(loc);
+		if (!window) return false;
+		if (input != ui::pointer_input::leave) count_user_action();
+
+		if (input == ui::pointer_input::move || input == ui::pointer_input::up)
+		{
+			// The window a press went to has the moves and the release after it, wherever they are.
+			if (const auto pressed = sent_press_window.lock();
+			    pressed && pressed != window && pressed->_window && !pressed->_destroyed)
+			{
+				native = pressed->_window->screen_to_client(window->_window->client_to_screen(native));
+				window = pressed;
+			}
+		}
+
+		if (input == ui::pointer_input::down || input == ui::pointer_input::double_click)
+		{
+			// An open menu's loop has each press first, and takes one outside the menu to close it.
+			if (const auto filter = live_menu_filter();
+			    filter && filter->pointer_down(*window->_window, window->_window->client_to_screen(native)))
+				return true;
+			window->activate_as_if_pressed();
+			sent_press_window = window;
+		}
+
+		switch (input)
+		{
+		case ui::pointer_input::move: window->pointer_move(native, keys); break;
+		case ui::pointer_input::down: window->pointer_down(button, native, keys); break;
+		case ui::pointer_input::up: window->pointer_up(button, native, keys); break;
+		case ui::pointer_input::double_click: window->double_click(button, native, keys); break;
+		case ui::pointer_input::leave: window->pointer_leave(); break;
+		}
+
+		if (input == ui::pointer_input::up) sent_press_window.reset();
+		return true;
+	}
+
+	bool frame_impl::deliver_wheel(const core::pointi loc, const int delta, const platform::key_state keys)
+	{
+		if (!takes_input()) return false;
+		const auto [window, native] = native_window_at(loc);
+		if (!window) return false;
+		count_user_action();
+		window->wheel(native, delta, platform::wheel_axis::vertical, keys);
+		return true;
+	}
+
+	bool frame_impl::deliver_context_menu(const core::pointi loc)
+	{
+		if (!takes_input()) return false;
+		const auto [window, native] = native_window_at(loc);
+		if (!window) return false;
+		count_user_action();
+		const auto screen = window->_window->client_to_screen(native);
+		if (const auto filter = live_menu_filter(); filter && filter->pointer_down(*window->_window, screen))
+			return true;
+		window->activate_as_if_pressed();
+		window->context_menu(screen, false);
+		return true;
+	}
+
+	std::pair<std::shared_ptr<frame_impl>, core::pointi> frame_impl::native_window_at(const core::pointi loc)
+	{
+		auto window = native_owner_shared();
+		if (!window || !window->_window) return {};
+		auto native = loc + origin_in_native();
+
+		// A child window that is hidden or disabled is passed over, as the platform finds the window under a point.
+		for (auto deeper = true; deeper;)
+		{
+			deeper = false;
+
+			for (auto i = window->_children.rbegin(); i != window->_children.rend(); ++i)
+			{
+				const auto child = i->lock();
+				if (!child || child->_destroyed || !child->_window || !child->is_shown() ||
+				    child->_window->kind() != platform::window_kind::child || !child->_window->is_enabled())
+					continue;
+				const auto bounds = child->_window->bounds();
+				if (!bounds.contains(native)) continue;
+				native = native - bounds.top_left();
+				window = child;
+				deeper = true;
+				break;
+			}
+		}
+
+		return {window, native};
+	}
+
+	// The native window that is not a child: the application's, a dialog's or a popup's.
+	std::shared_ptr<frame_impl> frame_impl::top_level_window()
+	{
+		auto window = native_owner_shared();
+
+		while (window && window->_window && window->_window->kind() == platform::window_kind::child)
+		{
+			const auto parent = window->_parent.lock();
+			if (!parent) break;
+			window = parent->native_owner_shared();
+		}
+
+		return window;
+	}
+
+	// A press activates its top-level window. Where nothing in it holds the keyboard, activating it gives the keyboard
+	// to it; within a window that holds the keyboard, it moves only as the press itself moves it, and a popup takes
+	// none.
+	void frame_impl::activate_as_if_pressed()
+	{
+		const auto top = top_level_window();
+		if (!top || !top->_window || top->_window->kind() == platform::window_kind::popup || top->_native_focus) return;
+
+		if (const auto holder = keyboard_frame.lock(); holder && !holder->_destroyed)
+		{
+			const auto holder_window = holder->native_owner_shared();
+			if (holder_window && holder_window->_native_focus && holder->top_level_window() == top) return;
+		}
+
+		top->take_keyboard_as_if_pressed();
+	}
+
+	// The keyboard's input goes where the platform sends it: to the window holding the keyboard - this one's, given it
+	// first as a user's press would where nothing of the application's holds it - or to an open menu's loop, which
+	// passes on only the keys it does not take.
+	bool frame_impl::deliver_key(const char32_t key, const platform::key_state keys)
+	{
+		const auto target = keyboard_target();
+		const auto owner = target->native_owner_shared();
+		if (!owner || !owner->_window || !target->takes_input()) return false;
+		count_user_action(key);
+		const auto system = keys.alt || key == platform::keys::F10;
+
+		if (const auto filter = live_menu_filter())
+		{
+			if (!filter->key_down(key, keys)) owner->key_down(key, keys, system);
+			filter->key_up(key, keys);
+			return true;
+		}
+
+		owner->take_keyboard_as_if_pressed();
+		owner->key_down(key, keys, system);
+		owner->key_up(key, keys, system);
+		return true;
+	}
+
+	// An open menu's loop lets no typed text through.
+	bool frame_impl::deliver_text(const std::string_view utf8)
+	{
+		const auto target = keyboard_target();
+		const auto owner = target->native_owner_shared();
+		if (!owner || !owner->_window || !target->takes_input() || live_menu_filter()) return false;
+		count_user_action();
+		owner->take_keyboard_as_if_pressed();
+		owner->text(utf8);
+		return true;
+	}
+
+	// The frame holding the keyboard, unless a dialog now holds its window: the platform gives an opening dialog the
+	// keyboard, though not one nobody sees, so the frame named has it then.
+	std::shared_ptr<frame_impl> frame_impl::keyboard_target()
+	{
+		const auto holder = keyboard_frame.lock();
+		return holder && holder->takes_input() ? holder : self();
+	}
+
+	// The window takes the keyboard as a press activating it gives it. The platform gives an offscreen window none -
+	// nobody sees it, and it must not take the keyboard from the window the user types in - so the frame takes it as
+	// its own then. A popup never takes the keyboard.
+	void frame_impl::take_keyboard_as_if_pressed()
+	{
+		if (!_window || _native_focus || _window->kind() == platform::window_kind::popup) return;
+		_window->focus();
+		if (!_native_focus) focus_changed(true);
+	}
+
 	ui::frame_ptr frame_impl::create_dlg(const ui::frame_host_weak_ptr host)
 	{
 		const auto owner = native_owner_shared();
 		if (!owner || !owner->_window) return nullptr;
 		ui::frame_style style;
 		style.child = false;
+		// A dialog of a window nobody sees is drawn where nobody sees it either, rather than on the desktop.
+		style.offscreen = owner->_style.offscreen;
 		style.colors = {ui::style::colors.dialog_background, ui::style::colors.dialog_text,
 		                ui::style::colors.dialog_selected_background};
 		auto result = std::make_shared<frame_impl>(host, _app, kind::dialog, style);
@@ -1828,6 +2247,7 @@ namespace
 		options.parent = owner->_window.get();
 		options.can_focus = true;
 		options.resizable = false;
+		options.offscreen = style.offscreen;
 		options.background = style.colors.background;
 		if (!result->initialise_native(options)) return nullptr;
 		result->_parent = self();
@@ -1840,11 +2260,12 @@ namespace
 		return create_frame(host, style, false);
 	}
 
-	ui::frame_ptr frame_impl::create_frame(const ui::frame_host_weak_ptr host, const ui::frame_style& style, const bool menu)
+	ui::frame_ptr frame_impl::create_frame(const ui::frame_host_weak_ptr& host, const ui::frame_style& style,
+	                                       const bool menu)
 	{
 		const auto owner = native_owner_shared();
 		if (!owner || !owner->_window) return nullptr;
-		if (style.child && !style.layered && !platform::child_windows())
+		if (style.child && !style.layered && (style.embedded || !platform::child_windows()))
 		{
 			auto result = std::make_shared<frame_impl>(host, _app, kind::pane, style, _host);
 			result->initialise_region(self());
@@ -1853,14 +2274,20 @@ namespace
 			return result;
 		}
 
-		auto result = std::make_shared<frame_impl>(host, _app, kind::pane, style, _host);
+		// A popup - a menu, a bubble - of a window nobody sees is drawn where nobody sees it either.
+		const auto is_child = style.child && !style.layered;
+		auto native_style = style;
+		if (!is_child) native_style.offscreen = style.offscreen || owner->_style.offscreen;
+
+		auto result = std::make_shared<frame_impl>(host, _app, kind::pane, native_style, _host);
 		platform::window_options options;
-		options.kind = style.child && !style.layered ? platform::window_kind::child : platform::window_kind::popup;
+		options.kind = is_child ? platform::window_kind::child : platform::window_kind::popup;
 		options.parent = owner->_window.get();
 		options.can_focus = !style.no_focus;
 		options.menu = menu;
 		options.resizable = false;
 		options.layered = style.layered;
+		options.offscreen = !is_child && native_style.offscreen;
 		options.accepts_drops = style.can_drop;
 		options.container = style.container && platform::child_windows();
 		options.background = style.colors.background;
@@ -1887,7 +2314,8 @@ namespace
 		style.timer_milliseconds = 50;
 		style.colors = {ui::style::colors.menu_background, ui::style::colors.menu_text,
 		                ui::style::colors.dialog_selected_background};
-		if (const auto popup = std::dynamic_pointer_cast<frame_impl>(parent)) return popup->create_frame(content, style, true);
+		if (const auto popup = std::dynamic_pointer_cast<frame_impl>(parent))
+			return popup->create_frame(content, style, true);
 		return create_frame(content, style, true);
 	}
 
@@ -1916,8 +2344,7 @@ namespace
 	                             const ui::frame_host_weak_ptr& host, const ui::frame_style& style)
 	{
 		if (!app) return nullptr;
-		const auto use_gpu = app->wants_gpu() &&
-			!platform::crash_guard_suppressed(platform::crash_guard::gpu_render);
+		const auto use_gpu = app->wants_gpu() && !platform::crash_guard_suppressed(platform::crash_guard::gpu_render);
 		if (!render::startup(use_gpu))
 		{
 			platform::show_startup_failure(platform::text().error_atl_direct3d);
@@ -1937,7 +2364,7 @@ namespace
 		options.offscreen = app_style.offscreen;
 		options.resizable = app_style.resizable;
 		options.resize_scale = static_cast<double>(render::base_font_size()) /
-			static_cast<double>(render::default_font_size);
+		                       static_cast<double>(render::default_font_size);
 		options.container = app_style.container && platform::child_windows();
 		options.background = app_style.colors.background;
 		options.title = core::app_name();
@@ -1973,4 +2400,35 @@ void ui::restore_focus(const ui::focus_snapshot& snapshot)
 {
 	if (const auto control = snapshot.focused.lock()) control->focus();
 	else if (const auto frame = snapshot.window.lock()) frame->focus();
+}
+
+bool ui::send_pointer(const frame_ptr& frame, const pointer_input input, const platform::pointer_button button,
+                      const core::pointi loc, const platform::key_state keys)
+{
+	const auto f = std::dynamic_pointer_cast<frame_impl>(frame);
+	return f && f->deliver_pointer(input, button, loc, keys);
+}
+
+bool ui::send_wheel(const frame_ptr& frame, const core::pointi loc, const int delta, const platform::key_state keys)
+{
+	const auto f = std::dynamic_pointer_cast<frame_impl>(frame);
+	return f && f->deliver_wheel(loc, delta, keys);
+}
+
+bool ui::send_context_menu(const frame_ptr& frame, const core::pointi loc)
+{
+	const auto f = std::dynamic_pointer_cast<frame_impl>(frame);
+	return f && f->deliver_context_menu(loc);
+}
+
+bool ui::send_key(const frame_ptr& frame, const char32_t key, const platform::key_state keys)
+{
+	const auto f = std::dynamic_pointer_cast<frame_impl>(frame);
+	return f && f->deliver_key(key, keys);
+}
+
+bool ui::send_text(const frame_ptr& frame, const std::string_view utf8)
+{
+	const auto f = std::dynamic_pointer_cast<frame_impl>(frame);
+	return f && f->deliver_text(utf8);
 }

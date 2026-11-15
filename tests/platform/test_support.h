@@ -9,8 +9,7 @@
 #include <chrono>
 #include <thread>
 
-template <typename Operation, typename IsBusy>
-auto retry_clipboard(Operation operation, IsBusy is_busy)
+template <typename Operation, typename IsBusy> auto retry_clipboard(Operation operation, IsBusy is_busy)
 {
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
 	auto result = operation();
@@ -110,10 +109,7 @@ public:
 		return errors;
 	}
 
-	core::folder_path folder() const
-	{
-		return resolve_folder();
-	}
+	core::folder_path folder() const { return resolve_folder(); }
 
 	core::file_path next_path(const std::string_view ext = ".jpg")
 	{
@@ -135,7 +131,7 @@ public:
 	}
 };
 
-inline temp_files _temps;
+inline temp_files temps;
 
 inline void write_test_file(const core::file_path path, const std::string_view text)
 {

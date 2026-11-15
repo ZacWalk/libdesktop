@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The drawn controls - push, check and radio buttons, command links, the slider, the toolbar
 // and the date field - what every control answers as an element of the tree, the input manager that
@@ -18,7 +17,8 @@
 // Helpers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-void ui::drawn::draw_icon(render::draw_context& dc, const icon_index icon, const core::recti bounds, const core::color c)
+void ui::drawn::draw_icon(render::draw_context& dc, const icon_index icon, const core::recti bounds,
+                          const core::color c)
 {
 	if (icon == icon_index{} || bounds.is_empty()) return;
 	dc.draw_text(icon_to_utf8(icon), bounds, icon_face(icon), render::text_style::single_line_center, c, {});
@@ -26,8 +26,8 @@ void ui::drawn::draw_icon(render::draw_context& dc, const icon_index icon, const
 
 render::font_face ui::icon_face(const icon_index icon, const chrome_icon_set& chrome)
 {
-	const auto is_caption = icon != icon_index{} &&
-		(icon == chrome.minimize || icon == chrome.maximize || icon == chrome.restore || icon == chrome.close);
+	const auto is_caption = icon != icon_index{} && (icon == chrome.minimize || icon == chrome.maximize ||
+	                                                 icon == chrome.restore || icon == chrome.close);
 	return is_caption ? render::font_face::small_icons : render::font_face::icons;
 }
 
@@ -41,8 +41,8 @@ void ui::drawn::draw_outline(render::draw_context& dc, const core::recti b, cons
 }
 
 // The native buttons were shaded top to bottom; bands keep that without a gradient primitive.
-void ui::drawn::fill_gradient(render::draw_context& dc, const core::recti b, const core::color32 top, const core::color32 bottom,
-                              const float alpha)
+void ui::drawn::fill_gradient(render::draw_context& dc, const core::recti b, const core::color32 top,
+                              const core::color32 bottom, const float alpha)
 {
 	const auto h = b.height();
 	if (h <= 0 || b.width() <= 0) return;
@@ -96,14 +96,13 @@ void ui::drawn::draw_check_mark(render::draw_context& dc, const core::recti boun
 	const auto cx = static_cast<double>(centre.x);
 	const auto cy = static_cast<double>(centre.y);
 	const auto unit = std::min(bounds.width(), bounds.height()) / 8.0;
-	const std::array<core::pointd, 3> tick{{
-		{cx - unit * 2.5, cy},
-		{cx - unit * 0.75, cy + unit * 1.75},
-		{cx + unit * 2.5, cy - unit * 2.0}}};
+	const std::array<core::pointd, 3> tick{
+		{{cx - unit * 2.5, cy}, {cx - unit * 0.75, cy + unit * 1.75}, {cx + unit * 2.5, cy - unit * 2.0}}};
 	dc.draw_polyline(std::span<const core::pointd>(tick), c, std::max(1.0, dc.scale_factor * 1.5));
 }
 
-int ui::slider_value_to_track_x(const core::recti track_bounds, const int value, const int min_value, const int max_value)
+int ui::slider_value_to_track_x(const core::recti track_bounds, const int value, const int min_value,
+                                const int max_value)
 {
 	const auto range = std::max(1, max_value - min_value);
 	const auto clamped = std::clamp(value, min_value, max_value);
@@ -186,10 +185,7 @@ std::vector<ui::spelling_range> ui::unknown_words(const std::string_view text, c
 {
 	if (!dictionary) return {};
 
-	return spelling_ranges(text, [dictionary](const std::string_view word)
-	{
-		return dictionary->is_word_valid(word);
-	});
+	return spelling_ranges(text, [dictionary](const std::string_view word) { return dictionary->is_word_valid(word); });
 }
 
 ui::mnemonic_label ui::parse_mnemonic(const std::string_view label)
@@ -213,7 +209,10 @@ ui::mnemonic_label ui::parse_mnemonic(const std::string_view label)
 			// A marker comes before a word and not inside one, as the application's labels are written:
 			// "&OK", "As &JPEG" and "分析(&A)" have one, while "R&B" and "Fitness & Workout" keep their
 			// ampersand.
-			const auto is_word = [](const unsigned char c) { return std::isalnum(c) || c == '_' || c >= 0x80; };
+			const auto is_word = [](const unsigned char c)
+			{
+				return std::isalnum(c) || c == '_' || c >= 0x80;
+			};
 			const auto begins_word = i == 0 || !is_word(static_cast<unsigned char>(label[i - 1]));
 
 			if (begins_word && is_word(next))
@@ -320,8 +319,8 @@ namespace ui
 		bool _pressed = false;
 		bool _pressed_inside = false;
 
-		drawn_button(const kind k, const bool is_default, const int group) : _kind(k), _default(is_default),
-		                                                                     _group(group)
+		drawn_button(const kind k, const bool is_default, const int group) :
+			_kind(k), _default(is_default), _group(group)
 		{
 			traits.first_focus_candidate = true;
 			traits.push_button = k == kind::push;
@@ -355,10 +354,7 @@ namespace ui
 
 		bool is_checked() const override { return _checked; }
 
-		void check_from_group(const bool checked) override
-		{
-			set_checked(checked);
-		}
+		void check_from_group(const bool checked) override { set_checked(checked); }
 
 		void notify_changed() override
 		{
@@ -368,6 +364,7 @@ namespace ui
 		void click() override
 		{
 			if (!enabled) return;
+			report_control_used(*this);
 
 			switch (_kind)
 			{
@@ -389,10 +386,10 @@ namespace ui
 			}
 		}
 
-		bool on_key(const int key, const platform::key_state keys) override
+		bool on_key(const char32_t key, const platform::key_state keys) override
 		{
 			if (keys.alt || keys.control) return false;
-			if (key == static_cast<int>(platform::keys::SPACE) || (key == static_cast<int>(platform::keys::RETURN) && _kind == kind::push))
+			if (key == platform::keys::SPACE || (key == platform::keys::RETURN && _kind == kind::push))
 			{
 				click();
 				return true;
@@ -400,7 +397,7 @@ namespace ui
 			return false;
 		}
 
-		void on_mouse_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_down(const core::pointi /*loc*/, const platform::key_state /*keys*/) override
 		{
 			_pressed = true;
 			_pressed_inside = true;
@@ -416,7 +413,7 @@ namespace ui
 			invalidate();
 		}
 
-		void on_mouse_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_up(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			const auto fire = _pressed && bounds.contains(loc);
 			_pressed = false;
@@ -425,34 +422,42 @@ namespace ui
 			if (fire) click();
 		}
 
+		// A press the pointer was taken from presses nothing.
+		void on_capture_lost() override
+		{
+			if (!_pressed) return;
+			_pressed = false;
+			_pressed_inside = false;
+			invalidate();
+		}
+
 		core::sizei measure_content(render::measure_context& mc, const int cx) const override
 		{
 			const auto s = mc.scale_factor;
-			const auto padding = drawn::scaled(drawn::button_padding, s);
+			const auto pad = drawn::scaled(drawn::button_padding, s);
 			const auto icon_cxy = drawn::icon_cxy(s);
-			auto cx_result = padding * 2;
-			auto cy_result = padding * 2;
+			auto cx_result = pad * 2;
+			auto cy_result = pad * 2;
 			auto icon_width = 0;
 
-			if (_icon != icon_index{}) icon_width += icon_cxy + padding;
-			if (_kind != kind::push) icon_width += icon_cxy + padding;
+			if (_icon != icon_index{}) icon_width += icon_cxy + pad;
+			if (_kind != kind::push) icon_width += icon_cxy + pad;
 
 			if (_details.empty())
 			{
 				const auto text = mc.measure_text(_label, render::font_face::dialog, render::text_style::multiline,
-				                                  std::max(1, cx - icon_width - padding * 2));
+				                                  std::max(1, cx - icon_width - pad * 2));
 				cx_result += icon_width + text.cx;
 				cy_result += text.cy;
 			}
 			else
 			{
 				const auto title = mc.measure_text(_label, render::font_face::title, render::text_style::single_line,
-				                                   std::max(1, cx - icon_width - padding * 2));
-				const auto details = mc.measure_text(_details, render::font_face::dialog,
-				                                     render::text_style::multiline,
-				                                     std::max(1, cx - padding * 2));
+				                                   std::max(1, cx - icon_width - pad * 2));
+				const auto details = mc.measure_text(_details, render::font_face::dialog, render::text_style::multiline,
+				                                     std::max(1, cx - pad * 2));
 				cx_result += std::max(details.cx, icon_width + title.cx);
-				cy_result += title.cy + details.cy + padding;
+				cy_result += title.cy + details.cy + pad;
 			}
 
 			return {cx_result, cy_result};
@@ -460,8 +465,8 @@ namespace ui
 
 		// Multi-line text is centred vertically in its box, so a block that should sit at the top is
 		// drawn in a box its own height.
-		static void draw_block(render::draw_context& dc, const std::string_view text, core::recti box, const render::font_face font,
-		                       const render::text_style text_style, const core::color c)
+		static void draw_block(render::draw_context& dc, const std::string_view text, core::recti box,
+		                       const render::font_face font, const render::text_style text_style, const core::color c)
 		{
 			if (text.empty() || box.is_empty()) return;
 			const auto extent = dc.measure_text(text, font, text_style, box.width());
@@ -473,10 +478,10 @@ namespace ui
 		{
 			const auto s = dc.scale_factor;
 			const auto alpha = dc.colors.alpha;
-			const auto padding = drawn::scaled(drawn::button_padding, s);
+			const auto pad = drawn::scaled(drawn::button_padding, s);
 			const auto icon_cxy = drawn::icon_cxy(s);
 			const auto pressed = _pressed && _pressed_inside;
-			auto client = bounds.inflate(-padding, -padding);
+			auto client = bounds.inflate(-pad, -pad);
 			auto clr_bg = style::colors.button_background;
 			auto clr_text = style::colors.dialog_text;
 
@@ -486,16 +491,15 @@ namespace ui
 				if (focused) dc.draw_rect(bounds, drawn::solid(clr_bg, alpha));
 
 				const auto icon = _kind == kind::check
-					                  ? (_checked ? chrome_icons().checkbox_on : chrome_icons().checkbox_off)
-					                  : (_checked ? chrome_icons().radio_on : chrome_icons().radio_off);
+				                      ? (_checked ? chrome_icons().checkbox_on : chrome_icons().checkbox_off)
+				                      : (_checked ? chrome_icons().radio_on : chrome_icons().radio_off);
 				const auto top = bounds.center().y - icon_cxy / 2;
-				const core::recti icon_bounds(bounds.left + padding, top, bounds.left + padding + icon_cxy, top + icon_cxy);
+				const core::recti icon_bounds(bounds.left + pad, top, bounds.left + pad + icon_cxy, top + icon_cxy);
 
 				if (_checked) dc.draw_rect(icon_bounds, drawn::solid(style::colors.dialog_selected_background, alpha));
 
-				drawn::draw_icon(dc, icon, icon_bounds,
-				                 drawn::solid(text_on(clr_text, clr_bg, enabled), alpha));
-				client.left += icon_cxy + padding;
+				drawn::draw_icon(dc, icon, icon_bounds, drawn::solid(text_on(clr_text, clr_bg, enabled), alpha));
+				client.left += icon_cxy + pad;
 			}
 			else
 			{
@@ -518,7 +522,8 @@ namespace ui
 				{
 					const auto c2 = core::emphasize(clr_bg, 0.123f);
 					drawn::fill_gradient(dc, bounds, clr_bg, c2, alpha);
-					drawn::draw_outline(dc, bounds, drawn::solid(core::darken(clr_bg, 0.22f), alpha), std::max(1, core::round(s)));
+					drawn::draw_outline(dc, bounds, drawn::solid(core::darken(clr_bg, 0.22f), alpha),
+					                    std::max(1, core::round(s)));
 				}
 
 				if (focused)
@@ -535,14 +540,13 @@ namespace ui
 				if (_icon != icon_index{})
 				{
 					auto r = client;
-					r.right = r.left + icon_cxy + padding;
+					r.right = r.left + icon_cxy + pad;
 					drawn::draw_icon(dc, _icon, r, text_color);
-					client.left += icon_cxy + padding;
+					client.left += icon_cxy + pad;
 				}
 
-				const auto text_style = _kind == kind::push
-					                        ? render::text_style::multiline_center
-					                        : render::text_style::multiline;
+				const auto text_style = _kind == kind::push ? render::text_style::multiline_center
+				                                            : render::text_style::multiline;
 				const auto extent = dc.measure_text(_label, render::font_face::dialog, text_style,
 				                                    std::max(1, client.width()));
 				const auto top = client.top + std::max(0, (client.height() - extent.cy) / 2);
@@ -551,7 +555,7 @@ namespace ui
 			}
 			else
 			{
-				const auto icon_width = _icon == icon_index{} ? 0 : icon_cxy + padding;
+				const auto icon_width = _icon == icon_index{} ? 0 : icon_cxy + pad;
 				const auto title = dc.measure_text(_label, render::font_face::title, render::text_style::single_line,
 				                                   std::max(1, client.width() - icon_width));
 				const auto left = client.left + std::max(0, (client.width() - (title.cx + icon_width)) / 2);
@@ -559,19 +563,19 @@ namespace ui
 
 				if (_icon != icon_index{})
 				{
-					const core::recti icon_bounds(left, client.top + padding / 2, left + icon_cxy,
-					                        client.top + padding / 2 + icon_cxy);
+					const core::recti icon_bounds(left, client.top + pad / 2, left + icon_cxy,
+					                              client.top + pad / 2 + icon_cxy);
 					drawn::draw_icon(dc, _icon, icon_bounds, text_color);
 					title_bounds.left += icon_width;
 				}
 
-				dc.draw_text(_label, title_bounds, render::font_face::title, render::text_style::single_line, text_color,
-				             {});
+				dc.draw_text(_label, title_bounds, render::font_face::title, render::text_style::single_line,
+				             text_color, {});
 
 				auto details_bounds = client;
-				details_bounds.top = client.top + title.cy + padding;
-				draw_block(dc, _details, details_bounds, render::font_face::dialog, render::text_style::multiline_center,
-				           text_color);
+				details_bounds.top = client.top + title.cy + pad;
+				draw_block(dc, _details, details_bounds, render::font_face::dialog,
+				           render::text_style::multiline_center, text_color);
 			}
 		}
 	};
@@ -600,10 +604,8 @@ namespace ui
 			const auto handle = handle_size(s);
 			const auto track_height = std::max(2, drawn::scaled(4, s));
 			const auto center_y = bounds.center().y;
-			return {
-				bounds.left + handle / 2, center_y - track_height / 2,
-				bounds.right - handle / 2, center_y + (track_height + 1) / 2
-			};
+			return {bounds.left + handle / 2, center_y - track_height / 2, bounds.right - handle / 2,
+			        center_y + (track_height + 1) / 2};
 		}
 
 		void set_value(int v, const bool tracking)
@@ -617,6 +619,7 @@ namespace ui
 
 		void step_to(const int v)
 		{
+			report_control_used(*this);
 			const auto before = _pos;
 			set_value(v, false);
 			// The native slider closed every keyboard step with a final report, as a drag's release does.
@@ -626,10 +629,7 @@ namespace ui
 		int get_pos() const { return _pos; }
 
 		// As large as its owner makes it.
-		core::sizei measure_content(render::measure_context&, int) const override
-		{
-			return bounds.extent();
-		}
+		core::sizei measure_content(render::measure_context&, int) const override { return bounds.extent(); }
 
 		void set_pos(const int val)
 		{
@@ -639,7 +639,7 @@ namespace ui
 			invalidate();
 		}
 
-		void on_mouse_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_down(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			_tracking = true;
 			const auto track = track_bounds(scale());
@@ -654,34 +654,37 @@ namespace ui
 			set_value(slider_track_x_to_value(track, loc.x, _min, _max, _pos), true);
 		}
 
-		void on_mouse_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_up(const core::pointi /*loc*/, const platform::key_state /*keys*/) override
 		{
 			if (!_tracking) return;
 			_tracking = false;
 			invalidate();
+			report_control_used(*this);
 			// Last, because settling may replace the controls that own this slider.
 			if (_changed) _changed(_pos, false);
 		}
 
-		bool on_key(const int key, const platform::key_state keys) override
+		// A drag the pointer was taken from settles where it is, as a released one does.
+		void on_capture_lost() override { on_mouse_up({}, {}); }
+
+		bool on_key(const char32_t key, const platform::key_state keys) override
 		{
 			if (keys.alt || keys.control) return false;
 
 			const auto page = std::max(1, (_max - _min) / 5);
-			const auto k = static_cast<char32_t>(key);
 
-			if (k == platform::keys::LEFT || k == platform::keys::UP) step_to(_pos - 1);
-			else if (k == platform::keys::RIGHT || k == platform::keys::DOWN) step_to(_pos + 1);
-			else if (k == platform::keys::PRIOR) step_to(_pos - page);
-			else if (k == platform::keys::NEXT) step_to(_pos + page);
-			else if (k == platform::keys::HOME) step_to(_min);
-			else if (k == platform::keys::END) step_to(_max);
+			if (key == platform::keys::LEFT || key == platform::keys::UP) step_to(_pos - 1);
+			else if (key == platform::keys::RIGHT || key == platform::keys::DOWN) step_to(_pos + 1);
+			else if (key == platform::keys::PRIOR) step_to(_pos - page);
+			else if (key == platform::keys::NEXT) step_to(_pos + page);
+			else if (key == platform::keys::HOME) step_to(_min);
+			else if (key == platform::keys::END) step_to(_max);
 			else return false;
 
 			return true;
 		}
 
-		bool on_wheel(const core::pointi loc, const int delta, const platform::key_state keys) override
+		bool on_wheel(const core::pointi /*loc*/, const int delta, const platform::key_state /*keys*/) override
 		{
 			if (!is_focused() || delta == 0) return false;
 			step_to(_pos + (delta > 0 ? 1 : -1));
@@ -698,7 +701,7 @@ namespace ui
 			const auto value = std::clamp(_pos, _min, std::max(_min, _max));
 			const auto handle_x = slider_value_to_track_x(track, value, _min, _max);
 			const core::recti handle_bounds(handle_x - handle / 2, center_y - handle / 2, handle_x + (handle + 1) / 2,
-			                          center_y + (handle + 1) / 2);
+			                                center_y + (handle + 1) / 2);
 
 			// Drawn from what the host paints behind it, so the handle stands out on any panel: a fixed
 			// shade matched the dialog background and vanished there.
@@ -741,6 +744,8 @@ namespace ui
 		toolbar_styles _styles;
 		std::vector<button_state> _buttons;
 		int _hot = -1;
+		// The button the keys acted on when the keyboard left for another frame, lit again when it comes back.
+		int _keyboard_hot = -1;
 		int _pressed = -1;
 		bool _pressed_inside = false;
 		core::sizei _extent;
@@ -794,10 +799,10 @@ namespace ui
 			const auto icon_cxy = drawn::icon_cxy(s);
 			const auto has_icon = b.icon != icon_index{};
 			const auto line_height = mc.text_line_height(render::font_face::dialog);
-			const auto text_cx = b.text.empty()
-				                     ? 0
-				                     : mc.measure_text(b.text, render::font_face::dialog,
-				                                       render::text_style::single_line, 10000).cx;
+			const auto text_cx = b.text.empty() ? 0
+			                                    : mc.measure_text(b.text, render::font_face::dialog,
+			                                                      render::text_style::single_line, 10000)
+			                                          .cx;
 			const auto content = (has_icon ? icon_cxy : 0) + (has_icon && text_cx > 0 ? gap : 0) + text_cx;
 			return {pad + content + pad, std::max(icon_cxy, line_height) + drawn::scaled(10, s)};
 		}
@@ -860,10 +865,7 @@ namespace ui
 			_layout_width = cx;
 		}
 
-		core::recti button_rect(const size_t i) const
-		{
-			return _buttons[i].bounds.offset(bounds.top_left());
-		}
+		core::recti button_rect(const size_t i) const { return _buttons[i].bounds.offset(bounds.top_left()); }
 
 		int button_at(const core::pointi loc) const
 		{
@@ -885,7 +887,8 @@ namespace ui
 		void set_hot(const int i)
 		{
 			if (_hot == i) return;
-			if (_hot >= 0 && _hot < static_cast<int>(_buttons.size())) invalidate(button_rect(static_cast<size_t>(_hot)));
+			if (_hot >= 0 && _hot < static_cast<int>(_buttons.size()))
+				invalidate(button_rect(static_cast<size_t>(_hot)));
 			_hot = i;
 
 			core::recti screen_bounds;
@@ -928,6 +931,8 @@ namespace ui
 			const auto command = _buttons[i].command;
 			if (!command) return;
 
+			if (command->menu || command->invoke) report_control_used(*this, command);
+
 			if (command->menu)
 			{
 				show_menu(i);
@@ -962,6 +967,28 @@ namespace ui
 			return {};
 		}
 
+		std::vector<shown_button> shown_buttons() const
+		{
+			std::vector<shown_button> result;
+
+			for (size_t i = 0; i < _buttons.size(); ++i)
+			{
+				const auto& b = _buttons[i];
+				if (!b.command) continue;
+
+				shown_button shown;
+				shown.command = b.command;
+				shown.text = b.text.empty() ? parse_mnemonic(b.command->text).text : b.text;
+				shown.visible = b.visible;
+				shown.enabled = b.enable && enabled;
+				shown.checked = b.checked;
+				if (b.visible) shown.bounds = button_rect(i).offset(origin());
+				result.push_back(std::move(shown));
+			}
+
+			return result;
+		}
+
 		core::sizei measure_content(render::measure_context& mc, const int cx) const override
 		{
 			return const_cast<drawn_toolbar*>(this)->measure_toolbar(mc, cx);
@@ -972,21 +999,16 @@ namespace ui
 		bool can_focus() const override
 		{
 			if (!enabled) return false;
-			for (size_t i = 0; i < _buttons.size(); ++i) if (can_activate(static_cast<int>(i))) return true;
+			for (size_t i = 0; i < _buttons.size(); ++i)
+				if (can_activate(static_cast<int>(i))) return true;
 			return false;
 		}
 
-		void scale_changed() override
-		{
-			_layout_valid = false;
-		}
+		void scale_changed() override { _layout_valid = false; }
 
-		void on_placed(render::measure_context& mc) override
-		{
-			arrange(bounds.width(), mc);
-		}
+		void on_placed(render::measure_context& mc) override { arrange(bounds.width(), mc); }
 
-		void on_focus(const bool focused, const bool select_all) override
+		void on_focus(const bool focused, const bool /*select_all*/) override
 		{
 			if (!focused)
 			{
@@ -1007,15 +1029,29 @@ namespace ui
 			}
 		}
 
-		bool on_key(const int key, const platform::key_state keys) override
+		// The button the keys act on is lit only while the toolbar has the keyboard: another frame of the window,
+		// or a menu, taking the keyboard leaves none lit, and the same one is lit again when it comes back.
+		void on_keyboard(const bool has_keyboard) override
+		{
+			if (!has_keyboard)
+			{
+				_keyboard_hot = _hot;
+				set_hot(-1);
+				return;
+			}
+
+			if (can_activate(_keyboard_hot)) set_hot(_keyboard_hot);
+			on_focus(true, false);
+		}
+
+		bool on_key(const char32_t key, const platform::key_state keys) override
 		{
 			if (keys.alt || keys.control) return false;
-			const auto k = static_cast<char32_t>(key);
 
-			if (k == platform::keys::LEFT || k == platform::keys::RIGHT)
+			if (key == platform::keys::LEFT || key == platform::keys::RIGHT)
 			{
 				const auto count = static_cast<int>(_buttons.size());
-				const auto step = k == platform::keys::LEFT ? -1 : 1;
+				const auto step = key == platform::keys::LEFT ? -1 : 1;
 				auto i = _hot;
 
 				for (auto n = 0; n < count; ++n)
@@ -1031,10 +1067,11 @@ namespace ui
 				return true;
 			}
 
-			if ((k == platform::keys::RETURN || k == platform::keys::SPACE || k == platform::keys::DOWN) && can_activate(_hot))
+			if ((key == platform::keys::RETURN || key == platform::keys::SPACE || key == platform::keys::DOWN) &&
+			    can_activate(_hot))
 			{
 				const auto i = static_cast<size_t>(_hot);
-				if (k == platform::keys::DOWN && !_buttons[i].command->menu) return false;
+				if (key == platform::keys::DOWN && !_buttons[i].command->menu) return false;
 				activate(i);
 				return true;
 			}
@@ -1065,7 +1102,7 @@ namespace ui
 			if (!is_focused()) set_hot(-1);
 		}
 
-		void on_mouse_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_down(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			const auto i = button_at(loc);
 			if (!can_activate(i)) return;
@@ -1084,7 +1121,7 @@ namespace ui
 			invalidate(button_rect(index));
 		}
 
-		void on_mouse_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_up(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			if (_pressed < 0) return;
 
@@ -1094,6 +1131,15 @@ namespace ui
 			_pressed_inside = false;
 			invalidate(button_rect(index));
 			if (fire) activate(index);
+		}
+
+		void on_capture_lost() override
+		{
+			if (_pressed < 0) return;
+			const auto index = static_cast<size_t>(_pressed);
+			_pressed = -1;
+			_pressed_inside = false;
+			invalidate(button_rect(index));
 		}
 
 		int caption_button_at(const core::pointi loc) const override
@@ -1155,8 +1201,8 @@ namespace ui
 				const auto is_disabled = !b.enable || !enabled;
 				const auto is_hot = !is_disabled && (index == _hot || caption.hover_id == b.id);
 				const auto is_focus = is_hot && focused;
-				const auto is_pressed = !is_disabled &&
-					((index == _pressed && _pressed_inside) || (caption.pressed_id != 0 && caption.pressed_id == b.id));
+				const auto is_pressed = !is_disabled && ((index == _pressed && _pressed_inside) ||
+				                                         (caption.pressed_id != 0 && caption.pressed_id == b.id));
 				const auto is_highlight = b.highlight && !is_disabled;
 				const auto accent_bg = style::colors.important_background;
 				const auto clr_normal_bg = is_highlight ? accent_bg : bg_clr;
@@ -1209,7 +1255,8 @@ namespace ui
 					else
 					{
 						const auto text_cx = dc.measure_text(b.text, render::font_face::dialog,
-						                                     render::text_style::single_line, 10000).cx;
+						                                     render::text_style::single_line, 10000)
+						                         .cx;
 						x = r.left + std::max(0, (r.width() - text_cx) / 2);
 					}
 
@@ -1267,16 +1314,13 @@ namespace ui
 		std::string _separator;
 		mutable std::vector<core::recti> _segment_bounds;
 
-		drawn_date_time(const date_field_order order, const bool include_time) : _model(order, include_time),
-		                                                                         _include_time(include_time)
+		drawn_date_time(const date_field_order order, const bool include_time) :
+			_model(order, include_time), _include_time(include_time)
 		{
 			traits.typing = true;
 		}
 
-		size_t date_segment_count() const
-		{
-			return std::min<size_t>(3, _model.segments().size());
-		}
+		size_t date_segment_count() const { return std::min<size_t>(3, _model.segments().size()); }
 
 		std::string separator_after(const size_t i) const
 		{
@@ -1304,8 +1348,8 @@ namespace ui
 
 		core::recti inner(const double s) const
 		{
-			const auto padding = drawn::scaled(4, s);
-			return bounds.inflate(-padding, 0);
+			const auto pad = drawn::scaled(4, s);
+			return bounds.inflate(-pad, 0);
 		}
 
 		void update_segment_bounds(render::measure_context& mc) const
@@ -1327,9 +1371,10 @@ namespace ui
 				for (const auto o : offsets)
 				{
 					xs.push_back(o == 0
-						             ? 0
-						             : mc.measure_text(std::string_view(text).substr(0, o), render::font_face::dialog,
-						                               render::text_style::single_line, 10000).cx);
+					                 ? 0
+					                 : mc.measure_text(std::string_view(text).substr(0, o), render::font_face::dialog,
+					                                   render::text_style::single_line, 10000)
+					                       .cx);
 				}
 			}
 
@@ -1365,6 +1410,7 @@ namespace ui
 		void notify()
 		{
 			invalidate();
+			report_control_used(*this);
 			if (_changed) _changed(_model.value());
 		}
 
@@ -1410,23 +1456,19 @@ namespace ui
 			return {_include_time ? cx : std::min(cx_min, cx), line_height + drawn::scaled(8, s)};
 		}
 
-		std::string window_text() const
-		{
-			return display_text(nullptr);
-		}
+		std::string window_text() const { return display_text(nullptr); }
 
 		// control
 
-		void on_focus(const bool focused, const bool select_all) override
+		void on_focus(const bool focused, const bool /*select_all*/) override
 		{
 			if (!focused) _model.commit_typing();
 		}
 
-		bool on_key(const int key, const platform::key_state keys) override
+		bool on_key(const char32_t key, const platform::key_state keys) override
 		{
-			const auto k = static_cast<char32_t>(key);
 
-			if ((keys.alt && k == platform::keys::DOWN) || k == platform::keys::F4)
+			if ((keys.alt && key == platform::keys::DOWN) || key == platform::keys::F4)
 			{
 				month_menu();
 				return true;
@@ -1434,35 +1476,35 @@ namespace ui
 
 			if (keys.alt || keys.control) return false;
 
-			if (k == platform::keys::LEFT || k == platform::keys::RIGHT)
+			if (key == platform::keys::LEFT || key == platform::keys::RIGHT)
 			{
-				_model.move(k == platform::keys::LEFT ? -1 : 1);
+				_model.move(key == platform::keys::LEFT ? -1 : 1);
 				invalidate();
 				return true;
 			}
 
-			if (k == platform::keys::TAB)
+			if (key == platform::keys::TAB)
 			{
 				if (!_model.move(keys.shift ? -1 : 1)) return false;
 				invalidate();
 				return true;
 			}
 
-			if (k == platform::keys::UP || k == platform::keys::DOWN)
+			if (key == platform::keys::UP || key == platform::keys::DOWN)
 			{
-				_model.step(k == platform::keys::UP ? 1 : -1);
+				_model.step(key == platform::keys::UP ? 1 : -1);
 				notify();
 				return true;
 			}
 
-			if (k == platform::keys::HOME || k == platform::keys::END)
+			if (key == platform::keys::HOME || key == platform::keys::END)
 			{
-				_model.active(k == platform::keys::HOME ? 0 : _model.segments().size() - 1);
+				_model.active(key == platform::keys::HOME ? 0 : _model.segments().size() - 1);
 				invalidate();
 				return true;
 			}
 
-			if (k == platform::keys::BACK || k == platform::keys::DEL)
+			if (key == platform::keys::BACK || key == platform::keys::DEL)
 			{
 				_model.commit_typing();
 				invalidate();
@@ -1496,7 +1538,7 @@ namespace ui
 			return handled;
 		}
 
-		bool on_wheel(const core::pointi loc, const int delta, const platform::key_state keys) override
+		bool on_wheel(const core::pointi /*loc*/, const int delta, const platform::key_state /*keys*/) override
 		{
 			if (!is_focused() || delta == 0) return false;
 			_model.step(delta > 0 ? 1 : -1);
@@ -1504,7 +1546,7 @@ namespace ui
 			return true;
 		}
 
-		void on_mouse_down(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_down(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			const auto index = segment_at(loc);
 			const auto reopen = _model.active() == index && _model.active_has_menu();
@@ -1513,17 +1555,14 @@ namespace ui
 			if (reopen && is_focused()) month_menu();
 		}
 
-		platform::cursor cursor_at(const core::pointi loc) const override
-		{
-			return platform::cursor::normal;
-		}
+		platform::cursor cursor_at(const core::pointi /*loc*/) const override { return platform::cursor::normal; }
 
 		void paint(render::draw_context& dc, const bool focused) const override
 		{
 			const auto s = dc.scale_factor;
 			const auto alpha = dc.colors.alpha;
 			const auto bg = enabled ? style::colors.edit_background
-				                : core::average(style::colors.edit_background, style::colors.dialog_background);
+			                        : core::average(style::colors.edit_background, style::colors.dialog_background);
 			const auto fg = text_on(style::colors.edit_text, bg, enabled);
 
 			if (focused)
@@ -1601,8 +1640,8 @@ ui::button_ptr ui::make_button(const icon_index icon, const std::string_view tit
 ui::button_ptr ui::make_check_button(const bool val, const std::string_view text, const bool is_radio,
                                      std::function<void(bool)> changed, const int radio_group)
 {
-	auto c = std::make_shared<drawn_button>(is_radio ? drawn_button::kind::radio : drawn_button::kind::check,
-	                                        false, radio_group);
+	auto c = std::make_shared<drawn_button>(is_radio ? drawn_button::kind::radio : drawn_button::kind::check, false,
+	                                        radio_group);
 	c->set_text(text);
 	c->_checked = val;
 	c->_changed = std::move(changed);
@@ -1680,18 +1719,18 @@ void ui::control::render(render::draw_context& dc, const core::pointi element_of
 	if (traits.local_coordinates)
 	{
 		offset_draw_context moved(dc, origin());
-		render::scoped_clip clip(moved, core::recti(bounds.extent()));
+		render::scoped_clip clipped(moved, core::recti(bounds.extent()));
 		paint(moved, focused);
 	}
 	else if (element_offset == core::pointi{})
 	{
-		render::scoped_clip clip(dc, bounds);
+		render::scoped_clip clipped(dc, bounds);
 		paint(dc, focused);
 	}
 	else
 	{
 		offset_draw_context moved(dc, element_offset);
-		render::scoped_clip clip(moved, bounds);
+		render::scoped_clip clipped(moved, bounds);
 		paint(moved, focused);
 	}
 }
@@ -1820,9 +1859,47 @@ core::recti ui::toolbar::button_bounds(const command_ptr& command) const
 	return static_cast<const drawn_toolbar*>(this)->button_bounds(command);
 }
 
+std::vector<ui::toolbar::shown_button> ui::toolbar::buttons() const
+{
+	return static_cast<const drawn_toolbar*>(this)->shown_buttons();
+}
+
+namespace
+{
+	ui::control_used_listener& control_used()
+	{
+		static ui::control_used_listener listener;
+		return listener;
+	}
+}
+
+void ui::on_control_used(control_used_listener listener)
+{
+	control_used() = std::move(listener);
+}
+
+void ui::report_control_used(const control& c, const command_ptr& command)
+{
+	// A copy, so a listener that replaces itself is not destroyed while it runs.
+	if (const auto listener = control_used()) listener(c, command);
+}
+
 std::string ui::date_time_control::window_text() const
 {
 	return static_cast<const drawn_date_time*>(this)->window_text();
+}
+
+core::date_t ui::date_time_control::date() const
+{
+	return static_cast<const drawn_date_time*>(this)->_model.value();
+}
+
+void ui::date_time_control::date(const core::date_t val)
+{
+	auto* const c = static_cast<drawn_date_time*>(this);
+	c->_model.commit_typing();
+	c->_model.value(val);
+	c->notify();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1876,6 +1953,7 @@ void ui::input_manager::detach()
 	_focused.reset();
 	_hover.reset();
 	_captured.reset();
+	_capturing = false;
 	_system_control.reset();
 	_keyboard_focus = false;
 }
@@ -1892,7 +1970,8 @@ std::vector<ui::control_ptr> ui::input_manager::find_controls(const bool with_hi
 
 	h->visit_elements([&](const element_ptr& root, const core::pointi offset)
 	{
-		walk_tree(root, offset, with_hidden, [&](element& e, const core::pointi origin, bool, const bool ancestors_enabled)
+		walk_tree(root, offset, with_hidden,
+		          [&](element& e, const core::pointi origin, bool, const bool ancestors_enabled)
 		{
 			if (e.kind != element_kind::control) return;
 			auto& c = static_cast<control&>(e);
@@ -1923,8 +2002,8 @@ std::vector<ui::input_manager::frame_placement> ui::input_manager::layout()
 
 	h->visit_elements([&](const element_ptr& root, const core::pointi offset)
 	{
-		walk_tree(root, offset, true, [&](element& e, const core::pointi origin, const bool visible,
-		                                  const bool ancestors_enabled)
+		walk_tree(root, offset, true,
+		          [&](element& e, const core::pointi origin, const bool visible, const bool ancestors_enabled)
 		{
 			if (e.kind == element_kind::frame)
 			{
@@ -1949,8 +2028,8 @@ std::vector<ui::input_manager::frame_placement> ui::input_manager::layout()
 		});
 	});
 
-	// What is no longer shown lets go of what it held.
-	if (captured && !captured_shown) release_capture();
+	// What is no longer shown lets go of what it held, and a press held for a control its owner let go of ends.
+	if (_capturing && !captured_shown) cancel_capture();
 	if (hover && !hover_shown) set_hover(nullptr);
 	if (focused && !focused_shown) focus(nullptr, false);
 	release_gone_focus();
@@ -2034,9 +2113,19 @@ void ui::input_manager::set_hover(const control_ptr& c)
 
 void ui::input_manager::release_capture()
 {
-	if (_captured.expired()) return;
+	// Asked of the flag rather than the control, which its owner may have let go of while it held the press.
+	if (!_capturing) return;
+	_capturing = false;
 	_captured.reset();
 	if (_host) _host->capture_pointer(false);
+}
+
+void ui::input_manager::cancel_capture()
+{
+	if (!_capturing) return;
+	const auto captured = _captured.lock();
+	release_capture();
+	if (captured) captured->on_capture_lost();
 }
 
 bool ui::input_manager::mouse_move(const core::pointi loc)
@@ -2067,10 +2156,16 @@ bool ui::input_manager::mouse_down(const core::pointi loc, const platform::key_s
 	if (!c->enabled) return true;
 
 	const auto had_focus = has_focus(*c);
+	c->click_took_focus = !had_focus;
 	if (c->traits.focus_on_click && c->can_focus()) focus(c.get(), false);
-	if (!_host) return true;
+	if (!_host)
+	{
+		c->click_took_focus = false;
+		return true;
+	}
 
 	_captured = c;
+	_capturing = true;
 	_host->capture_pointer(true);
 	c->click_took_focus = !had_focus && has_focus(*c);
 	c->on_mouse_down(loc - c->origin(), keys);
@@ -2080,10 +2175,13 @@ bool ui::input_manager::mouse_down(const core::pointi loc, const platform::key_s
 
 bool ui::input_manager::mouse_up(const core::pointi loc, const platform::key_state keys)
 {
-	if (const auto captured = _captured.lock())
+	// A press a control took ends here even when its owner has let go of the control since: the window's
+	// pointer is let go of, and the release is not the frame's either.
+	if (_capturing)
 	{
+		const auto captured = _captured.lock();
 		release_capture();
-		captured->on_mouse_up(loc - captured->origin(), keys);
+		if (captured) captured->on_mouse_up(loc - captured->origin(), keys);
 		return true;
 	}
 
@@ -2098,10 +2196,16 @@ bool ui::input_manager::mouse_double_click(const core::pointi loc, const platfor
 	if (!c->enabled) return true;
 
 	const auto had_focus = has_focus(*c);
+	c->click_took_focus = !had_focus;
 	if (c->traits.focus_on_click && c->can_focus()) focus(c.get(), false);
-	if (!_host) return true;
+	if (!_host)
+	{
+		c->click_took_focus = false;
+		return true;
+	}
 
 	_captured = c;
+	_capturing = true;
 	_host->capture_pointer(true);
 	c->click_took_focus = !had_focus && has_focus(*c);
 	c->on_double_click(loc - c->origin(), keys);
@@ -2111,7 +2215,7 @@ bool ui::input_manager::mouse_double_click(const core::pointi loc, const platfor
 
 void ui::input_manager::mouse_leave()
 {
-	if (_captured.expired()) set_hover(nullptr);
+	if (!_capturing) set_hover(nullptr);
 }
 
 bool ui::input_manager::wheel(const core::pointi loc, const int delta, const platform::key_state keys)
@@ -2155,14 +2259,14 @@ bool ui::input_manager::move_focus(const bool forward)
 		const auto group = c.traits.radio_group;
 		if (group < 0 || c.is_checked()) return true;
 
-		return std::ranges::none_of(controls, [&c, group](const auto& other)
-		{
+		return std::ranges::none_of(controls, [&c, group](const auto& other) {
 			return other.get() != &c && other->traits.radio_group == group && other->is_checked() && other->can_focus();
 		});
 	};
 
 	std::vector<control*> stops;
-	for (const auto& c : controls) if (is_stop(*c) || c == focused) stops.push_back(c.get());
+	for (const auto& c : controls)
+		if (is_stop(*c) || c == focused) stops.push_back(c.get());
 	if (stops.empty()) return false;
 
 	const auto current = std::ranges::find(stops, focused.get());
@@ -2183,15 +2287,14 @@ bool ui::input_manager::move_focus(const bool forward)
 	return true;
 }
 
-bool ui::input_manager::key_down(const int key, const platform::key_state keys)
+bool ui::input_manager::key_down(const char32_t key, const platform::key_state keys)
 {
 	if (!_host) return false;
 
-	const auto k = static_cast<char32_t>(key);
 	const auto focused = _focused.lock();
 
 	// A pending Alt tap has no focus of its own; notify the control so any other key cancels the tap.
-	if (const auto pending = _system_control.lock(); pending && !in_system_mode() && k != platform::keys::ALT)
+	if (const auto pending = _system_control.lock(); pending && !in_system_mode() && key != platform::keys::ALT)
 		(void)pending->on_system_key(key, keys, true);
 
 	if (focused && focused->can_focus())
@@ -2202,9 +2305,10 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 		const auto group = focused->traits.radio_group;
 
 		if (group >= 0 && !keys.alt && !keys.control &&
-			(k == platform::keys::UP || k == platform::keys::DOWN || k == platform::keys::LEFT || k == platform::keys::RIGHT))
+		    (key == platform::keys::UP || key == platform::keys::DOWN || key == platform::keys::LEFT ||
+		     key == platform::keys::RIGHT))
 		{
-			const auto forward = k == platform::keys::DOWN || k == platform::keys::RIGHT;
+			const auto forward = key == platform::keys::DOWN || key == platform::keys::RIGHT;
 			std::vector<control_ptr> members;
 			for (const auto& c : find_controls(false))
 				if (c->traits.radio_group == group && c->can_focus()) members.push_back(c);
@@ -2214,8 +2318,8 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 			if (current != members.end() && members.size() > 1)
 			{
 				const auto index = static_cast<size_t>(current - members.begin());
-				const auto& next = members[forward ? (index + 1) % members.size()
-					                           : (index + members.size() - 1) % members.size()];
+				const auto& next =
+					members[forward ? (index + 1) % members.size() : (index + members.size() - 1) % members.size()];
 				focus(next.get(), false);
 				next->click();
 			}
@@ -2224,7 +2328,7 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 		}
 	}
 
-	if (k == platform::keys::TAB && !keys.control && !keys.alt)
+	if (key == platform::keys::TAB && !keys.control && !keys.alt)
 	{
 		return move_focus(!keys.shift);
 	}
@@ -2234,11 +2338,11 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 	// A dialog's buttons answer to the key their label marks: with Alt, or alone while the focused
 	// control takes no typing, as the dialog manager pressed native buttons. A check box or radio
 	// button takes the focus as it changes.
-	if (!keys.control && (keys.alt || !is_typing()) && k != 0)
+	if (!keys.control && (keys.alt || !is_typing()) && key != 0)
 	{
 		for (const auto& c : find_controls(false))
 		{
-			if (c->mnemonic == k && c->can_focus())
+			if (c->mnemonic == key && c->can_focus())
 			{
 				if (!c->traits.push_button) focus(c.get(), false);
 				c->click();
@@ -2249,7 +2353,7 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 
 	if (!keys.alt)
 	{
-		if (k == platform::keys::RETURN && !keys.control)
+		if (key == platform::keys::RETURN && !keys.control)
 		{
 			for (const auto& c : find_controls(false))
 			{
@@ -2260,7 +2364,7 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 				}
 			}
 		}
-		else if (k == platform::keys::ESCAPE)
+		else if (key == platform::keys::ESCAPE)
 		{
 			_host->close(true);
 			return true;
@@ -2270,7 +2374,7 @@ bool ui::input_manager::key_down(const int key, const platform::key_state keys)
 	return false;
 }
 
-bool ui::input_manager::system_key(const int key, const platform::key_state keys, const bool down)
+bool ui::input_manager::system_key(const char32_t key, const platform::key_state keys, const bool down)
 {
 	if (!_host) return false;
 
@@ -2311,6 +2415,12 @@ bool ui::input_manager::text_input(const std::string_view text)
 	const auto focused = _focused.lock();
 	if (!focused || !focused->can_focus() || !focused->traits.typing) return false;
 	return focused->on_text(text);
+}
+
+bool ui::input_manager::claims_key(const char32_t key, const platform::key_state keys) const
+{
+	const auto focused = _focused.lock();
+	return _keyboard_focus && focused && focused->can_focus() && focused->claims_key(key, keys);
 }
 
 bool ui::input_manager::keyboard_focus(const bool has_focus)
@@ -2456,7 +2566,7 @@ bool ui::input_manager::wants_return() const
 
 bool ui::input_manager::is_tracking() const
 {
-	return !_captured.expired();
+	return _capturing;
 }
 
 void ui::input_manager::update_text_input()
@@ -2495,7 +2605,8 @@ void ui::input_manager::pressed_radio(const control& pressed)
 
 	// Every member hears its new state, as each auto-radio button in a native group did.
 	std::vector<control_ptr> members;
-	for (const auto& c : find_controls(false)) if (c->traits.radio_group == group) members.push_back(c);
+	for (const auto& c : find_controls(false))
+		if (c->traits.radio_group == group) members.push_back(c);
 
 	for (const auto& c : members) c->check_from_group(c.get() == &pressed);
 	for (const auto& c : members) c->notify_changed();
@@ -2537,7 +2648,8 @@ void ui::input_manager::caption_press(const int id)
 {
 	if (_caption.press(id))
 	{
-		for (const auto& c : find_controls(false)) if (c->has_caption_button(id)) c->invalidate();
+		for (const auto& c : find_controls(false))
+			if (c->has_caption_button(id)) c->invalidate();
 	}
 }
 

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Draw the portable menu bar control and dispatch command accelerators through its menu tree.
 
@@ -24,8 +23,8 @@ namespace
 
 		const auto state = accelerator.key_state;
 		return ((state & platform::keyboard_accelerator_t::control) != 0) == keys.control &&
-			((state & platform::keyboard_accelerator_t::shift) != 0) == keys.shift &&
-			((state & platform::keyboard_accelerator_t::alt) != 0) == keys.alt;
+		       ((state & platform::keyboard_accelerator_t::shift) != 0) == keys.shift &&
+		       ((state & platform::keyboard_accelerator_t::alt) != 0) == keys.alt;
 	}
 
 	bool dispatch_commands(const std::vector<ui::command_ptr>& commands, const char32_t key,
@@ -62,7 +61,7 @@ namespace
 		bool title_visible(const int index) const
 		{
 			return index >= 0 && index < static_cast<int>(_menus.size()) && _menus[static_cast<size_t>(index)] &&
-				_menus[static_cast<size_t>(index)]->visible;
+			       _menus[static_cast<size_t>(index)]->visible;
 		}
 
 		std::vector<int> visible_titles() const
@@ -83,10 +82,9 @@ namespace
 		int title_width(const ui::command& command, render::measure_context* mc, const double scale) const
 		{
 			const auto label = ui::parse_mnemonic(command.text);
-			const auto text_width = mc
-				                       ? mc->measure_text(label.text, render::font_face::dialog,
-				                                         render::text_style::single_line, 100000).cx
-				                       : static_cast<int>(label.text.size()) * 8;
+			const auto text_width =
+				mc ? mc->measure_text(label.text, render::font_face::dialog, render::text_style::single_line, 100000).cx
+				   : static_cast<int>(label.text.size()) * 8;
 			return text_width + ui::drawn::scaled(menu_title_padding * 2, scale);
 		}
 
@@ -166,7 +164,7 @@ namespace
 			{
 				const auto index = static_cast<int>(current - titles.begin());
 				const auto next = (index + (direction > 0 ? 1 : static_cast<int>(titles.size()) - 1)) %
-					static_cast<int>(titles.size());
+				                  static_cast<int>(titles.size());
 				_selected = titles[static_cast<size_t>(next)];
 			}
 			invalidate();
@@ -257,7 +255,8 @@ namespace
 			int width = 0;
 			for (const auto& command : _menus)
 				if (command && command->visible) width += title_width(*command, &mc, scale);
-			const auto height = mc.text_line_height(render::font_face::dialog) + ui::drawn::scaled(menu_title_padding, scale);
+			const auto height = mc.text_line_height(render::font_face::dialog) +
+			                    ui::drawn::scaled(menu_title_padding, scale);
 			return {width, height};
 		}
 
@@ -274,10 +273,12 @@ namespace
 				const core::recti title(left, bounds.top, left + width, bounds.bottom);
 				const auto selected = _menu_mode && _selected == i;
 				if (selected)
-					dc.draw_rect(title, ui::drawn::solid(ui::style::colors.dialog_selected_background, dc.colors.alpha));
+					dc.draw_rect(title,
+					             ui::drawn::solid(ui::style::colors.dialog_selected_background, dc.colors.alpha));
 				const auto base = command->enable
-					                 ? (selected ? ui::style::colors.dialog_selected_text : ui::style::colors.menu_text)
-					                 : core::average(ui::style::colors.menu_background, ui::style::colors.menu_text);
+				                      ? (selected ? ui::style::colors.dialog_selected_text
+				                                  : ui::style::colors.menu_text)
+				                      : core::average(ui::style::colors.menu_background, ui::style::colors.menu_text);
 				const auto label = ui::parse_mnemonic(command->text);
 				dc.draw_text(label.text, title, render::font_face::dialog, render::text_style::single_line_center,
 				             ui::drawn::solid(base, dc.colors.alpha), {});
@@ -294,10 +295,7 @@ namespace
 			}
 		}
 
-		bool in_system_mode() const override
-		{
-			return _menu_mode || _menu_open;
-		}
+		bool in_system_mode() const override { return _menu_mode || _menu_open; }
 
 		void cancel_system_mode() override
 		{
@@ -308,17 +306,18 @@ namespace
 			invalidate();
 		}
 
-		bool on_system_key(const int key, const platform::key_state keys, const bool down) override
+		bool on_system_key(const char32_t key, const platform::key_state keys, const bool down) override
 		{
 			if (first_title() < 0) return false;
-			const auto k = static_cast<char32_t>(key);
 
-			if (k == platform::keys::ALT)
+			if (key == platform::keys::ALT)
 			{
 				if (down)
 				{
-					_alt_pressed = true;
-					_alt_used = false;
+					// Alt with Ctrl held is AltGr typing, or a Ctrl+Alt shortcut, and opens no menu: a native menu bar
+					// neither shows its marks for it nor enters its menu mode when it is let go.
+					_alt_pressed = !keys.control;
+					_alt_used = keys.control;
 					invalidate();
 					return true;
 				}
@@ -339,16 +338,16 @@ namespace
 
 			if (down && _alt_pressed) _alt_used = true;
 
-			if (k == platform::keys::F10)
+			if (key == platform::keys::F10)
 			{
 				if (down) enter_menu_mode();
 				return true;
 			}
 
 			if (!down) return _menu_mode || _menu_open;
-			if (keys.alt)
+			if (keys.alt && !keys.control)
 			{
-				if (const auto title = title_for_mnemonic(k); title >= 0)
+				if (const auto title = title_for_mnemonic(key); title >= 0)
 				{
 					_alt_used = true;
 					enter_menu_mode();
@@ -360,16 +359,13 @@ namespace
 
 			if (_menu_mode || _menu_open)
 			{
-				(void)menu_key(k);
+				(void)menu_key(key);
 				return true;
 			}
 			return false;
 		}
 
-		bool on_key(const int key, const platform::key_state) override
-		{
-			return menu_key(static_cast<char32_t>(key));
-		}
+		bool on_key(const char32_t key, const platform::key_state) override { return menu_key(key); }
 
 		void on_mouse_down(const core::pointi loc, const platform::key_state) override
 		{

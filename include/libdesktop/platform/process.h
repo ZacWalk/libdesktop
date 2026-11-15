@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Child-process, binary-stream, command-line, and console services.
 
@@ -53,10 +52,8 @@ namespace platform
 		std::function<void(int)> on_exit;
 	};
 
-	child_process_ptr spawn_child_process(const core::file_path& exe,
-	                                      std::span<const std::string> args,
-	                                      const core::file_path& working_dir,
-	                                      child_process_callbacks callbacks);
+	child_process_ptr spawn_child_process(const core::file_path& exe, std::span<const std::string> args,
+	                                      const core::file_path& working_dir, child_process_callbacks callbacks);
 
 	// Searches PATH without falling back to the current directory.
 	core::file_path find_executable(std::string_view name);

@@ -8,15 +8,13 @@
 
 using namespace std::literals;
 
-
-
 static void should_name_files_after_the_application()
 {
 	// The log and the temporary names are the application's name in lower case.
 	assert_equal_strict("libdesktop-tests"sv, core::app_file_stem(), "file stem");
 	assert_equal_strict("libdesktop-tests.log"sv, platform::log_path.name(), "log");
 	assert_equal_strict("libdesktop-tests.previous.log"sv, platform::previous_log_path.name(), "previous log");
-	assert_equal(true, platform::temp_file(".tmp"sv, _temps.folder()).name().sv().starts_with("libdesktop-tests_"),
+	assert_equal(true, platform::temp_file(".tmp"sv, temps.folder()).name().sv().starts_with("libdesktop-tests_"),
 	             "temporary name");
 }
 
@@ -24,7 +22,7 @@ static void should_name_files_after_the_application()
 // "not there" must be able to tell a removed file from one it simply could not read.
 static void should_report_file_presence()
 {
-	const auto scratch = _temps.next_folder("file-presence");
+	const auto scratch = temps.next_folder("file-presence");
 	const auto present = scratch.combine_file("present.txt");
 	{
 		std::ofstream fs(platform::to_stream_path(present));
@@ -59,10 +57,9 @@ static void should_report_file_presence()
 	// Enumeration only ever reports what it found, so those records are never left unknown.
 	const auto contents = platform::iterate_file_items(scratch, false);
 	assert_equal(2, static_cast<int>(contents.files.size()), "both files enumerated");
-	assert_equal(true, std::ranges::all_of(contents.files, [](const platform::file_info& f)
-	             {
-		             return f.attributes.exists();
-	             }),
+	assert_equal(true,
+	             std::ranges::all_of(contents.files,
+	                                 [](const platform::file_info& f) { return f.attributes.exists(); }),
 	             "enumerated files are found");
 
 	assert_equal(false, platform::file_attributes_t{}.exists(), "unqueried attributes do not exist");
@@ -72,7 +69,7 @@ static void should_report_file_presence()
 
 static void should_map_files()
 {
-	const auto scratch = _temps.next_folder("map-file");
+	const auto scratch = temps.next_folder("map-file");
 	const auto path = scratch.combine_file("mapped.txt");
 
 	// Larger than one allocation granularity so a window can be placed past the first boundary.
@@ -125,7 +122,7 @@ static void should_map_files()
 // all because zero of zero bytes had been written.
 static void should_save_a_blob_without_truncating_the_destination()
 {
-	const auto scratch = _temps.next_folder("blob-save");
+	const auto scratch = temps.next_folder("blob-save");
 	const auto path = scratch.combine_file("payload.bin");
 
 	const core::blob whole = {1, 2, 3, 4};
@@ -148,7 +145,7 @@ static void should_save_a_blob_without_truncating_the_destination()
 
 static void should_hash_a_file_with_sha256()
 {
-	const auto scratch = _temps.next_folder("sha256");
+	const auto scratch = temps.next_folder("sha256");
 	const auto path = scratch.combine_file("payload.bin");
 	write_test_file(path, "abc");
 
@@ -156,12 +153,9 @@ static void should_hash_a_file_with_sha256()
 	assert_equal(true, digest.has_value(), "a readable file has a SHA-256 digest");
 	if (digest)
 	{
-		const core::sha256_digest expected = {
-			0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
-			0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
-			0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
-			0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
-		};
+		const core::sha256_digest expected = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40,
+		                                      0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17,
+		                                      0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
 		assert_equal(true, *digest == expected, "the SHA-256 bytes are standard");
 	}
 	{
@@ -177,13 +171,12 @@ static void should_hash_a_file_with_sha256()
 		assert_equal(true, platform::file_sha256(reader) == digest, "hashing uses the held file");
 		assert_equal(uint64_t{1}, reader->pos(), "positional hashing preserves the caller's platform::cursor");
 		const auto moved = scratch.combine_file("renamed.bin");
-		assert_equal(true, platform::move_file(path, moved, true, false).success(),
-			"a read token permits renaming");
+		assert_equal(true, platform::move_file(path, moved, true, false).success(), "a read token permits renaming");
 		assert_equal(true, platform::file_sha256(reader) == digest, "the renamed held platform::file still hashes");
 		assert_equal(false, platform::file_sha256(path).has_value(), "the old pathname is not reopened");
 	}
 	assert_equal(false, platform::file_sha256(core::file_path(scratch.text())).has_value(),
-		"a directory is not hashed as an empty platform::file");
+	             "a directory is not hashed as an empty platform::file");
 }
 
 // An INI line cannot hold a line break. A setting holding one item per line - the folders a collection
@@ -191,14 +184,14 @@ static void should_hash_a_file_with_sha256()
 // setting of its own.
 static void should_keep_line_breaks_in_ini_settings()
 {
-	const auto folder = _temps.next_folder("ini-line-breaks");
+	const auto folder = temps.next_folder("ini-line-breaks");
 	const std::vector<std::string> values = {
 		"\"C:\\Photos\"\n\"C:\\Foto's\"",
 		"C:\\Photos\r\nD:\\Raw\r\n",
 		"\n",
 		"first\nsecond=line",
-		// The escape written as text is text again when read.
-		"\x10" "n stays as written",
+		// The escape (\x10 then n) written as text is text again when read.
+		"\x10n stays as written",
 		// Nor is a backslash an escape: settings hold Windows paths.
 		"C:\\new\\raw \\n \\\\server\\share",
 	};
@@ -213,7 +206,8 @@ static void should_keep_line_breaks_in_ini_settings()
 	for (size_t i = 0; i < values.size(); ++i)
 	{
 		std::string read;
-		assert_equal(true, reopened->read("lines", std::format("value{}", i), read), "the value is read after a restart");
+		assert_equal(true, reopened->read("lines", std::format("value{}", i), read),
+		             "the value is read after a restart");
 		assert_equal(values[i], read, "exactly as it was written");
 	}
 
@@ -225,7 +219,7 @@ static void should_keep_line_breaks_in_ini_settings()
 // restart: a removed favourite search, or a blanked artist name a batch edit then wrote into files.
 static void should_read_back_an_empty_setting()
 {
-	const auto folder = _temps.next_folder("ini-empty");
+	const auto folder = temps.next_folder("ini-empty");
 	const auto settings = platform::create_ini_file_settings(folder);
 	assert_equal(true, settings->write("values", "cleared", std::string_view{}), "an empty value is written");
 	assert_equal(true, settings->write("values", "count", std::string_view{}), "and an empty number");
@@ -248,14 +242,17 @@ static void should_read_back_an_empty_setting()
 // skipped while the replacement still went through - an original lost with no recovery point.
 static void should_not_replace_unchecked_destination_without_its_backup()
 {
-	const auto folder = _temps.next_folder("replace-unknown");
+	const auto folder = temps.next_folder("replace-unknown");
 	const auto destination = folder.combine_file("photo.jpg");
 	const auto replacement = folder.combine_file("photo.new");
 	const auto backup = folder.combine_file("photo.original.jpg");
 	write_test_file(destination, "original");
 	write_test_file(replacement, "replacement");
 
-	platform::test_replace_destination_presence = [](const core::file_path&) { return platform::file_presence::unknown; };
+	platform::test_replace_destination_presence = [](const core::file_path&)
+	{
+		return platform::file_presence::unknown;
+	};
 	const core::scope_exit restore([] { platform::test_replace_destination_presence = {}; });
 
 	assert_equal(true, platform::replace_file(destination, replacement, true).failed(), "the replace is refused");
@@ -276,8 +273,9 @@ static std::string replace_file_bytes(const core::file_path path, const std::str
 	write_test_file(path, initial);
 	{
 		platform::buffered_file file(platform::open_file(path, platform::file_open_mode::read_write));
-		assert_equal(true, file.insert(std::bit_cast<const uint8_t*>(replacement.data()),
-		                               static_cast<int64_t>(replacement.size()), start, replace),
+		assert_equal(true,
+		             file.insert(std::bit_cast<const uint8_t*>(replacement.data()),
+		                         static_cast<int64_t>(replacement.size()), start, replace),
 		             "replacement succeeds");
 	}
 	return read_test_file(path);
@@ -285,21 +283,16 @@ static std::string replace_file_bytes(const core::file_path path, const std::str
 
 static void should_replace_bytes_in_files()
 {
-	const auto scratch = _temps.next_folder("file-insert");
+	const auto scratch = temps.next_folder("file-insert");
 	const auto path = scratch.combine_file("payload.bin");
 
-	assert_equal("0123X789", replace_file_bytes(path, "0123456789", 4, 3, "X"),
-	             "shrinking keeps prefix and tail");
+	assert_equal("0123X789", replace_file_bytes(path, "0123456789", 4, 3, "X"), "shrinking keeps prefix and tail");
 	assert_equal("0123ABCDE789", replace_file_bytes(path, "0123456789", 4, 3, "ABCDE"),
 	             "growing keeps prefix and tail");
-	assert_equal("0123XYZ789", replace_file_bytes(path, "0123456789", 4, 3, "XYZ"),
-	             "equal-size replacement");
-	assert_equal("X3456789", replace_file_bytes(path, "0123456789", 0, 3, "X"),
-	             "replace at beginning");
-	assert_equal("012345X", replace_file_bytes(path, "0123456789", 6, 4, "X"),
-	             "replace through end");
-	assert_equal("012345X", replace_file_bytes(path, "012345", 6, 0, "X"),
-	             "append with empty tail");
+	assert_equal("0123XYZ789", replace_file_bytes(path, "0123456789", 4, 3, "XYZ"), "equal-size replacement");
+	assert_equal("X3456789", replace_file_bytes(path, "0123456789", 0, 3, "X"), "replace at beginning");
+	assert_equal("012345X", replace_file_bytes(path, "0123456789", 6, 4, "X"), "replace through end");
+	assert_equal("012345X", replace_file_bytes(path, "012345", 6, 0, "X"), "append with empty tail");
 
 	std::string large;
 	large.reserve(core::sixty_four_k + 32);
@@ -325,7 +318,7 @@ static void should_convert_local_dates_with_date_specific_rules()
 		core::day_t{2024, 1, 15, 12, 0, 0},
 		core::day_t{2024, 7, 15, 12, 0, 0},
 		core::day_t{2024, 3, 10, 3, 30, 0},
-		core::day_t{2024, 11, 3, 3, 30, 0}
+		core::day_t{2024, 11, 3, 3, 30, 0},
 	};
 	for (const auto& day : days)
 	{
@@ -340,7 +333,8 @@ static void should_convert_local_dates_with_date_specific_rules()
 		constexpr uint64_t fraction = 1234567;
 		const auto expected = (static_cast<int64_t>(unix_time) + 11644473600ll) * 10000000ll + fraction;
 		const auto wall = core::date_t(day.year, day.month, day.day, day.hour, day.minute, 0).to_int64() + fraction;
-		assert_equal(expected, platform::local_to_utc(wall), "local conversion matches the date-specific timezone rule");
+		assert_equal(expected, platform::local_to_utc(wall),
+		             "local conversion matches the date-specific timezone rule");
 	}
 }
 
@@ -370,8 +364,7 @@ static void should_signal_and_replace_pending_queue_work()
 	const auto ready_at = delayed.front().ready_at_us();
 	assert_equal(1'000'000, static_cast<int>(ready_at - delayed.front().queued_at_us()),
 	             "enqueue_after moves readiness by the requested delay");
-	assert_equal(0, static_cast<int>(delayed.front().wait_us(ready_at - 1)),
-	             "the intentional delay is not queue wait");
+	assert_equal(0, static_cast<int>(delayed.front().wait_us(ready_at - 1)), "the intentional delay is not queue wait");
 	assert_equal(250, static_cast<int>(delayed.front().wait_us(ready_at + 250)),
 	             "time after the deadline is queue wait");
 }
@@ -379,16 +372,19 @@ static void should_signal_and_replace_pending_queue_work()
 #ifndef _WIN32
 static void should_allow_the_caller_to_own_copy_fallback()
 {
-	const auto root = _temps.next_folder("rename-only");
+	const auto root = temps.next_folder("rename-only");
 	const auto source = root.combine_file("source.txt");
 	const auto destination = root.combine_file("destination.txt");
 	write_test_file(source, "original");
 	platform::test_linux_move_file_failures({true, true});
 	const core::scope_exit restore([] { platform::test_linux_clear_move_file_failures(); });
 	const auto refused = platform::move_file(source, destination, true, false);
-	assert_equal(true, refused.failed() && static_cast<bool>(refused.error), "the unavailable rename retains its error");
-	assert_equal(true, platform::exists(source) && !platform::exists(destination), "rename-only never falls back to copying");
-	assert_equal(true, platform::move_file(source, destination, true).success(), "the existing move policy still copies");
+	assert_equal(true, refused.failed() && static_cast<bool>(refused.error),
+	             "the unavailable rename retains its error");
+	assert_equal(true, platform::exists(source) && !platform::exists(destination),
+	             "rename-only never falls back to copying");
+	assert_equal(true, platform::move_file(source, destination, true).success(),
+	             "the existing move policy still copies");
 	assert_equal(true, !platform::exists(source) && platform::exists(destination), "the default completes the move");
 	assert_equal_strict("original", read_test_file(destination), "the copied contents are intact");
 }
@@ -410,14 +406,16 @@ void register_platform_system_tests(test_registry& tests)
 	tests.add("Should name files after the application"s, should_name_files_after_the_application);
 	tests.add("Should report file presence"s, should_report_file_presence);
 	tests.add("Should map files"s, should_map_files);
-	tests.add("Should save a blob without truncating the destination"s, should_save_a_blob_without_truncating_the_destination);
+	tests.add("Should save a blob without truncating the destination"s,
+	          should_save_a_blob_without_truncating_the_destination);
 	tests.add("Should hash a file with SHA-256"s, should_hash_a_file_with_sha256);
 	tests.add("Should keep line breaks in INI settings"s, should_keep_line_breaks_in_ini_settings);
 	tests.add("Should read back an empty setting"s, should_read_back_an_empty_setting);
 	tests.add("Should not replace an unchecked destination without its backup"s,
-		should_not_replace_unchecked_destination_without_its_backup);
+	          should_not_replace_unchecked_destination_without_its_backup);
 	tests.add("Should replace bytes in files"s, should_replace_bytes_in_files);
-	tests.add("Should convert local dates with date specific rules"s, should_convert_local_dates_with_date_specific_rules);
+	tests.add("Should convert local dates with date specific rules"s,
+	          should_convert_local_dates_with_date_specific_rules);
 	tests.add("Should signal and replace pending queue work"s, should_signal_and_replace_pending_queue_work);
 #ifdef _WIN32
 	register_platform_system_win_tests(tests);

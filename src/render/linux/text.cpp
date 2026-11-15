@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Linux text, the counterpart of the DirectWrite engine on Windows. Pango lays text out -
 // itemisation, shaping with HarfBuzz, font fallback through fontconfig, wrapping and line metrics - and
@@ -200,10 +199,8 @@ namespace
 				if (FcPatternGetMatrix(pattern, FC_MATRIX, 0, &m) == FcResultMatch && m)
 				{
 					rf->transformed = true;
-					rf->matrix = {
-						static_cast<FT_Fixed>(m->xx * 0x10000), static_cast<FT_Fixed>(m->xy * 0x10000),
-						static_cast<FT_Fixed>(m->yx * 0x10000), static_cast<FT_Fixed>(m->yy * 0x10000)
-					};
+					rf->matrix = {static_cast<FT_Fixed>(m->xx * 0x10000), static_cast<FT_Fixed>(m->xy * 0x10000),
+					              static_cast<FT_Fixed>(m->yx * 0x10000), static_cast<FT_Fixed>(m->yy * 0x10000)};
 				}
 			}
 		}
@@ -230,8 +227,7 @@ namespace
 				auto n = 0;
 
 				for (auto sy = y0; sy < y1 && sy < h; ++sy)
-					for (auto sx = x0; sx < x1 && sx < w; ++sx, ++n)
-						sum += src[static_cast<size_t>(sy) * w + sx];
+					for (auto sx = x0; sx < x1 && sx < w; ++sx, ++n) sum += src[static_cast<size_t>(sy) * w + sx];
 
 				result[static_cast<size_t>(y) * dw + x] = static_cast<uint8_t>(n ? sum / n : 0);
 			}
@@ -264,7 +260,7 @@ namespace
 			for (auto i = 1; i < face->num_fixed_sizes; ++i)
 			{
 				if (std::abs(face->available_sizes[i].y_ppem - rf.size) <
-					std::abs(face->available_sizes[best].y_ppem - rf.size))
+				    std::abs(face->available_sizes[best].y_ppem - rf.size))
 					best = i;
 			}
 
@@ -295,14 +291,10 @@ namespace
 			{
 				switch (bm.pixel_mode)
 				{
-				case FT_PIXEL_MODE_MONO: out[x] = (row[x >> 3] & (0x80 >> (x & 7))) ? 255 : 0;
-					break;
-				case FT_PIXEL_MODE_BGRA: out[x] = row[x * 4 + 3];
-					break;
-				case FT_PIXEL_MODE_GRAY: out[x] = row[x];
-					break;
-				default: out[x] = 0;
-					break;
+				case FT_PIXEL_MODE_MONO: out[x] = (row[x >> 3] & (0x80 >> (x & 7))) ? 255 : 0; break;
+				case FT_PIXEL_MODE_BGRA: out[x] = row[x * 4 + 3]; break;
+				case FT_PIXEL_MODE_GRAY: out[x] = row[x]; break;
+				default: out[x] = 0; break;
 				}
 			}
 		}
@@ -311,11 +303,9 @@ namespace
 		{
 			const auto dw = std::max(1, static_cast<int>(std::lround(w * scale)));
 			const auto dh = std::max(1, static_cast<int>(std::lround(h * scale)));
-			result = {
-				scale_coverage(coverage, w, h, dw, dh), dw, dh,
-				static_cast<int>(std::lround(slot->bitmap_left * scale)),
-				static_cast<int>(std::lround(slot->bitmap_top * scale))
-			};
+			result = {scale_coverage(coverage, w, h, dw, dh), dw, dh,
+			          static_cast<int>(std::lround(slot->bitmap_left * scale)),
+			          static_cast<int>(std::lround(slot->bitmap_top * scale))};
 		}
 		else
 		{
@@ -384,17 +374,14 @@ namespace
 		switch (style)
 		{
 		case render::text_style::single_line_center:
-		case render::text_style::multiline_center:
-			return (box - line) / 2;
-		case render::text_style::single_line_far:
-			return box - line;
-		default:
-			return 0;
+		case render::text_style::multiline_center: return (box - line) / 2;
+		case render::text_style::single_line_far: return box - line;
+		default: return 0;
 		}
 	}
 
 	PangoFontDescription* make_description(const std::string& family, const int px, const int weight = 400,
-	                                      const bool italic = false)
+	                                       const bool italic = false)
 	{
 		auto* const d = pango_font_description_new();
 		pango_font_description_set_family(d, family.c_str());
@@ -492,15 +479,15 @@ namespace
 	// The highlight colour of a glyph whose cluster starts at this byte, as the Windows engine colours a
 	// glyph by its cluster. Pango indexes text in UTF-8, as the highlights are given.
 	core::color glyph_color(const core::color base, const int cluster_byte,
-	                      const std::vector<render::text_highlight_t>& highlights)
+	                        const std::vector<render::text_highlight_t>& highlights)
 	{
 		if (highlights.empty()) return base;
 		return render::text_cluster_color(base, {static_cast<uint32_t>(cluster_byte), 1}, highlights);
 	}
 
 	void draw_layout(PangoLayout* layout, const render::text_style style, render::draw_context& dc,
-	                 render::software_canvas& canvas, const core::recti bounds, const core::color clr, const core::color bg,
-	                 const std::vector<render::text_highlight_t>& highlights)
+	                 render::software_canvas& canvas, const core::recti bounds, const core::color clr,
+	                 const core::color bg, const std::vector<render::text_highlight_t>& highlights)
 	{
 		auto& stack = text_stack::get();
 		set_box_width(layout, style, bounds.width());
@@ -528,16 +515,15 @@ namespace
 				const auto x = align_offset(style, box_w, line.width);
 				left = std::min(left, x);
 				right = std::max(right, x + line.width);
-			}
-			while (pango_layout_iter_next_line(lines));
+			} while (pango_layout_iter_next_line(lines));
 
 			pango_layout_iter_free(lines);
 
 			if (left < right)
 			{
 				const core::recti box(bounds.left + PANGO_PIXELS_FLOOR(left), bounds.top + PANGO_PIXELS_FLOOR(top),
-				                bounds.left + PANGO_PIXELS_CEIL(right),
-				                bounds.top + PANGO_PIXELS_CEIL(top + logical.height));
+				                      bounds.left + PANGO_PIXELS_CEIL(right),
+				                      bounds.top + PANGO_PIXELS_CEIL(top + logical.height));
 				dc.draw_rounded_rect(box.inflate(2), bg, dc.padding1);
 			}
 		}
@@ -593,8 +579,7 @@ namespace
 				const auto py = bounds.top + PANGO_PIXELS(top + baseline + info.geometry.y_offset) - g.top;
 				canvas.blend_glyph(px, py, g.coverage.data(), {g.width, g.height}, c);
 			}
-		}
-		while (pango_layout_iter_next_run(iter));
+		} while (pango_layout_iter_next_run(iter));
 
 		pango_layout_iter_free(iter);
 	}
@@ -615,8 +600,7 @@ namespace
 			{
 				clusters[run->item->offset + run->glyphs->log_clusters[i]] += run->glyphs->glyphs[i].geometry.width;
 			}
-		}
-		while (pango_layout_iter_next_run(iter));
+		} while (pango_layout_iter_next_run(iter));
 
 		pango_layout_iter_free(iter);
 
@@ -786,8 +770,8 @@ namespace
 					if (custom.cell_size && found->second.line_height > 0 && found->second.line_height != custom.size)
 					{
 						const auto requested = std::max(1, custom.size);
-						const auto adjusted = std::max(1, core::round(
-							static_cast<double>(requested) * requested / found->second.line_height));
+						const auto adjusted = std::max(1, core::round(static_cast<double>(requested) * requested /
+						                                              found->second.line_height));
 						pango_font_description_free(found->second.desc);
 						found->second.desc = make_description(family, adjusted, custom.weight, custom.italic);
 						found->second.measure();
@@ -802,8 +786,7 @@ namespace
 
 		// One layout per (face, text, style), as the Windows engine caches them: building one runs
 		// itemisation, fallback and shaping, which the item grid would otherwise pay on every frame.
-		PangoLayout* layout_for(const render::font_face f, const std::string_view text,
-		                        const render::text_style style)
+		PangoLayout* layout_for(const render::font_face f, const std::string_view text, const render::text_style style)
 		{
 			auto key = std::format("{}:{}:", static_cast<int>(f), static_cast<int>(style));
 			key.append(text);
@@ -846,9 +829,7 @@ namespace
 		}
 
 	public:
-		explicit pango_text_engine(const int base_font_size) : _base_font_size(base_font_size)
-		{
-		}
+		explicit pango_text_engine(const int base_font_size) : _base_font_size(base_font_size) {}
 
 		~pango_text_engine() override
 		{
@@ -865,7 +846,7 @@ namespace
 		}
 
 		core::sizei measure_text(const std::string_view text, const render::font_face f, const render::text_style style,
-		                   const int cx, const int cy) override
+		                         const int cx, const int cy) override
 		{
 			if (text.empty()) return {};
 			const text_guard guard(text_lock());
@@ -926,7 +907,8 @@ namespace
 
 	// The largest coverage within radius pixels, as a square: two passes, and at a few pixels as round as
 	// an outline needs to look. The same outline the Windows backend draws.
-	std::vector<uint8_t> dilate(const std::vector<uint8_t>& coverage, const int width, const int height, const int radius)
+	std::vector<uint8_t> dilate(const std::vector<uint8_t>& coverage, const int width, const int height,
+	                            const int radius)
 	{
 		std::vector<uint8_t> across(coverage.size());
 		std::vector<uint8_t> result(coverage.size());
@@ -963,8 +945,7 @@ namespace
 
 	// Calls f(x, y, raster, cluster_byte) for every glyph of a laid-out block, x and y being where the
 	// raster's top-left corner goes, in pixels from the block's origin.
-	template <typename F>
-	void for_each_glyph(PangoLayout* layout, const int origin_x, const int origin_y, F&& f)
+	template <typename F> void for_each_glyph(PangoLayout* layout, const int origin_x, const int origin_y, F&& f)
 	{
 		auto& stack = text_stack::get();
 		auto* const iter = pango_layout_get_iter(layout);
@@ -990,11 +971,11 @@ namespace
 				const auto& g = stack.raster(run->item->analysis.font, info.glyph);
 				if (g.coverage.empty()) continue;
 
-				f(origin_x + PANGO_PIXELS(x) + g.left, origin_y + PANGO_PIXELS(baseline + info.geometry.y_offset) - g.top,
-				  g, run->item->offset + run->glyphs->log_clusters[i]);
+				f(origin_x + PANGO_PIXELS(x) + g.left,
+				  origin_y + PANGO_PIXELS(baseline + info.geometry.y_offset) - g.top, g,
+				  run->item->offset + run->glyphs->log_clusters[i]);
 			}
-		}
-		while (pango_layout_iter_next_run(iter));
+		} while (pango_layout_iter_next_run(iter));
 
 		pango_layout_iter_free(iter);
 	}
@@ -1150,16 +1131,17 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 	pango_layout_get_extents(layout, nullptr, &logical);
 	const auto box_width = std::max(1, ceil_units(logical.width));
 	pango_layout_set_width(layout, box_width * PANGO_SCALE);
-	pango_layout_set_alignment(layout, spec.alignment == 0
-		                                   ? PANGO_ALIGN_LEFT
-		                                   : spec.alignment == 2
-		                                   ? PANGO_ALIGN_RIGHT
-		                                   : PANGO_ALIGN_CENTER);
+	pango_layout_set_alignment(layout, spec.alignment == 0   ? PANGO_ALIGN_LEFT
+	                                   : spec.alignment == 2 ? PANGO_ALIGN_RIGHT
+	                                                         : PANGO_ALIGN_CENTER);
 	pango_layout_get_extents(layout, &ink, &logical);
 	const auto box_height = std::max(1, ceil_units(logical.height));
 
 	const auto margin = static_cast<int>(std::ceil(std::max(0.0f, spec.outline_px))) + 2;
-	const auto beyond = [](const int units) { return std::max(0, ceil_units(units)); };
+	const auto beyond = [](const int units)
+	{
+		return std::max(0, ceil_units(units));
+	};
 	const auto left = margin + beyond(logical.x - ink.x);
 	const auto top = margin + beyond(logical.y - ink.y);
 	const auto width = left + box_width + margin + beyond(ink.x + ink.width - (logical.x + logical.width));
@@ -1185,33 +1167,34 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 
 		for_each_glyph(layout, left - PANGO_PIXELS(logical.x), top - PANGO_PIXELS(logical.y),
 		               [&](const int gx, const int gy, const glyph_raster& g, const int byte)
-		               {
-			               const auto color = color_at(byte);
+		{
+			const auto color = color_at(byte);
 
-			               for (auto y = 0; y < g.height; ++y)
-			               {
-				               const auto dy = gy + y;
-				               if (dy < 0 || dy >= height) continue;
+			for (auto y = 0; y < g.height; ++y)
+			{
+				const auto dy = gy + y;
+				if (dy < 0 || dy >= height) continue;
 
-				               for (auto x = 0; x < g.width; ++x)
-				               {
-					               const auto dx = gx + x;
-					               if (dx < 0 || dx >= width) continue;
+				for (auto x = 0; x < g.width; ++x)
+				{
+					const auto dx = gx + x;
+					if (dx < 0 || dx >= width) continue;
 
-					               const auto a = g.coverage[static_cast<size_t>(y) * g.width + x];
-					               const auto i = static_cast<size_t>(dy) * width + dx;
+					const auto a = g.coverage[static_cast<size_t>(y) * g.width + x];
+					const auto i = static_cast<size_t>(dy) * width + dx;
 
-					               if (a > 0 && a >= coverage[i])
-					               {
-						               coverage[i] = a;
-						               colors[i] = color;
-					               }
-				               }
-			               }
-		               });
+					if (a > 0 && a >= coverage[i])
+					{
+						coverage[i] = a;
+						colors[i] = color;
+					}
+				}
+			}
+		});
 
 		const auto radius = static_cast<int>(std::lround(std::max(0.0f, spec.outline_px)));
-		const auto outline = radius > 0 ? dilate(coverage, width, height, radius) : std::vector<uint8_t>(coverage.size());
+		const auto outline = radius > 0 ? dilate(coverage, width, height, radius)
+		                                : std::vector<uint8_t>(coverage.size());
 
 		surface = std::make_shared<core::surface>();
 
@@ -1219,7 +1202,10 @@ core::surface_ptr render::render_styled_text(const render::styled_text& spec)
 		{
 			surface->make_blank();
 
-			const auto channel = [](const uint32_t c, const int shift) { return static_cast<int64_t>((c >> shift) & 0xFFu); };
+			const auto channel = [](const uint32_t c, const int shift)
+			{
+				return static_cast<int64_t>((c >> shift) & 0xFFu);
+			};
 			const auto outline_alpha = channel(spec.outline_color, 24);
 			constexpr int64_t full = 255 * 255;
 

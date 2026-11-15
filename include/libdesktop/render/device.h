@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Drawing on a window's surface. A window device presents what is drawn to a
 // platform::window - a swap chain on Direct3D, a present target on the software renderer - follows
@@ -44,8 +43,10 @@ namespace render
 		// be seen: then the device skips it and repaints the whole window once it can. Damage is in
 		// client pixels; empty is the whole window, and pixels outside it must not depend on it.
 		virtual void paint(core::recti damage, const std::function<void(draw_context_device&)>& draw) = 0;
-		// Presents the last scene again without drawing it: its vertices or textures changed.
-		virtual void redraw() = 0;
+		// Presents the last scene again without drawing it: its vertices or textures changed. Only changed, in
+		// client pixels, need be painted again - the software renderer replays just the tiles over it - and
+		// empty is the whole window.
+		virtual void redraw(core::recti changed = {}) = 0;
 		virtual void resize(core::sizei client, bool minimized) = 0;
 		virtual void scale_changed(double scale) = 0;
 		// A timer the device started on its window - its wait for the window to be seen again. True

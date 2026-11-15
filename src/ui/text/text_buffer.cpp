@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UTF-8 text editing, selection movement, and grouped undo.
 
@@ -73,8 +72,7 @@ namespace ui
 				result += line_text;
 				result += '\n';
 			}
-			if (!result.empty())
-				result.pop_back();
+			if (!result.empty()) result.pop_back();
 			return result;
 		}
 	}
@@ -99,16 +97,14 @@ namespace ui
 				if (text[i] == '\n')
 				{
 					auto end = i;
-					if (end > start && text[end - 1] == '\r')
-						end--;
+					if (end > start && text[end - 1] == '\r') end--;
 					append_line(text.substr(start, end - start));
 					start = i + 1;
 				}
 			}
 
 			auto end = text.size();
-			if (end > start && text[end - 1] == '\r')
-				end--;
+			if (end > start && text[end - 1] == '\r') end--;
 			append_line(text.substr(start, end - start));
 		}
 
@@ -136,16 +132,12 @@ namespace ui
 	{
 		const auto sel = _selection.normalize();
 
-		if (ptTextPos.y < sel._start.y)
-			return false;
-		if (ptTextPos.y > sel._end.y)
-			return false;
-		if (ptTextPos.y < sel._end.y && ptTextPos.y > sel._start.y)
-			return true;
+		if (ptTextPos.y < sel._start.y) return false;
+		if (ptTextPos.y > sel._end.y) return false;
+		if (ptTextPos.y < sel._end.y && ptTextPos.y > sel._start.y) return true;
 		if (sel._start.y < sel._end.y)
 		{
-			if (ptTextPos.y == sel._end.y)
-				return ptTextPos.x < sel._end.x;
+			if (ptTextPos.y == sel._end.y) return ptTextPos.x < sel._end.x;
 			assert(ptTextPos.y == sel._start.y);
 			return ptTextPos.x >= sel._start.x;
 		}
@@ -190,8 +182,7 @@ namespace ui
 	{
 		const int len = expanded_line_length(i);
 
-		if (_max_line_len < len)
-			_max_line_len = len;
+		if (_max_line_len < len) _max_line_len = len;
 	}
 
 	int text_buffer::expanded_line_length(const int line_index) const
@@ -209,10 +200,8 @@ namespace ui
 
 				for (const auto ch : _line_scratch)
 				{
-					if (ch == '\t')
-						expanded_len += tab_len - expanded_len % tab_len;
-					else if (!core::is_utf8_continuation(ch))
-						expanded_len++;
+					if (ch == '\t') expanded_len += tab_len - expanded_len % tab_len;
+					else if (!core::is_utf8_continuation(ch)) expanded_len++;
 				}
 			}
 
@@ -223,16 +212,14 @@ namespace ui
 	}
 
 	void text_buffer::expanded_chars(const std::string_view text, const int offset_in, const int count_in,
-	                              std::string& result) const
+	                                 std::string& result) const
 	{
 		result.clear();
 
-		if (count_in <= 0)
-			return;
+		if (count_in <= 0) return;
 
 		const auto text_len = static_cast<int>(text.size());
-		if (offset_in < 0 || offset_in + count_in > text_len)
-			return;
+		if (offset_in < 0 || offset_in + count_in > text_len) return;
 
 		const auto* const chars = text.data() + offset_in;
 
@@ -247,10 +234,8 @@ namespace ui
 
 		for (auto i = 0; i < offset_in; i++)
 		{
-			if (text[i] == '\t')
-				actual_offset += tab_len - actual_offset % tab_len;
-			else if (!core::is_utf8_continuation(text[i]))
-				actual_offset++;
+			if (text[i] == '\t') actual_offset += tab_len - actual_offset % tab_len;
+			else if (!core::is_utf8_continuation(text[i])) actual_offset++;
 		}
 
 		auto cur_pos = 0;
@@ -268,8 +253,7 @@ namespace ui
 			else
 			{
 				result += c;
-				if (!core::is_utf8_continuation(c))
-					cur_pos++;
+				if (!core::is_utf8_continuation(c)) cur_pos++;
 			}
 		}
 	}
@@ -288,10 +272,8 @@ namespace ui
 
 			for (auto i = 0; i < charLimit; i++)
 			{
-				if (_line_scratch[i] == '\t')
-					result += tabSize - result % tabSize;
-				else if (!core::is_utf8_continuation(_line_scratch[i]))
-					result++;
+				if (_line_scratch[i] == '\t') result += tabSize - result % tabSize;
+				else if (!core::is_utf8_continuation(_line_scratch[i])) result++;
 			}
 		}
 
@@ -300,11 +282,9 @@ namespace ui
 
 	int text_buffer::calc_offset_approx(const int lineIndex, const int nOffset) const
 	{
-		if (nOffset == 0)
-			return 0;
+		if (nOffset == 0) return 0;
 
-		if (lineIndex < 0 || lineIndex >= std::ssize(_lines))
-			return 0;
+		if (lineIndex < 0 || lineIndex >= std::ssize(_lines)) return 0;
 
 		const auto& line = _lines[lineIndex];
 		line.render(_line_scratch);
@@ -315,21 +295,17 @@ namespace ui
 
 		for (int i = 0; i < nLength; i++)
 		{
-			if (_line_scratch[i] == '\t')
-				nCurrentOffset += tabSize - nCurrentOffset % tabSize;
-			else if (!core::is_utf8_continuation(_line_scratch[i]))
-				nCurrentOffset++;
+			if (_line_scratch[i] == '\t') nCurrentOffset += tabSize - nCurrentOffset % tabSize;
+			else if (!core::is_utf8_continuation(_line_scratch[i])) nCurrentOffset++;
 
 			if (nCurrentOffset >= nOffset)
 			{
-				if (nOffset <= nCurrentOffset - tabSize / 2)
-					return i;
+				if (nOffset <= nCurrentOffset - tabSize / 2) return i;
 				return i + 1;
 			}
 		}
 		return nLength;
 	}
-
 
 	void text_buffer::anchor_pos(const ::ui::text_location& ptNewAnchor)
 	{
@@ -350,8 +326,7 @@ namespace ui
 	{
 		_ideal_char_pos = calc_offset(_cursor_loc.y, _cursor_loc.x);
 		_host.ensure_visible(_cursor_loc);
-		if (!selecting)
-			_anchor_loc = _cursor_loc;
+		if (!selecting) _anchor_loc = _cursor_loc;
 		select(::ui::text_selection(_anchor_loc, _cursor_loc));
 	}
 
@@ -437,8 +412,7 @@ namespace ui
 
 		if (_cursor_loc.x == 0)
 		{
-			if (_cursor_loc.y == 0)
-				return;
+			if (_cursor_loc.y == 0) return;
 
 			_cursor_loc.y--;
 			_cursor_loc.x = static_cast<int>(_lines[_cursor_loc.y].size());
@@ -449,21 +423,18 @@ namespace ui
 		line.render(line_view);
 		auto nPos = _cursor_loc.x;
 
-		while (nPos > 0 && is_space_byte(line_view[nPos - 1]))
-			nPos--;
+		while (nPos > 0 && is_space_byte(line_view[nPos - 1])) nPos--;
 
 		if (nPos > 0)
 		{
 			nPos--;
 			if (is_word_byte(line_view[nPos]))
 			{
-				while (nPos > 0 && is_word_byte(line_view[nPos - 1]))
-					nPos--;
+				while (nPos > 0 && is_word_byte(line_view[nPos - 1])) nPos--;
 			}
 			else
 			{
-				while (nPos > 0 && !is_word_byte(line_view[nPos - 1]) && !is_space_byte(line_view[nPos - 1]))
-					nPos--;
+				while (nPos > 0 && !is_word_byte(line_view[nPos - 1]) && !is_space_byte(line_view[nPos - 1])) nPos--;
 			}
 		}
 
@@ -485,8 +456,7 @@ namespace ui
 
 		if (_cursor_loc.x == line_len)
 		{
-			if (_cursor_loc.y == static_cast<int>(_lines.size()) - 1)
-				return;
+			if (_cursor_loc.y == static_cast<int>(_lines.size()) - 1) return;
 			_cursor_loc.y++;
 			_cursor_loc.x = 0;
 		}
@@ -507,17 +477,14 @@ namespace ui
 
 		if (is_word_byte(line_text[nPos]))
 		{
-			while (nPos < nLength && is_word_byte(line_text[nPos]))
-				nPos++;
+			while (nPos < nLength && is_word_byte(line_text[nPos])) nPos++;
 		}
 		else
 		{
-			while (nPos < nLength && !is_word_byte(line_text[nPos]) && !is_space_byte(line_text[nPos]))
-				nPos++;
+			while (nPos < nLength && !is_word_byte(line_text[nPos]) && !is_space_byte(line_text[nPos])) nPos++;
 		}
 
-		while (nPos < nLength && is_space_byte(line_text[nPos]))
-			nPos++;
+		while (nPos < nLength && is_space_byte(line_text[nPos])) nPos++;
 
 		_cursor_loc.x = nPos;
 		finalize_move(selecting);
@@ -528,8 +495,7 @@ namespace ui
 		const auto sel = _selection.normalize();
 		const auto line_count = static_cast<int>(_lines.size());
 
-		if (!sel.empty() && !selecting)
-			_cursor_loc = lines_to_move > 0 ? sel._end : sel._start;
+		if (!sel.empty() && !selecting) _cursor_loc = lines_to_move > 0 ? sel._end : sel._start;
 
 		int yy = _cursor_loc.y + lines_to_move;
 		if (yy < 0) yy = 0;
@@ -537,20 +503,17 @@ namespace ui
 
 		if (yy != _cursor_loc.y)
 		{
-			if (_ideal_char_pos == -1)
-				_ideal_char_pos = calc_offset(_cursor_loc.y, _cursor_loc.x);
+			if (_ideal_char_pos == -1) _ideal_char_pos = calc_offset(_cursor_loc.y, _cursor_loc.x);
 
 			_cursor_loc.y = yy;
 			_cursor_loc.x = calc_offset_approx(_cursor_loc.y, _ideal_char_pos);
 
 			const auto size = static_cast<int>(_lines[_cursor_loc.y].size());
 
-			if (_cursor_loc.x > size)
-				_cursor_loc.x = size;
+			if (_cursor_loc.x > size) _cursor_loc.x = size;
 		}
 		_host.ensure_visible(_cursor_loc);
-		if (!selecting)
-			_anchor_loc = _cursor_loc;
+		if (!selecting) _anchor_loc = _cursor_loc;
 		select(::ui::text_selection(_anchor_loc, _cursor_loc));
 	}
 
@@ -563,12 +526,9 @@ namespace ui
 		const auto line_len = static_cast<int>(line_text.size());
 
 		int nHomePos = 0;
-		while (nHomePos < line_len && is_space_byte(line_text[nHomePos]))
-			nHomePos++;
-		if (nHomePos == line_len || _cursor_loc.x == nHomePos)
-			_cursor_loc.x = 0;
-		else
-			_cursor_loc.x = nHomePos;
+		while (nHomePos < line_len && is_space_byte(line_text[nHomePos])) nHomePos++;
+		if (nHomePos == line_len || _cursor_loc.x == nHomePos) _cursor_loc.x = 0;
+		else _cursor_loc.x = nHomePos;
 		finalize_move(selecting);
 	}
 
@@ -599,8 +559,7 @@ namespace ui
 		line.render(line_text);
 		const auto line_len = static_cast<int>(line_text.size());
 
-		while (pt.x < line_len && is_word_byte(line_text[pt.x]))
-			pt.x++;
+		while (pt.x < line_len && is_word_byte(line_text[pt.x])) pt.x++;
 
 		return pt;
 	}
@@ -611,16 +570,14 @@ namespace ui
 		std::string line_text;
 		line.render(line_text);
 
-		while (pt.x > 0 && is_word_byte(line_text[pt.x - 1]))
-			pt.x--;
+		while (pt.x > 0 && is_word_byte(line_text[pt.x - 1])) pt.x--;
 
 		return pt;
 	}
 
 	std::string text_buffer::copy() const
 	{
-		if (_selection._start == _selection._end)
-			return {};
+		if (_selection._start == _selection._end) return {};
 
 		const auto sel = _selection.normalize();
 		return combine(text(sel), "\r\n");
@@ -671,8 +628,7 @@ namespace ui
 			{
 				if (sel._end.x == static_cast<int>(_lines[sel._end.y].size()))
 				{
-					if (sel._end.y == static_cast<int>(_lines.size()) - 1)
-						return;
+					if (sel._end.y == static_cast<int>(_lines.size()) - 1) return;
 
 					sel._end.y++;
 					sel._end.x = 0;
@@ -800,13 +756,11 @@ namespace ui
 							if (line_text[nPos] == ' ')
 							{
 								nPos++;
-								if (++nOffset >= tab_size())
-									break;
+								if (++nOffset >= tab_size()) break;
 							}
 							else
 							{
-								if (line_text[nPos] == '\t')
-									nPos++;
+								if (line_text[nPos] == '\t') nPos++;
 								break;
 							}
 						}
@@ -830,8 +784,7 @@ namespace ui
 					if (tabSize == 0) return;
 					const int nOffset = calc_offset(ptCursorPos.y, ptCursorPos.x);
 					int nNewOffset = nOffset / tabSize * tabSize;
-					if (nOffset == nNewOffset && nNewOffset > 0)
-						nNewOffset -= tabSize;
+					if (nOffset == nNewOffset && nNewOffset > 0) nNewOffset -= tabSize;
 					assert(nNewOffset >= 0);
 
 					const auto& line = _lines[ptCursorPos.y];
@@ -879,8 +832,6 @@ namespace ui
 		}
 	}
 
-
-
 	void text_buffer::select(const ::ui::text_selection& selection)
 	{
 		if (_selection != selection)
@@ -924,8 +875,7 @@ namespace ui
 
 	void text_buffer::set_spell_check(const bool enabled)
 	{
-		if (_spell_check == enabled)
-			return;
+		if (_spell_check == enabled) return;
 
 		_spell_check = enabled;
 		_host.invalidate_view();
@@ -1017,8 +967,7 @@ namespace ui
 	{
 		if (step.is_insert())
 		{
-			if (step.is_single_char())
-				return delete_text(step.char_end_location());
+			if (step.is_single_char()) return delete_text(step.char_end_location());
 			return delete_text(step._selection);
 		}
 		return insert_text(step._selection._start, step._text);
@@ -1026,26 +975,22 @@ namespace ui
 
 	::ui::text_location text_buffer::apply_redo_step(const undo_step& step)
 	{
-		if (step.is_insert())
-			return insert_text(step._selection._start, step._text);
-		if (step.is_single_char())
-			return delete_text(step.char_end_location());
+		if (step.is_insert()) return insert_text(step._selection._start, step._text);
+		if (step.is_single_char()) return delete_text(step.char_end_location());
 		return delete_text(step._selection);
 	}
 
 	::ui::text_location text_buffer::apply_undo(const undo_item& item)
 	{
 		::ui::text_location location;
-		for (auto i = item.rbegin(); i != item.rend(); ++i)
-			location = apply_undo_step(*i);
+		for (auto i = item.rbegin(); i != item.rend(); ++i) location = apply_undo_step(*i);
 		return location;
 	}
 
 	::ui::text_location text_buffer::apply_redo(const undo_item& item)
 	{
 		::ui::text_location location;
-		for (const auto& step : item)
-			location = apply_redo_step(step);
+		for (const auto& step : item) location = apply_redo_step(step);
 		return location;
 	}
 
@@ -1075,10 +1020,10 @@ namespace ui
 		_undo_pos = _undo.size();
 	}
 
-	::ui::text_selection text_buffer::replace_text(undo_group& ug, const ::ui::text_selection& selection, const std::string_view text)
+	::ui::text_selection text_buffer::replace_text(undo_group& ug, const ::ui::text_selection& selection,
+	                                               const std::string_view text)
 	{
-		if (!query_editable())
-			return selection;
+		if (!query_editable()) return selection;
 
 		::ui::text_selection result;
 		result._start = delete_text(ug, selection);
@@ -1088,8 +1033,7 @@ namespace ui
 
 	::ui::text_location text_buffer::insert_text(const ::ui::text_location& location, const std::string_view text)
 	{
-		if (text.empty())
-			return location;
+		if (text.empty()) return location;
 
 		// Split input into lines
 		std::vector<std::string_view> input_lines;
@@ -1099,15 +1043,13 @@ namespace ui
 			if (text[i] == '\n')
 			{
 				auto end = i;
-				if (end > start && text[end - 1] == '\r')
-					end--;
+				if (end > start && text[end - 1] == '\r') end--;
 				input_lines.push_back(text.substr(start, end - start));
 				start = i + 1;
 			}
 		}
 		auto end = text.size();
-		if (end > start && text[end - 1] == '\r')
-			end--;
+		if (end > start && text[end - 1] == '\r') end--;
 		input_lines.push_back(std::string_view(text).substr(start, end - start));
 
 		::ui::text_location result = location;
@@ -1140,14 +1082,12 @@ namespace ui
 			std::vector<text_line> new_lines;
 			new_lines.reserve(count - 1);
 
-			for (int i = 1; i < count - 1; i++)
-				new_lines.emplace_back(input_lines[i]);
+			for (int i = 1; i < count - 1; i++) new_lines.emplace_back(input_lines[i]);
 
 			// Last input line gets the tail appended
 			new_lines.emplace_back(std::string(input_lines[count - 1]) + tail);
 
-			_lines.insert(_lines.begin() + location.y + 1,
-			              std::make_move_iterator(new_lines.begin()),
+			_lines.insert(_lines.begin() + location.y + 1, std::make_move_iterator(new_lines.begin()),
 			              std::make_move_iterator(new_lines.end()));
 
 			result.y = location.y + count - 1;
@@ -1161,10 +1101,10 @@ namespace ui
 		return result;
 	}
 
-	::ui::text_location text_buffer::insert_text(undo_group& ug, const ::ui::text_location& location, const std::string_view text)
+	::ui::text_location text_buffer::insert_text(undo_group& ug, const ::ui::text_location& location,
+	                                             const std::string_view text)
 	{
-		if (text.empty())
-			return location;
+		if (text.empty()) return location;
 
 		const auto result_location = insert_text(location, text);
 		ug.insert(::ui::text_selection(location, result_location), text);
@@ -1238,7 +1178,8 @@ namespace ui
 			auto& line_text = _edit_scratch2;
 			_lines[location.y].render(line_text);
 			const auto start_x = utf8_prev(line_text, location.x);
-			ug.erase(::ui::text_selection(::ui::text_location(start_x, location.y), ::ui::text_location(location.x, location.y)),
+			ug.erase(::ui::text_selection(::ui::text_location(start_x, location.y),
+			                              ::ui::text_location(location.x, location.y)),
 			         std::string_view(line_text).substr(start_x, location.x - start_x));
 		}
 
@@ -1286,14 +1227,12 @@ namespace ui
 			}
 		}
 
-
 		return selection._start;
 	}
 
 	::ui::text_location text_buffer::delete_text(undo_group& ug, const ::ui::text_selection& selection)
 	{
-		if (selection.empty())
-			return selection._start;
+		if (selection.empty()) return selection._start;
 
 		ug.erase(selection, combine(text(selection)));
 		_modified = true;

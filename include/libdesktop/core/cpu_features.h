@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Small, dependency-free CPU feature queries shared by libdesktop's core and
 // system backends.  Callers still select a scalar path when a feature is not
@@ -46,9 +45,7 @@ namespace core::detail
 			__cpuid(registers_, 1);
 			constexpr int osxsave = 1 << 27;
 			constexpr int avx = 1 << 28;
-			if ((registers_[2] & (osxsave | avx)) != (osxsave | avx) ||
-				(_xgetbv(0) & 0x6) != 0x6)
-				return false;
+			if ((registers_[2] & (osxsave | avx)) != (osxsave | avx) || (_xgetbv(0) & 0x6) != 0x6) return false;
 
 			__cpuidex(registers_, 7, 0);
 			return (registers_[1] & (1 << 5)) != 0;

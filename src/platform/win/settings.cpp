@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Settings persistence backends (registry and INI file) and backend selection.
 // Also stores the graphics crash-guard flags used to fall back after a GPU/HW-decode crash.
@@ -46,10 +45,7 @@ public:
 		_initialization_failed = !_store;
 	}
 
-	bool root_created() const override
-	{
-		return _root_created;
-	}
+	bool root_created() const override { return _root_created; }
 
 	bool write(const std::string_view section, const std::string_view name, const uint32_t v) override
 	{
@@ -106,8 +102,7 @@ public:
 		return true;
 	}
 
-	bool read(const std::string_view section, const std::string_view name, uint8_t* data,
-	          size_t& len) const override
+	bool read(const std::string_view section, const std::string_view name, uint8_t* data, size_t& len) const override
 	{
 		std::string encoded;
 		if (read(section, name, encoded))
@@ -146,9 +141,7 @@ class setting_file_synchronized final : public platform::setting_file
 	mutable core::mutex _mutex;
 
 public:
-	explicit setting_file_synchronized(platform::setting_file_ptr inner) : _inner(std::move(inner))
-	{
-	}
+	explicit setting_file_synchronized(platform::setting_file_ptr inner) : _inner(std::move(inner)) {}
 
 	bool root_created() const override
 	{
@@ -259,10 +252,7 @@ platform::setting_file_ptr platform::settings()
 {
 	static setting_file_ptr cached;
 	static std::once_flag cache_once;
-	std::call_once(cache_once, []
-	{
-		cached = std::make_shared<setting_file_synchronized>(create_default_settings());
-	});
+	std::call_once(cache_once, [] { cached = std::make_shared<setting_file_synchronized>(create_default_settings()); });
 	return cached;
 }
 
@@ -330,7 +320,6 @@ bool platform::crash_guard_suppressed(const crash_guard g)
 	return crash_guard_suppressions[crash_guard_index(g)];
 }
 
-
 class setting_file_impl : public platform::setting_file
 {
 	mutable core::hash_map<std::string, HKEY__*> _keys;
@@ -343,16 +332,9 @@ public:
 		_root_key = create_key(HKEY_CURRENT_USER, root_key, _root_created);
 	}
 
-	~setting_file_impl()
-	{
-		close();
-	}
+	~setting_file_impl() { close(); }
 
-	bool root_created() const override
-	{
-		return _root_created;
-	}
-
+	bool root_created() const override { return _root_created; }
 
 	HKEY Key(const std::string_view section_in) const
 	{
@@ -400,8 +382,7 @@ public:
 		DWORD disposition = 0;
 		HKEY result_key = nullptr;
 		const auto result = RegCreateKeyEx(parent_key, core::utf8_to_utf16(name).c_str(), 0, REG_NONE,
-		                                   REG_OPTION_NON_VOLATILE,
-		                                   KEY_ALL_ACCESS, nullptr, &result_key, &disposition);
+		                                   REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &result_key, &disposition);
 		was_created = disposition == REG_CREATED_NEW_KEY;
 		return result == ERROR_SUCCESS ? result_key : nullptr;
 	}
@@ -430,7 +411,6 @@ public:
 		return true;
 	}
 
-
 	bool read(const std::string_view section, const std::string_view name, std::string& v) const override
 	{
 		DWORD alloc_len = 0;
@@ -442,8 +422,8 @@ public:
 		if (result != ERROR_SUCCESS || type != REG_SZ || alloc_len % sizeof(wchar_t) != 0) return false;
 
 		std::vector<wchar_t> data(alloc_len / sizeof(wchar_t) + 1, L'\0');
-		result = RegQueryValueEx(Key(section), nameW.c_str(), nullptr, &type,
-		                         std::bit_cast<uint8_t*>(data.data()), &alloc_len);
+		result = RegQueryValueEx(Key(section), nameW.c_str(), nullptr, &type, std::bit_cast<uint8_t*>(data.data()),
+		                         &alloc_len);
 
 		if (result == ERROR_SUCCESS && type == REG_SZ && alloc_len % sizeof(wchar_t) == 0)
 		{
@@ -456,16 +436,16 @@ public:
 		return false;
 	}
 
-	bool read(const std::string_view section, const std::string_view name, uint8_t* data,
-	          size_t& len) const override
+	bool read(const std::string_view section, const std::string_view name, uint8_t* data, size_t& len) const override
 	{
 		if (len > MAXDWORD) return false;
 		DWORD dwType = 0;
 		DWORD dwSize = static_cast<DWORD>(len);
 		bool success = false;
 
-		if (ERROR_SUCCESS == RegQueryValueEx(Key(section), core::utf8_to_utf16(name).c_str(), nullptr, &dwType, data,
-		                                     &dwSize) && dwType == REG_BINARY)
+		if (ERROR_SUCCESS ==
+		        RegQueryValueEx(Key(section), core::utf8_to_utf16(name).c_str(), nullptr, &dwType, data, &dwSize) &&
+		    dwType == REG_BINARY)
 		{
 			len = dwSize;
 			success = true;

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Headless render, host, and clipboard fakes for UI model tests.
 
@@ -60,14 +59,13 @@ namespace ui::test
 		fake_measure_context() = default;
 		explicit fake_measure_context(const grid_metrics m) : metrics(m) {}
 
-		core::sizei measure_text(std::string_view text, render::font_face, render::text_style, int,
-		                         int = 0) override
+		core::sizei measure_text(std::string_view text, render::font_face, render::text_style, int, int = 0) override
 		{
 			return metrics.measure(text);
 		}
 
-		[[nodiscard]] core::sizei measure_text(std::string_view text, render::font_face, render::text_style,
-		                                      int, int = 0) const
+		[[nodiscard]] core::sizei measure_text(std::string_view text, render::font_face, render::text_style, int,
+		                                       int = 0) const
 		{
 			return metrics.measure(text);
 		}
@@ -131,17 +129,10 @@ namespace ui::test
 			bool filled = false;
 		};
 
-		struct polygon_fill
+		struct polygon_draw
 		{
 			std::vector<core::pointd> points;
-			core::color color;
-		};
-
-		struct shadow_draw
-		{
-			core::recti bounds;
-			int width = 0;
-			float alpha = 0.0f;
+			render::polygon_style style;
 		};
 
 		grid_metrics metrics;
@@ -150,8 +141,7 @@ namespace ui::test
 		std::vector<line_draw> lines;
 		std::vector<polyline_draw> polylines;
 		std::vector<ellipse_draw> ellipses;
-		std::vector<polygon_fill> polygons;
-		std::vector<shadow_draw> shadows;
+		std::vector<polygon_draw> polygons;
 
 		fake_draw_context() : _clip(0, 0, 1024, 768) {}
 		explicit fake_draw_context(const core::recti clip) : _clip(clip) {}
@@ -164,7 +154,6 @@ namespace ui::test
 			polylines.clear();
 			ellipses.clear();
 			polygons.clear();
-			shadows.clear();
 			_clip_stack.clear();
 		}
 
@@ -180,17 +169,10 @@ namespace ui::test
 		{
 			fills.push_back({bounds, color});
 		}
-		void draw_rect(const core::recti bounds, const core::color color) override
+		void draw_rect(const core::recti bounds, const core::color color) override { fills.push_back({bounds, color}); }
+		void draw_polygon(const std::span<const core::pointd> outline, const render::polygon_style& style) override
 		{
-			fills.push_back({bounds, color});
-		}
-		void fill_polygon(const std::span<const core::pointd> points, const core::color color) override
-		{
-			polygons.push_back({std::vector<core::pointd>(points.begin(), points.end()), color});
-		}
-		void draw_shadow(const core::recti bounds, const int width, const float alpha) override
-		{
-			shadows.push_back({bounds, width, alpha});
+			polygons.push_back({std::vector<core::pointd>(outline.begin(), outline.end()), style});
 		}
 
 		void draw_text(const std::string_view text, const core::recti bounds, const render::font_face font,
@@ -199,9 +181,9 @@ namespace ui::test
 			texts.push_back({bounds.left, bounds.top, std::string(text), color, background, bounds, font});
 		}
 
-		void draw_text(const std::string_view text, const std::vector<render::text_highlight_t>&, const core::recti bounds,
-		               const render::font_face font, render::text_style, const core::color color,
-		               const core::color background) override
+		void draw_text(const std::string_view text, const std::vector<render::text_highlight_t>&,
+		               const core::recti bounds, const render::font_face font, render::text_style,
+		               const core::color color, const core::color background) override
 		{
 			texts.push_back({bounds.left, bounds.top, std::string(text), color, background, bounds, font});
 		}
@@ -221,26 +203,25 @@ namespace ui::test
 
 		void draw_texture(const render::texture_ptr&, core::recti, float, render::texture_sampler) override {}
 		void draw_texture(const render::texture_ptr&, core::recti, core::recti, float, render::texture_sampler,
-		                  float) override {}
+		                  float) override
+		{
+		}
 		void draw_texture(const render::texture_ptr&, const core::quadd&, core::recti, float,
-		                  render::texture_sampler) override {}
-		void draw_texture(const render::texture_ptr&, const core::quadd&, core::recti, float,
-		                  render::texture_sampler, const render::texture_transform&) override {}
+		                  render::texture_sampler) override
+		{
+		}
+		void draw_texture(const render::texture_ptr&, const core::quadd&, core::recti, float, render::texture_sampler,
+		                  const render::texture_transform&) override
+		{
+		}
 		void draw_vertices(const render::vertices_ptr&) override {}
 
-		core::sizei measure_text(std::string_view text, render::font_face, render::text_style, int,
-		                         int = 0) override
+		core::sizei measure_text(std::string_view text, render::font_face, render::text_style, int, int = 0) override
 		{
 			return metrics.measure(text);
 		}
-		core::sizei measure_text(std::string_view text, render::font_face) const
-		{
-			return metrics.measure(text);
-		}
-		core::sizei measure_char(render::font_face) const
-		{
-			return {metrics.char_width, metrics.char_height};
-		}
+		core::sizei measure_text(std::string_view text, render::font_face) const { return metrics.measure(text); }
+		core::sizei measure_char(render::font_face) const { return {metrics.char_width, metrics.char_height}; }
 		int text_line_height(render::font_face) override { return metrics.char_height; }
 		render::texture_ptr create_texture() override { return nullptr; }
 		render::vertices_ptr create_vertices() override { return nullptr; }
@@ -283,6 +264,69 @@ namespace ui::test
 	private:
 		core::recti _clip;
 		std::vector<core::recti> _clip_stack;
+	};
+
+	// A texture that keeps what it was last given, for a test of what reaches the screen.
+	class recording_texture final : public render::texture
+	{
+	public:
+		core::const_surface_ptr surface;
+		int updates = 0;
+
+		render::texture_update_result update(const render::video_frame_ptr&) override
+		{
+			return render::texture_update_result::failed;
+		}
+
+		render::texture_update_result update(const core::const_surface_ptr& value) override
+		{
+			if (!value || value->empty()) return render::texture_update_result::failed;
+			const auto created = !surface || value->dimensions() != _dimensions;
+			surface = value;
+			_dimensions = value->dimensions();
+			_format = value->format();
+			_orientation = value->orientation();
+			++updates;
+			return created ? render::texture_update_result::tex_created : render::texture_update_result::tex_updated;
+		}
+
+		render::texture_update_result update(const core::sizei dims, const core::texture_format format,
+		                                     const core::orientation orientation, const uint8_t*, size_t,
+		                                     size_t) override
+		{
+			const auto created = dims != _dimensions;
+			_dimensions = dims;
+			_format = format;
+			_orientation = orientation;
+			++updates;
+			return created ? render::texture_update_result::tex_created : render::texture_update_result::tex_updated;
+		}
+
+		bool is_valid() const override { return _dimensions.cx > 0; }
+	};
+
+	// A draw context that makes recording textures and keeps each texture drawn and where.
+	class recording_draw_context : public fake_draw_context
+	{
+	public:
+		struct texture_draw
+		{
+			std::shared_ptr<recording_texture> texture;
+			core::recti bounds;
+		};
+
+		std::vector<texture_draw> textures;
+
+		using fake_draw_context::fake_draw_context;
+		using fake_draw_context::draw_texture;
+
+		render::texture_ptr create_texture() override { return std::make_shared<recording_texture>(); }
+
+		void draw_texture(const render::texture_ptr& texture, const core::recti dst, float,
+		                  render::texture_sampler) override
+		{
+			textures.push_back({std::dynamic_pointer_cast<recording_texture>(texture), dst});
+		}
 	};
 
 	class recording_view_host : public view_host
@@ -380,7 +424,11 @@ namespace ui::test
 			invalidations.push_back(bounds);
 		}
 		bool has_keyboard_focus() const override { return focused || focus; }
-		void take_keyboard_focus() override { focused = focus = true; ++focus_count; }
+		void take_keyboard_focus() override
+		{
+			focused = focus = true;
+			++focus_count;
+		}
 		void capture_pointer(const bool value) override
 		{
 			captured = capture = value;
@@ -399,10 +447,10 @@ namespace ui::test
 		}
 		frame_ptr create_popup(const frame_host_weak_ptr&, const render::color_style&) override { return nullptr; }
 		std::shared_ptr<frame_host> listener() const override { return nullptr; }
-		void text_input(const bool active, const core::recti caret) override
+		void text_input(const bool active, const core::recti caret_bounds) override
 		{
 			text_input_active = text_input_enabled = active;
-			text_input_caret = this->caret = caret;
+			text_input_caret = caret = caret_bounds;
 		}
 		void caret_timer(const bool on, const uint32_t interval_ms) override
 		{
@@ -410,7 +458,11 @@ namespace ui::test
 			caret_timer_interval = caret_interval = interval_ms;
 		}
 		bool is_dialog() const override { return dialog; }
-		void close(const bool cancel) override { closed = true; close_cancel = cancel; }
+		void close(const bool cancel) override
+		{
+			closed = true;
+			close_cancel = cancel;
+		}
 	};
 
 	class fake_clipboard final : public text_clipboard

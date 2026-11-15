@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // syntax.h — syntax highlighting for the text views.
 //
@@ -32,7 +31,10 @@ namespace ui::syntax
 	// start at every byte, and a zero-width run may share a position with the next.
 	// Highlighters bound themselves by whatever span they are given, so a smaller
 	// buffer is safe — it just truncates the styling of a pathological line.
-	constexpr size_t blocks_for_line(const size_t line_bytes) { return line_bytes * 2 + 128; }
+	constexpr size_t blocks_for_line(const size_t line_bytes)
+	{
+		return line_bytes * 2 + 128;
+	}
 
 	enum class language
 	{
@@ -52,7 +54,7 @@ namespace ui::syntax
 	// A highlighter for the given language. `plain` yields one unstyled run.
 	highlight_fn for_language(language lang);
 
-    // Maps a file extension, with or without its leading dot, onto a language.
+	// Maps a file extension, with or without its leading dot, onto a language.
 	// Unknown extensions are `plain`. This is a convenience, not a policy: an
 	// application is free to choose differently.
 	language language_from_extension(std::string_view ext);

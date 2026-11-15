@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Process-wide renderer selection, font sizing, the live-window device registry, and the
 // hooks and counters the application sets and reads.
@@ -17,16 +16,10 @@ bool render::yuv_textures_allowed = true;
 void (*render::on_yuv_fault)() = nullptr;
 bool render::p010_textures_enabled = false;
 
-std::function<core::surface_ptr(core::cspan)> render::decode_embedded_image;
 std::function<std::unique_ptr<render::surface_scaler>()> render::make_surface_scaler;
 
 render::ui_counters render::ui_perf;
 render::gpu_counters render::gpu_perf;
-
-core::surface_ptr render::decode_embedded(const core::cspan data)
-{
-	return render::decode_embedded_image ? render::decode_embedded_image(data) : nullptr;
-}
 
 namespace render::detail
 {
@@ -115,13 +108,12 @@ namespace render
 
 namespace render::detail
 {
-	void register_window_device(void* key, std::function<void()> prepare_loss,
-	                            std::function<void()> rebuild_loss, std::function<void()> update_font,
-	                            std::function<void()> invalidate)
+	void register_window_device(void* key, std::function<void()> prepare_loss, std::function<void()> rebuild_loss,
+	                            std::function<void()> update_font, std::function<void()> invalidate)
 	{
 		std::erase_if(live_devices, [key](const device_registration& device) { return device.key == key; });
-		live_devices.push_back({key, std::move(prepare_loss), std::move(rebuild_loss), std::move(update_font),
-		                        std::move(invalidate)});
+		live_devices.push_back(
+			{key, std::move(prepare_loss), std::move(rebuild_loss), std::move(update_font), std::move(invalidate)});
 	}
 
 	void unregister_window_device(void* key)

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: What the drawn controls share inside the ui library: the metrics and drawing helpers every
 // control uses, and the edit edit.cpp makes. Internal to controls.cpp, edit.cpp, menu.cpp and
@@ -42,7 +41,8 @@ namespace ui
 
 		void draw_icon(render::draw_context& dc, icon_index icon, core::recti bounds, core::color c);
 		void draw_outline(render::draw_context& dc, core::recti bounds, core::color c, int width = 1);
-		void fill_gradient(render::draw_context& dc, core::recti bounds, core::color32 top, core::color32 bottom, float alpha);
+		void fill_gradient(render::draw_context& dc, core::recti bounds, core::color32 top, core::color32 bottom,
+		                   float alpha);
 		bool is_word_char(uint32_t cp);
 		// The line under a label's marked character, for the label as dc drew it in one line of the dialog
 		// face from x, with its line box's top at top.
@@ -57,4 +57,7 @@ namespace ui
 	                         std::function<void(const std::string&)> changed);
 	core::recti drawn_edit_range_bounds(const edit& e, size_t start, size_t end);
 	std::vector<command_ptr> drawn_edit_context_commands(edit& e, core::pointi loc);
+
+	// Tells the application's listener (on_control_used) that a control acted for whoever works it.
+	void report_control_used(const control& c, const command_ptr& command = {});
 }

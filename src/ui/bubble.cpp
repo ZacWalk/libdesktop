@@ -1,16 +1,16 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The drawn bubble: content its owner measures and draws, shown beside what it points at, with
 // its arrow and shadow, in a layered popup the window layer makes - which fades it in and out where
 // animations run. Placing it inside the work area and drawing it are the same on every platform.
 
 #include "libdesktop/ui.h"
+#include "libdesktop/render/software.h"
 #include "libdesktop/ui/controls.h"
 #include "libdesktop/ui/elements.h"
 
@@ -19,11 +19,12 @@ namespace
 	constexpr int shadow_padding = 16;
 	constexpr int vert_padding = shadow_padding + 6;
 	constexpr int horz_padding = shadow_padding + 10;
-	constexpr float corner_radius = 8.0f;
+	constexpr int corner_radius = 8;
 
-	class drawn_bubble final : public ui::bubble_frame,
-	                           public ui::frame_host,
-	                           public std::enable_shared_from_this<drawn_bubble>
+	class drawn_bubble final :
+		public ui::bubble_frame,
+		public ui::frame_host,
+		public std::enable_shared_from_this<drawn_bubble>
 	{
 		std::weak_ptr<ui::bubble_host> _host;
 		ui::frame_ptr _popup;
@@ -32,9 +33,7 @@ namespace
 		core::pointi _focus;
 
 	public:
-		explicit drawn_bubble(std::weak_ptr<ui::bubble_host> host) : _host(std::move(host))
-		{
-		}
+		explicit drawn_bubble(std::weak_ptr<ui::bubble_host> host) : _host(std::move(host)) {}
 
 		~drawn_bubble() override
 		{
@@ -44,8 +43,8 @@ namespace
 		drawn_bubble(const drawn_bubble&) = delete;
 		drawn_bubble& operator=(const drawn_bubble&) = delete;
 
-		void show(const ui::element_ptr& content, const core::recti anchor, const int x_focus,
-		          const int preferred_size, const bool horizontal) override
+		void show(const ui::element_ptr& content, const core::recti anchor, const int x_focus, const int preferred_size,
+		          const bool horizontal) override
 		{
 			const auto host = _host.lock();
 			if (!host || !content) return;
@@ -56,7 +55,8 @@ namespace
 			if (!mc) return;
 
 			const auto extent = content->measure(*mc, core::round(preferred_size * _popup->scale_factor()));
-			const auto placement = ui::place_bubble(extent, anchor, x_focus, horizontal, host->bubble_work_area(anchor));
+			const auto placement = ui::place_bubble(extent, anchor, x_focus, horizontal,
+			                                        host->bubble_work_area(anchor));
 			_bounds = placement.bounds;
 			_focus = placement.focus;
 			_content = content;
@@ -72,42 +72,39 @@ namespace
 			if (_popup) _popup->show(false);
 		}
 
-		bool is_visible() const override
-		{
-			return _popup && _popup->is_visible();
-		}
+		bool is_visible() const override { return _popup && _popup->is_visible(); }
 
-		void on_window_layout(render::measure_context&, core::sizei, bool) override
-		{
-		}
+		void on_window_layout(render::measure_context&, core::sizei, bool) override {}
 
 		void on_window_paint(render::draw_context& dc) override
 		{
 			// A layered popup's draw context is local to the popup; _bounds and _focus remain screen
-			// coordinates because placement and hit testing use them. Keep this sequence identical to
-			// the old CPU-only background: transparent clear, shadow, body, then the pointer.
+			// coordinates because placement and hit testing use them.
 			dc.clear(core::color(0.0f, 0.0f, 0.0f, 0.0f));
+			render::draw_surface(dc, background(core::color(dc.colors.background, 1.0f)),
+			                     {0, 0, _bounds.width(), _bounds.height()}, 1.0f, render::texture_sampler::point);
 
-			const core::recti local_bounds(0, 0, _bounds.width(), _bounds.height());
-			dc.draw_shadow(local_bounds, 32, 1.0f);
+			if (_content) _content->render(dc, {});
+		}
+
+		// The shadow, the body and the arrow pointing at the focus, rasterised on the CPU as an application draws a
+		// chart of its own: the bubble is the same picture whichever backend presents it.
+		core::surface_ptr background(const core::color clr) const
+		{
+			auto art = std::make_shared<core::surface>();
+			if (!art->alloc(_bounds.extent(), core::texture_format::ARGB)) return {};
+			art->make_blank();
+
+			const render::software_canvas canvas(*art);
+			canvas.fill_shadow({0, 0, _bounds.width(), _bounds.height()}, shadow_padding * 2, 0.7f);
 
 			const auto l = static_cast<float>(shadow_padding);
 			const auto t = static_cast<float>(shadow_padding);
 			const auto r = static_cast<float>(_bounds.width() - shadow_padding);
 			const auto b = static_cast<float>(_bounds.height() - shadow_padding);
-			const auto clr = core::color(dc.colors.background, 1.0f);
-
-			const auto body = core::recti(core::round(l), core::round(t), core::round(r), core::round(b));
-			const auto body_radius = core::round(corner_radius);
-			const auto edge = 0.83333f * (body_radius + 2);
-			const auto fill_grow = std::max(0, core::round(edge - body_radius));
-
-			// draw_rounded_rect applies the hardware-compatible growth and emphasizes its colour.
-			// Undo both at the call site so this layered CPU popup retains the old fill_rounded_rect
-			// pixels, including its exact body edge and background colour.
-			const auto undo_emphasis = [](const float value) { return (value - 0.05f) / 0.9f; };
-			const core::color body_color(undo_emphasis(clr.r), undo_emphasis(clr.g), undo_emphasis(clr.b), clr.a);
-			dc.draw_rounded_rect(body.inflate(-fill_grow), body_color, body_radius);
+			canvas.fill_rounded_rect(core::recti(shadow_padding, shadow_padding, _bounds.width() - shadow_padding,
+			                                     _bounds.height() - shadow_padding),
+			                         clr, corner_radius);
 
 			const auto p = static_cast<float>(shadow_padding);
 			std::array<core::pointd, 3> pointer;
@@ -133,9 +130,8 @@ namespace
 				pointer = {{{l, center + p}, {l - p, center}, {l, center - p}}};
 			}
 
-			dc.fill_polygon(std::span<const core::pointd>(pointer), clr);
-
-			if (_content) _content->render(dc, {});
+			canvas.fill_triangle(pointer[0], pointer[1], pointer[2], clr);
+			return art;
 		}
 	};
 }

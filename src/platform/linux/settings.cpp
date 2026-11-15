@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Linux settings store. There is no registry to choose between, so the INI backend that
 // platform_win_settings.cpp offers as an alternative is the only one here.
@@ -107,7 +106,8 @@ namespace
 	class ini_settings final : public platform::setting_file
 	{
 	public:
-		explicit ini_settings(core::folder_path folder) : _path(folder.combine_file(std::format("{}.ini", core::app_file_stem())))
+		explicit ini_settings(core::folder_path folder) :
+			_path(folder.combine_file(std::format("{}.ini", core::app_file_stem())))
 		{
 			// Answers whether this run is starting a NEW settings root, so it is decided before the
 			// file is read and never revised by a later write.
@@ -115,10 +115,7 @@ namespace
 			load();
 		}
 
-		bool root_created() const override
-		{
-			return _root_created;
-		}
+		bool root_created() const override { return _root_created; }
 
 		bool write(const std::string_view section, const std::string_view name, const uint32_t v) override
 		{

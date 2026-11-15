@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Read-only document view policy layered over the shared document view.
 
@@ -45,7 +44,7 @@ namespace ui
 
 		void scroll_to_end() { scroll_content_to_end(); }
 
-		void set_word_wrap(bool enabled) override { (void)enabled; }
+		void set_word_wrap(bool /*enabled*/) override {}
 		void toggle_word_wrap() override {}
 
 		void recalc_horz_scrollbar() override
@@ -67,31 +66,30 @@ namespace ui
 			return true;
 		}
 
-		bool on_key(const int key, const platform::key_state keys) override
+		bool on_key(const char32_t key, const platform::key_state keys) override
 		{
 			(void)keys; // Shift does not turn a read-only viewport into a caret editor.
-			const auto k = static_cast<char32_t>(key);
-			if (k == platform::keys::UP)
+			if (key == platform::keys::UP)
 			{
 				scroll_by(-1);
 				return true;
 			}
-			if (k == platform::keys::DOWN)
+			if (key == platform::keys::DOWN)
 			{
 				scroll_by(1);
 				return true;
 			}
-			if (k == platform::keys::PRIOR)
+			if (key == platform::keys::PRIOR)
 			{
 				scroll_by(-_screen_lines);
 				return true;
 			}
-			if (k == platform::keys::NEXT)
+			if (key == platform::keys::NEXT)
 			{
 				scroll_by(_screen_lines);
 				return true;
 			}
-			if (k == platform::keys::HOME)
+			if (key == platform::keys::HOME)
 			{
 				scroll_content_to_top();
 				recalc_vert_scrollbar();
@@ -99,11 +97,12 @@ namespace ui
 				invalidate();
 				return true;
 			}
-			if (k == platform::keys::END)
+			if (key == platform::keys::END)
 			{
 				scroll_content_to_end();
 				return true;
 			}
+			// NOLINTNEXTLINE(bugprone-parent-virtual-call): read-only, it skips doc_view's caret keys
 			return text_view::on_key(key, keys);
 		}
 
@@ -115,10 +114,7 @@ namespace ui
 			_host.invalidate_status();
 		}
 
-		void scroll_content_to_end() override
-		{
-			set_scroll_pixel(max_scroll_pixel());
-		}
+		void scroll_content_to_end() override { set_scroll_pixel(max_scroll_pixel()); }
 
 		[[nodiscard]] int max_scroll_pixel() const
 		{

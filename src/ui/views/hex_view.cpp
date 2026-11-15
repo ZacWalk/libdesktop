@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Render the byte-oriented hex document view.
 
@@ -22,21 +21,19 @@ namespace ui
 			return {0.0f, 0.0f, 0.0f, 0.0f};
 		}
 
-		void draw_run(render::draw_context& draw, const int x, const int y, const int chars,
-		              const int cell_width, const int cell_height, const std::string_view text,
-		              const render::font_face font, const core::color32 foreground,
-		              const core::color32 background)
+		void draw_run(render::draw_context& draw, const int x, const int y, const int chars, const int cell_width,
+		              const int cell_height, const std::string_view text, const render::font_face font,
+		              const core::color32 foreground, const core::color32 background)
 		{
 			const core::recti clip{x, y, x + chars * cell_width, y + cell_height};
 			if (clip.is_empty()) return;
 			draw.draw_rect(clip, core::color(background));
-			draw.draw_text(text, clip, font, render::text_style::single_line,
-			               core::color(foreground), transparent());
+			draw.draw_text(text, clip, font, render::text_style::single_line, core::color(foreground), transparent());
 		}
 	}
 
-	hex_view::hex_view(view_host& host, const view_theme& theme, view_context* context, text_clipboard* clipboard)
-		: read_only_doc_view(host, theme, context, clipboard)
+	hex_view::hex_view(view_host& host, const view_theme& theme, view_context* context, text_clipboard* clipboard) :
+		read_only_doc_view(host, theme, context, clipboard)
 	{
 	}
 
@@ -60,9 +57,7 @@ namespace ui
 			const auto separator_color = _theme.style_color(text_style::code_comment);
 			constexpr int content_chars = offset_chars + hex_chars + 1 + bytes_per_line + 1;
 			const auto left_margin = std::max(cx, (client.right - content_chars * cx) / 2);
-			const auto first_line = cy > 0
-			                       ? std::max(0, (_scroll_offset.y - top_content_padding()) / cy)
-			                       : 0;
+			const auto first_line = cy > 0 ? std::max(0, (_scroll_offset.y - top_content_padding()) / cy) : 0;
 			int line_index = first_line;
 			int y = line_offset(line_index) - _scroll_offset.y + text_top();
 			while (y < client.bottom && line_index < line_count)

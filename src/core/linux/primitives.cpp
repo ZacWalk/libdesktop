@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "libdesktop/core.h"
 #include "libdesktop/core/cpu_features.h"
@@ -37,16 +36,15 @@ std::atomic<size_t> core::static_memory_usage = 0;
 uint32_t core::tick_count()
 {
 	return static_cast<uint32_t>(
-		std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()).count());
+		std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+			.count());
 }
 
 uint64_t core::tick_count64()
 {
 	timespec uptime = {};
 	if (::clock_gettime(CLOCK_BOOTTIME, &uptime) != 0) return 0;
-	return static_cast<uint64_t>(uptime.tv_sec) * 1000ull +
-	       static_cast<uint64_t>(uptime.tv_nsec) / 1'000'000ull;
+	return static_cast<uint64_t>(uptime.tv_sec) * 1000ull + static_cast<uint64_t>(uptime.tv_nsec) / 1'000'000ull;
 }
 
 uint32_t core::current_thread_id()
@@ -142,8 +140,8 @@ void core::mutex::ex_lock() const
 	auto state = lock_state(_cs);
 	uintptr_t expected = 0;
 
-	while (!state.compare_exchange_weak(expected, lock_writer_bit, std::memory_order_acquire,
-	                                    std::memory_order_relaxed))
+	while (
+		!state.compare_exchange_weak(expected, lock_writer_bit, std::memory_order_acquire, std::memory_order_relaxed))
 	{
 		expected = 0;
 		::sched_yield();
@@ -284,22 +282,21 @@ core::date_t core::utc_now()
 	// written during the current second later than the scan that had just read it, so every
 	// freshly written file reported as needing a re-scan.
 	const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-		std::chrono::system_clock::now().time_since_epoch()).count();
-	return core::date_t(core::detail::ft_epoch_to_unix_seconds * core::detail::ft_ticks_per_second + static_cast<uint64_t>(ns) / 100u);
+						std::chrono::system_clock::now().time_since_epoch())
+	                    .count();
+	return core::date_t(core::detail::ft_epoch_to_unix_seconds * core::detail::ft_ticks_per_second +
+	                    static_cast<uint64_t>(ns) / 100u);
 }
 
 core::day_t core::to_date(const uint64_t ts)
 {
 	const auto seconds = static_cast<int64_t>(ts / core::detail::ft_ticks_per_second) -
-		static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
+	                     static_cast<int64_t>(core::detail::ft_epoch_to_unix_seconds);
 	auto when = static_cast<time_t>(seconds);
 	tm parts = {};
 	if (::gmtime_r(&when, &parts) == nullptr) return {};
 
-	return {
-		parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
-		parts.tm_hour, parts.tm_min, parts.tm_sec
-	};
+	return {parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday, parts.tm_hour, parts.tm_min, parts.tm_sec};
 }
 
 uint64_t core::from_date(const core::day_t& day)
@@ -339,5 +336,6 @@ uint64_t core::from_date(const core::day_t& day)
 	// Before 1970 the seconds are negative, and the unsigned arithmetic below still lands on the right
 	// tick: every date that passed the checks lies after FILETIME's epoch.
 	const auto seconds = ::timegm(&parts);
-	return (static_cast<uint64_t>(seconds) + core::detail::ft_epoch_to_unix_seconds) * core::detail::ft_ticks_per_second;
+	return (static_cast<uint64_t>(seconds) + core::detail::ft_epoch_to_unix_seconds) *
+	       core::detail::ft_ticks_per_second;
 }

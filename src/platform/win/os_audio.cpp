@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The Windows audio of the os:: services - a WASAPI shared-mode stream opened in its endpoint's own mix
 // format, the playback endpoints, and the MMCSS class an audio thread joins. The stream is the one
@@ -43,14 +42,14 @@ namespace
 	constexpr REFERENCE_TIME reftimes_per_sec = 10000000;
 
 	constexpr GUID ks_subtype_pcm = {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-	constexpr GUID ks_subtype_ieee_float = {
-		0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
-	};
+	constexpr GUID ks_subtype_ieee_float = {0x00000003,
+	                                        0x0000,
+	                                        0x0010,
+	                                        {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
 	// PKEY_Device_FriendlyName, defined here so no library has to.
-	constexpr PROPERTYKEY device_friendly_name = {
-		{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14
-	};
+	constexpr PROPERTYKEY device_friendly_name =
+		{{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
 
 	os::audio_sample_format calc_sample_fmt(const WAVEFORMATEX* waveformat)
 	{
@@ -109,7 +108,7 @@ namespace
 			result.channels = format->nChannels;
 
 			if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-				format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+			    format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
 			{
 				result.channel_mask = std::bit_cast<const WAVEFORMATEXTENSIBLE*>(format)->dwChannelMask;
 			}
@@ -141,9 +140,7 @@ namespace
 		double _vol = -1;
 
 	public:
-		explicit wasapi_sound(const double ring_seconds) : _ring_seconds(ring_seconds)
-		{
-		}
+		explicit wasapi_sound(const double ring_seconds) : _ring_seconds(ring_seconds) {}
 
 		~wasapi_sound() override
 		{
@@ -182,10 +179,7 @@ namespace
 			_vol = -1;
 		}
 
-		bool is_device_lost() const override
-		{
-			return _device_lost;
-		}
+		bool is_device_lost() const override { return _device_lost; }
 
 		bool activate_device(const ComPtr<IMMDevice>& device)
 		{
@@ -218,18 +212,11 @@ namespace
 					// buffer from the engine whatever duration is asked for.
 					const auto event_driven = _ring_seconds <= 0.0;
 					const DWORD flags = AUDCLNT_STREAMFLAGS_NOPERSIST |
-						(event_driven ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0);
-					const auto duration = event_driven
-						                      ? REFERENCE_TIME{0}
-						                      : static_cast<REFERENCE_TIME>(_ring_seconds * reftimes_per_sec);
+					                    (event_driven ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0);
+					const auto duration = event_driven ? REFERENCE_TIME{0}
+					                                   : static_cast<REFERENCE_TIME>(_ring_seconds * reftimes_per_sec);
 
-					hr = audio->Initialize(
-						AUDCLNT_SHAREMODE_SHARED,
-						flags,
-						duration,
-						0,
-						pwfx_temp,
-						nullptr);
+					hr = audio->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, duration, 0, pwfx_temp, nullptr);
 
 					if (SUCCEEDED(hr) && event_driven)
 					{
@@ -239,9 +226,9 @@ namespace
 					if (SUCCEEDED(hr))
 					{
 						success = SUCCEEDED(audio->GetBufferSize(&buffer_frame_count)) &&
-							SUCCEEDED(audio->GetService(__uuidof(IAudioRenderClient), &render)) &&
-							SUCCEEDED(audio->GetService(__uuidof(ISimpleAudioVolume), &sav)) &&
-							SUCCEEDED(audio->GetService(__uuidof(IAudioClock), &clock));
+						          SUCCEEDED(audio->GetService(__uuidof(IAudioRenderClient), &render)) &&
+						          SUCCEEDED(audio->GetService(__uuidof(ISimpleAudioVolume), &sav)) &&
+						          SUCCEEDED(audio->GetService(__uuidof(IAudioClock), &clock));
 					}
 				}
 
@@ -280,10 +267,8 @@ namespace
 			bool success = false;
 			ComPtr<IMMDeviceEnumerator> enumerator;
 
-			auto hr = CoCreateInstance(
-				__uuidof(MMDeviceEnumerator), nullptr,
-				CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
-				&enumerator);
+			auto hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+			                           &enumerator);
 
 			if (SUCCEEDED(hr))
 			{
@@ -340,8 +325,7 @@ namespace
 				uint64_t position = 0;
 
 				if (SUCCEEDED(_clock->GetFrequency(&device_frequency)) &&
-					SUCCEEDED(_clock->GetPosition(&position, nullptr)) &&
-					device_frequency != 0)
+				    SUCCEEDED(_clock->GetPosition(&position, nullptr)) && device_frequency != 0)
 				{
 					return static_cast<double>(position) / static_cast<double>(device_frequency);
 				}
@@ -350,10 +334,7 @@ namespace
 			return 0.0;
 		}
 
-		bool is_stopped() const override
-		{
-			return !_playing;
-		}
+		bool is_stopped() const override { return !_playing; }
 
 		void stop() override
 		{
@@ -404,10 +385,8 @@ namespace
 
 		void update_status(const HRESULT hr)
 		{
-			if (hr == AUDCLNT_E_DEVICE_INVALIDATED ||
-				hr == AUDCLNT_E_RESOURCES_INVALIDATED ||
-				hr == AUDCLNT_E_SERVICE_NOT_RUNNING ||
-				hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED)
+			if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED ||
+			    hr == AUDCLNT_E_SERVICE_NOT_RUNNING || hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED)
 			{
 				_device_lost = true;
 			}
@@ -472,8 +451,8 @@ namespace
 				if (SUCCEEDED(hr))
 				{
 					const auto available_frames = numFramesPadding < _buffer_frame_count
-						                              ? _buffer_frame_count - numFramesPadding
-						                              : 0u;
+					                                  ? _buffer_frame_count - numFramesPadding
+					                                  : 0u;
 					const auto copy_samples = std::min(available_frames, available_in_buffer);
 
 					if (copy_samples > 0)
@@ -622,10 +601,8 @@ std::vector<os::audio_device> os::list_audio_playback_devices()
 	ComPtr<IMMDeviceEnumerator> pEnumerator;
 	ComPtr<IMMDeviceCollection> pCollection;
 
-	auto hr = CoCreateInstance(
-		__uuidof(MMDeviceEnumerator), nullptr,
-		CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
-		&pEnumerator);
+	auto hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+	                           &pEnumerator);
 
 	if (SUCCEEDED(hr))
 	{
@@ -664,8 +641,8 @@ std::vector<os::audio_device> os::list_audio_playback_devices()
 								PROPVARIANT name;
 								PropVariantInit(&name);
 
-								if (SUCCEEDED(pProps->GetValue(device_friendly_name, &name)) &&
-									name.vt == VT_LPWSTR && name.pwszVal && *name.pwszVal)
+								if (SUCCEEDED(pProps->GetValue(device_friendly_name, &name)) && name.vt == VT_LPWSTR &&
+								    name.pwszVal && *name.pwszVal)
 								{
 									d.name = detail::narrow(name.pwszVal);
 								}

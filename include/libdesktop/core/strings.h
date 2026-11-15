@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: String manipulation utilities. Provides UTF-8/UTF-16 conversion,
 // string comparison, splitting, formatting, and caching.
@@ -181,8 +180,8 @@ namespace core
 
 		part_t() noexcept = default;
 
-		constexpr part_t(const size_t o, const size_t l) noexcept
-			: offset(static_cast<uint32_t>(o)), length(static_cast<uint32_t>(l))
+		constexpr part_t(const size_t o, const size_t l) noexcept :
+			offset(static_cast<uint32_t>(o)), length(static_cast<uint32_t>(l))
 		{
 		}
 	};
@@ -227,8 +226,8 @@ namespace core
 		inline const cached_string_storage_t* resolve(const uint32_t id) noexcept
 		{
 			const auto* const base = std::bit_cast<const uint8_t*>(intern_pool_base.load(std::memory_order_relaxed));
-			return std::bit_cast<const cached_string_storage_t*>(base + (static_cast<size_t>(id) <<
-				intern_align_shift));
+			return std::bit_cast<const cached_string_storage_t*>(base +
+			                                                     (static_cast<size_t>(id) << intern_align_shift));
 		}
 	}
 
@@ -270,35 +269,21 @@ namespace core
 
 		cached() noexcept = default;
 
-		explicit cached(const uint32_t i) noexcept : id(i)
-		{
-		}
+		explicit cached(const uint32_t i) noexcept : id(i) {}
 
 		cached(const cached&) noexcept = default;
 		cached& operator=(const cached&) noexcept = default;
 		cached(cached&&) noexcept = default;
 		cached& operator=(cached&&) noexcept = default;
 
-		void clear()
-		{
-			id = 0;
-		}
+		void clear() { id = 0; }
 
-		constexpr bool is_empty() const
-		{
-			return id == 0;
-		}
+		constexpr bool is_empty() const { return id == 0; }
 
-		size_t size() const
-		{
-			return detail::resolve(id)->len;
-		}
+		size_t size() const { return detail::resolve(id)->len; }
 
 		// Case-insensitive, so two spellings of one path agree. Equal to core::fnv1a_i(sv()).
-		uint32_t ihash() const
-		{
-			return detail::resolve(id)->ihash;
-		}
+		uint32_t ihash() const { return detail::resolve(id)->ihash; }
 
 		std::string_view substr(const size_t sub_pos) const
 		{
@@ -324,10 +309,7 @@ namespace core
 			return s->sz[i];
 		}
 
-		operator std::string_view() const
-		{
-			return sv();
-		}
+		operator std::string_view() const { return sv(); }
 
 		std::string_view sv() const
 		{
@@ -341,35 +323,17 @@ namespace core
 			return {s->sz, s->len};
 		}
 
-		bool operator==(const cached other) const
-		{
-			return id == other.id;
-		}
+		bool operator==(const cached other) const { return id == other.id; }
 
-		bool operator !=(const cached other) const
-		{
-			return id != other.id;
-		}
+		bool operator!=(const cached other) const { return id != other.id; }
 
-		bool operator==(const std::string_view other) const
-		{
-			return other == sv();
-		}
+		bool operator==(const std::string_view other) const { return other == sv(); }
 
-		bool operator !=(const std::string_view other) const
-		{
-			return other != sv();
-		}
+		bool operator!=(const std::string_view other) const { return other != sv(); }
 
-		bool operator <(const cached other) const
-		{
-			return id < other.id;
-		}
+		bool operator<(const cached other) const { return id < other.id; }
 
-		const char* sz() const
-		{
-			return detail::resolve(id)->sz;
-		}
+		const char* sz() const { return detail::resolve(id)->sz; }
 	};
 
 	constexpr bool is_empty(const cached c)
@@ -377,8 +341,7 @@ namespace core
 		return c.is_empty();
 	}
 
-	template <class output_it>
-	void char32_to_utf8(output_it&& inserter, const uint32_t ch)
+	template <class output_it> void char32_to_utf8(output_it&& inserter, const uint32_t ch)
 	{
 		if (ch < 0x80)
 		{
@@ -509,8 +472,8 @@ namespace core
 
 			if (cp > 0xffff)
 			{
-				result += static_cast<uint16_t>((cp >> 10) + LEAD_OFFSET);
-				result += static_cast<uint16_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
+				result += static_cast<wchar_t>((cp >> 10) + LEAD_OFFSET);
+				result += static_cast<wchar_t>((cp & 0x3ff) + TRAIL_SURROGATE_MIN);
 			}
 			else if (is_lead_surrogate(cp) || is_trail_surrogate(cp))
 			{
@@ -519,22 +482,21 @@ namespace core
 				// becomes U+FFFD, as utf16_to_utf8 does with a lone surrogate.
 				if (is_lead_surrogate(cp) && i < s.end() && is_trail_surrogate(peek_utf8_char(i, s.end())))
 				{
-					result += static_cast<uint16_t>(cp);
-					result += static_cast<uint16_t>(pop_utf8_char(i, s.end()));
+					result += static_cast<wchar_t>(cp);
+					result += static_cast<wchar_t>(pop_utf8_char(i, s.end()));
 				}
 				else
 				{
-					result += static_cast<uint16_t>(0xFFFD);
+					result += static_cast<wchar_t>(0xFFFD);
 				}
 			}
 			else
 			{
-				result += static_cast<uint16_t>(cp);
+				result += static_cast<wchar_t>(cp);
 			}
 		}
 		return result;
 	}
-
 
 	inline std::string_view utf8_cast(const std::string_view val)
 	{
@@ -556,14 +518,14 @@ namespace core
 	{
 		if (c < 128) return c >= L'A' && c <= L'Z' ? c - L'A' + L'a' : c;
 		if (c > USHRT_MAX) return c;
-		return _towlower_l(c, utf8_locale());
+		return _towlower_l(static_cast<wint_t>(c), utf8_locale());
 	}
 
 	inline int to_upper(const int c)
 	{
 		if (c < 128) return c >= L'a' && c <= L'z' ? c - L'a' + L'A' : c;
 		if (c > USHRT_MAX) return c;
-		return _towupper_l(c, utf8_locale());
+		return _towupper_l(static_cast<wint_t>(c), utf8_locale());
 	}
 
 	inline std::string to_lower(const std::string_view s)
@@ -663,7 +625,6 @@ namespace core
 		return cl - cr;
 	}
 
-
 	// Natural sort comparison (alphanum sort) - compares embedded numeric sequences as integers.
 	// This ensures "file10" sorts after "file9" rather than between "file1" and "file2".
 	// Case-insensitive and UTF-8 aware.
@@ -745,37 +706,24 @@ namespace core
 		}
 
 		// Handle remaining characters
-		if (il < el) return 1; // left string is longer
+		if (il < el) return 1;  // left string is longer
 		if (ir < er) return -1; // right string is longer
 		return 0;
 	}
 
 	struct iless
 	{
-		bool operator()(const std::string_view l, const std::string_view r) const
-		{
-			return icmp(l, r) < 0;
-		}
+		bool operator()(const std::string_view l, const std::string_view r) const { return icmp(l, r) < 0; }
 
-		bool operator()(const std::wstring_view l, const std::wstring_view r) const
-		{
-			return icmp(l, r) < 0;
-		}
+		bool operator()(const std::wstring_view l, const std::wstring_view r) const { return icmp(l, r) < 0; }
 	};
 
 	struct less
 	{
-		bool operator()(const std::string_view l, const std::string_view r) const
-		{
-			return l.compare(r) < 0;
-		}
+		bool operator()(const std::string_view l, const std::string_view r) const { return l.compare(r) < 0; }
 
-		bool operator()(const std::wstring_view l, const std::wstring_view r) const
-		{
-			return l.compare(r) < 0;
-		}
+		bool operator()(const std::wstring_view l, const std::wstring_view r) const { return l.compare(r) < 0; }
 	};
-
 
 	// The words the foundation writes month names and booleans with, in English as declared. The
 	// application holds a set, translates it with the rest of its text and installs it.
@@ -861,7 +809,7 @@ namespace core
 	// Note: Strings whose complete storage record exceeds a memory-pool block return empty cached.
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	cached cache(std::wstring_view r); // Converts UTF-16 to UTF-8, then interns
-	cached cache(std::string_view r); // Interns UTF-8 string directly
+	cached cache(std::string_view r);  // Interns UTF-8 string directly
 
 	// Already interned - return unchanged rather than round-tripping through the table.
 	inline cached cache(const cached r)
@@ -964,12 +912,10 @@ namespace core
 		return icmp(text, pattern) == 0;
 	}
 
-
 	inline bool need_quotes(const std::string_view s)
 	{
 		return s.find_first_of(": \t\'\"") != std::string_view::npos;
 	}
-
 
 	inline void join(std::string& result, const std::string_view s, const std::string_view sep = " ",
 	                 const bool quote = true)
@@ -1007,16 +953,14 @@ namespace core
 		}
 	}
 
-	template <class T>
-	std::string combine(const T& strings, const std::string_view sep = " ", const bool quote = true)
+	template <class T> std::string combine(const T& strings, const std::string_view sep = " ", const bool quote = true)
 	{
 		std::string result;
 		for (const auto& s : strings) core::join(result, s, sep, quote);
 		return result;
 	}
 
-	inline std::string combine2(const std::string_view s1, const std::string_view s2,
-	                            const std::string_view sep = " ")
+	inline std::string combine2(const std::string_view s1, const std::string_view s2, const std::string_view sep = " ")
 	{
 		std::string result;
 		result.reserve(s1.size() + s2.size() + sep.size());
@@ -1040,7 +984,7 @@ namespace core
 	inline size_t split_count(const std::string_view text, const bool detect_quotes)
 	{
 		size_t result = 0;
-		split2(text, detect_quotes, [&result](const std::string_view part) { ++result; });
+		split2(text, detect_quotes, [&result](const std::string_view /*part*/) { ++result; });
 		return result;
 	}
 
@@ -1070,7 +1014,6 @@ namespace core
 	// which is dropped, otherwise the side the zero bytes of Latin text fall on.
 	std::u16string utf16_from_bytes(const uint8_t* sz, int len);
 
-
 	std::string format_seconds(int val);
 
 	int32_t to_int(std::string_view r);
@@ -1081,9 +1024,8 @@ namespace core
 	inline std::string to_hex(const uint8_t* data, const int data_length, const bool significance_order = true,
 	                          const bool remove_leading_zeros_in = false)
 	{
-		static constexpr char hex_chars[16] = {
-			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
-		};
+		static constexpr char hex_chars[16] = {'0', '1', '2', '3', '4', '5', '6', '7',
+		                                       '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 		std::string result;
 		result.reserve(data_length * 2_z);
 
@@ -1196,8 +1138,7 @@ inline core::cached operator"" _c(const char* str, const std::size_t len)
 	return core::cache({str, len});
 }
 
-template <>
-struct std::formatter<core::cached, char> : std::formatter<std::string_view, char>
+template <> struct std::formatter<core::cached, char> : std::formatter<std::string_view, char>
 {
 	auto format(const core::cached& s, std::format_context& ctx) const
 	{

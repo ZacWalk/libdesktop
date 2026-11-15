@@ -10,7 +10,6 @@
 
 using namespace std::literals;
 
-
 static void assert_assertion_fails(const std::function<void()>& f, const std::string_view name)
 {
 	auto failed = false;
@@ -80,8 +79,7 @@ static void should_icmp_natural()
 
 	// Test leading zeros
 	assert_equal(true, core::icmp_natural("file007", "file7") > 0, "file007 > file7 (more leading zeros)");
-	assert_equal(true, core::icmp_natural("file07", "file007") < 0,
-	             "file07 < file007 (fewer leading zeros)");
+	assert_equal(true, core::icmp_natural("file07", "file007") < 0, "file07 < file007 (fewer leading zeros)");
 	assert_equal(0, core::icmp_natural("file007", "file007"), "same with leading zeros");
 
 	// Test purely numeric strings
@@ -226,8 +224,7 @@ static void should_intern_strings()
 	             "different content -> different handle");
 	assert_equal(true, core::cache(std::string_view{}).is_empty(), "empty interns to empty");
 
-	const std::string largest(core::memory_pool::block_size -
-	                          offsetof(core::cached_string_storage_t, sz) - 1, 'x');
+	const std::string largest(core::memory_pool::block_size - offsetof(core::cached_string_storage_t, sz) - 1, 'x');
 	assert_equal(largest.size(), core::cache(largest).size(), "largest pool record is interned");
 	const std::string too_large(largest.size() + 1, 'x');
 	assert_equal(true, core::cache(too_large).is_empty(), "oversized pool record is rejected");
@@ -253,6 +250,7 @@ static void should_intern_strings()
 	constexpr int word_count = 500;
 	std::vector<std::vector<core::cached>> per_thread(thread_count);
 	std::vector<std::thread> threads;
+	threads.reserve(thread_count);
 
 	for (auto t = 0; t < thread_count; ++t)
 	{
@@ -298,8 +296,7 @@ static void should_round_trip_base64()
 		const auto encoded = base64_encode(data);
 		const auto decoded = base64_decode(encoded);
 
-		assert_equal(static_cast<uint32_t>(length), static_cast<uint32_t>(decoded.size()),
-		             "decoded length matches");
+		assert_equal(static_cast<uint32_t>(length), static_cast<uint32_t>(decoded.size()), "decoded length matches");
 		assert_equal(true, decoded == data, "base64 round trips every length");
 	}
 
@@ -335,8 +332,9 @@ static void should_rotate_points()
 	const auto dy_before = point.Y - center.Y;
 	const auto dx_after = rotated.X - center.X;
 	const auto dy_after = rotated.Y - center.Y;
-	assert_equal(true, core::equiv(dx_before * dx_before + dy_before * dy_before,
-	                             dx_after * dx_after + dy_after * dy_after), "distance preserved");
+	assert_equal(true,
+	             core::equiv(dx_before * dx_before + dy_before * dy_before, dx_after * dx_after + dy_after * dy_after),
+	             "distance preserved");
 }
 
 static void should_split_genre()
@@ -371,8 +369,7 @@ static void should_extract_url()
 	assert_equal("http://anotherexample.org/article", core::url_extract(input2), "extract url");
 	assert_equal("", core::url_extract(input3), "extract url");
 	assert_equal("", core::url_extract(input3), "extract url");
-	assert_equal("http://bighugelabs.com/flickr/onblack.php?id=1397504988", core::url_extract(input4),
-	             "extract url");
+	assert_equal("http://bighugelabs.com/flickr/onblack.php?id=1397504988", core::url_extract(input4), "extract url");
 
 	// A description panel offering a choice of links needs every distinct one, in reading order.
 	const auto all = core::url_extract_all(
@@ -488,7 +485,6 @@ static void should_match_wildcard()
 
 	assert_equal(true, core::wildcard_icmp("HELLO-XX-WORLD", "hello*"));
 	assert_equal(true, core::wildcard_icmp("HELLO-XX-WORLD", "hello*world"));
-
 
 	assert_equal(0, core::icmp("ДОБРОГО РАНКУ", "Доброго ранку"));
 	assert_equal(0, core::icmp("ARABIC مرحبا العالم", "Arabic مرحبا العالم"));
@@ -644,8 +640,8 @@ static void should_handle_cyrillic_case_folding()
 	assert_equal(0, core::icmp(cyrillic_upper, cyrillic_lower), "mixed Cyrillic icmp");
 	// МОСКВА = U+041C U+041E U+0421 U+041A U+0412 U+0410
 	// москва = U+043C U+043E U+0441 U+043A U+0432 U+0430
-	assert_equal(true, core::icmp("\u041c\u041e\u0421\u041a\u0412\u0410",
-	                             "\u043c\u043e\u0441\u043a\u0432\u0430") == 0, "MOSKVA icmp");
+	assert_equal(true, core::icmp("\u041c\u041e\u0421\u041a\u0412\u0410", "\u043c\u043e\u0441\u043a\u0432\u0430") == 0,
+	             "MOSKVA icmp");
 
 	// Greek omicron must case-fold as Greek, not as an unrelated ASCII letter.
 	assert_equal(0, core::icmp("\u039f", "\u03bf"), "Greek omicron case-folds");
@@ -684,8 +680,8 @@ static void should_query_kdtree_bounds()
 	{
 		for (int gy = 0; gy < 10; ++gy)
 		{
-			pts.emplace_back(static_cast<float>(gx), static_cast<float>(gy),
-			                 static_cast<uint32_t>(gx * 10 + gy), 0, 0, 0.0f);
+			pts.emplace_back(static_cast<float>(gx), static_cast<float>(gy), static_cast<uint32_t>(gx * 10 + gy), 0, 0,
+			                 0.0f);
 		}
 	}
 
@@ -716,31 +712,42 @@ static void should_query_kdtree_bounds()
 static void should_intersect_rectangle_bounds()
 {
 	core::rectd out;
-	assert_equal(true, core::rectd::intersect(out, core::rectd(0, 0, 2, 2), core::rectd(1, 1, 2, 2)), "overlap intersects");
-	assert_equal(true, core::equiv(1.0, out.X) && core::equiv(1.0, out.Y) &&
-	             core::equiv(1.0, out.Width) && core::equiv(1.0, out.Height), "overlap result");
+	assert_equal(true, core::rectd::intersect(out, core::rectd(0, 0, 2, 2), core::rectd(1, 1, 2, 2)),
+	             "overlap intersects");
+	assert_equal(true,
+	             core::equiv(1.0, out.X) && core::equiv(1.0, out.Y) && core::equiv(1.0, out.Width) &&
+	                 core::equiv(1.0, out.Height),
+	             "overlap result");
 
 	assert_equal(false, core::rectd::intersect(out, core::rectd(0, 0, 1, 1), core::rectd(2, 2, 1, 1)), "separated");
 	assert_equal(true, out.is_empty(), "separated result is empty");
 
 	assert_equal(true, core::rectd::intersect(out, core::rectd(0, 0, 4, 4), core::rectd(1, 1, 1, 1)), "contained");
-	assert_equal(true, core::equiv(1.0, out.X) && core::equiv(1.0, out.Y) &&
-	             core::equiv(1.0, out.Width) && core::equiv(1.0, out.Height), "contained result");
+	assert_equal(true,
+	             core::equiv(1.0, out.X) && core::equiv(1.0, out.Y) && core::equiv(1.0, out.Width) &&
+	                 core::equiv(1.0, out.Height),
+	             "contained result");
 
 	assert_equal(false, core::rectd::intersect(out, core::rectd(0, 0, 1, 1), core::rectd(1, 0, 1, 1)), "touching edge");
-	assert_equal(false, core::rectd::intersect(out, core::rectd(0, 0, 0, 1), core::rectd(0, 0, 1, 1)), "zero-size input");
+	assert_equal(false, core::rectd::intersect(out, core::rectd(0, 0, 0, 1), core::rectd(0, 0, 1, 1)),
+	             "zero-size input");
 
 	core::rectd symmetric;
-	assert_equal(true, core::rectd::intersect(out, core::rectd(1, 1, 3, 2), core::rectd(2, 0, 1, 4)), "asymmetric overlap");
-	assert_equal(true, core::rectd::intersect(symmetric, core::rectd(2, 0, 1, 4), core::rectd(1, 1, 3, 2)), "symmetric overlap");
-	assert_equal(true, core::equiv(out.X, symmetric.X) && core::equiv(out.Y, symmetric.Y) &&
-	             core::equiv(out.Width, symmetric.Width) && core::equiv(out.Height, symmetric.Height),
+	assert_equal(true, core::rectd::intersect(out, core::rectd(1, 1, 3, 2), core::rectd(2, 0, 1, 4)),
+	             "asymmetric overlap");
+	assert_equal(true, core::rectd::intersect(symmetric, core::rectd(2, 0, 1, 4), core::rectd(1, 1, 3, 2)),
+	             "symmetric overlap");
+	assert_equal(true,
+	             core::equiv(out.X, symmetric.X) && core::equiv(out.Y, symmetric.Y) &&
+	                 core::equiv(out.Width, symmetric.Width) && core::equiv(out.Height, symmetric.Height),
 	             "intersection is symmetric");
 
 	core::rectd aliased(0, 0, 2, 2);
 	assert_equal(true, aliased.intersect(core::rectd(1, 1, 2, 2)), "aliased output");
-	assert_equal(true, core::equiv(1.0, aliased.X) && core::equiv(1.0, aliased.Y) &&
-	             core::equiv(1.0, aliased.Width) && core::equiv(1.0, aliased.Height), "aliased result");
+	assert_equal(true,
+	             core::equiv(1.0, aliased.X) && core::equiv(1.0, aliased.Y) && core::equiv(1.0, aliased.Width) &&
+	                 core::equiv(1.0, aliased.Height),
+	             "aliased result");
 }
 
 static void should_find_the_closest_kdtree_point()
@@ -768,10 +775,9 @@ static void should_find_the_closest_kdtree_point()
 	tree.build(pts);
 
 	// Query points inside, at the corners of, and far outside the data extent.
-	const std::vector<std::pair<float, float>> queries{
-		{0.0f, 0.0f}, {2.0f, 200.0f}, {3.9f, 399.0f}, {0.1f, 12.5f}, {-40.0f, -40.0f},
-		{900.0f, 900.0f}, {-1000.0f, 25.0f}, {2.0f, 100000.0f}
-	};
+	const std::vector<std::pair<float, float>> queries{{0.0f, 0.0f},      {2.0f, 200.0f},   {3.9f, 399.0f},
+	                                                   {0.1f, 12.5f},     {-40.0f, -40.0f}, {900.0f, 900.0f},
+	                                                   {-1000.0f, 25.0f}, {2.0f, 100000.0f}};
 
 	for (const auto& [qx, qy] : queries)
 	{
@@ -793,9 +799,9 @@ static void should_find_the_closest_kdtree_point()
 		// The build reorders coordinates and record fields in lockstep, so the record that comes
 		// back must still be the one that owns the coordinate it came back with.
 		assert_equal(true, found.id < expected.size(), "record identifies a point", "kd closest");
-		assert_equal(true, core::equiv(found.x, expected[found.id].first) &&
-		             core::equiv(found.y, expected[found.id].second), "record travels with its coordinate",
-		             "kd closest");
+		assert_equal(true,
+		             core::equiv(found.x, expected[found.id].first) && core::equiv(found.y, expected[found.id].second),
+		             "record travels with its coordinate", "kd closest");
 		assert_equal(static_cast<int>(found.id * 3 + 1), static_cast<int>(found.offset),
 		             "every record field travels together", "kd closest");
 	}
@@ -855,6 +861,7 @@ static void should_bucket_performance_latency()
 }
 
 void register_render_surface_tests(test_registry& tests);
+void register_mcp_tests(test_registry& tests);
 
 void register_core_system_tests(test_registry& tests)
 {
@@ -870,7 +877,8 @@ void register_core_system_tests(test_registry& tests)
 	tests.add("Should extract url"s, should_extract_url);
 	tests.add("Should parse dates"s, should_parse_dates);
 	tests.add("Should read a date alike on every platform"s, should_read_a_date_alike_on_every_platform);
-	tests.add("Should refuse a date out of range on every platform"s, should_refuse_a_date_out_of_range_on_every_platform);
+	tests.add("Should refuse a date out of range on every platform"s,
+	          should_refuse_a_date_out_of_range_on_every_platform);
 	tests.add("Should accept a local date a day past UTC today"s, should_accept_a_local_date_a_day_past_utc_today);
 	tests.add("Should detect wildcard"s, should_detect_wildcard);
 	tests.add("Should match wildcard"s, should_match_wildcard);
@@ -885,7 +893,8 @@ void register_core_system_tests(test_registry& tests)
 	tests.add("Should query kd-tree bounds"s, should_query_kdtree_bounds);
 	tests.add("Should intersect rectangle bounds"s, should_intersect_rectangle_bounds);
 	tests.add("Should find the closest kd-tree point"s, should_find_the_closest_kdtree_point);
-	tests.add("Should weigh longitude by latitude when finding the closest"s, should_weigh_longitude_by_latitude_when_finding_the_closest);
+	tests.add("Should weigh longitude by latitude when finding the closest"s,
+	          should_weigh_longitude_by_latitude_when_finding_the_closest);
 	tests.add("Should bucket performance latency"s, should_bucket_performance_latency);
 }
 
@@ -905,5 +914,6 @@ int main(const int argc, char* argv[])
 
 	register_core_system_tests(all);
 	register_render_surface_tests(all);
+	register_mcp_tests(all);
 	return run_registered_tests(all, argc, argv, [] { return std::vector<std::string>{}; });
 }

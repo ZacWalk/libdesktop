@@ -18,6 +18,7 @@ set(libdesktop_core_headers
     include/libdesktop/core/kdtree.h
     include/libdesktop/core/log.h
     include/libdesktop/core/map.h
+    include/libdesktop/core/mcp.h
     include/libdesktop/core/path.h
     include/libdesktop/core/pixels.h
     include/libdesktop/core/primitives.h
@@ -34,6 +35,7 @@ set(libdesktop_core_sources
     src/core/geometry.cpp
     src/core/base64.cpp
     src/core/json.cpp
+    src/core/mcp.cpp
     src/core/surface.cpp
     src/core/image.cpp
     src/core/pixel_blend.cpp
@@ -71,7 +73,7 @@ target_include_directories(libdesktop-core SYSTEM PUBLIC "${rapidjson_SOURCE_DIR
 target_precompile_headers(libdesktop-core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/libdesktop/core.h")
 
 if(MSVC)
-    target_compile_options(libdesktop-core PUBLIC /utf-8 PRIVATE /bigobj /W3 /sdl)
+    target_compile_options(libdesktop-core PUBLIC /utf-8 PRIVATE /bigobj /W4 /sdl)
     libdesktop_enable_msvc_exceptions(libdesktop-core)
     if(libdesktop_core_x86)
         set_source_files_properties(src/core/pixel_blend_avx2.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)

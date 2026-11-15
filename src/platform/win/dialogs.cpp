@@ -1,16 +1,16 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows native message boxes, choice and modal dialogs, and file pickers.
 
 #include "libdesktop/platform.h"
 #include "libdesktop/platform/win32.h"
 #include "os.h"
+#include "../agent.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -85,7 +85,8 @@ namespace
 			{std::string(platform::text().jpeg_best), "*.jpg;*.jpe;*.jpeg"},
 			{std::string(platform::text().png_best), "*.png"},
 			{std::string(platform::text().webp_best), "*.webp"},
-			{std::string(platform::text().jxl_best), "*.jxl"}
+			{std::string(platform::text().jxl_best), "*.jxl"},
+			{std::string(platform::text().avif_best), "*.avif"},
 		};
 	}
 
@@ -164,38 +165,35 @@ namespace
 			auto& field = _definition.fields[index];
 			const auto label = core::utf8_to_utf16(field.label);
 			if (field.kind != platform::modal_field_kind::check_box && field.kind != platform::modal_field_kind::action)
-				CreateWindowExW(0, L"STATIC", label.c_str(), WS_CHILD | WS_VISIBLE,
-				                12, y + 4, 150, 22, _window, nullptr, GetModuleHandleW(nullptr), nullptr);
+				CreateWindowExW(0, L"STATIC", label.c_str(), WS_CHILD | WS_VISIBLE, 12, y + 4, 150, 22, _window,
+				                nullptr, GetModuleHandleW(nullptr), nullptr);
 
 			const auto id = static_cast<int>(1000 + index);
 			HWND control = nullptr;
 			switch (field.kind)
 			{
 			case platform::modal_field_kind::text:
-				{
-					const auto* initial = std::get_if<std::string>(&field.value);
-					const auto initial_text = core::utf8_to_utf16(initial ? *initial : std::string{});
-					control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial_text.c_str(),
-					                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-					                         170, y, 300, 24, _window,
-					                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-					                         GetModuleHandleW(nullptr), nullptr);
-					break;
-				}
+			{
+				const auto* initial = std::get_if<std::string>(&field.value);
+				const auto initial_text = core::utf8_to_utf16(initial ? *initial : std::string{});
+				control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initial_text.c_str(),
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 170, y, 300, 24, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr),
+				                          nullptr);
+				break;
+			}
 			case platform::modal_field_kind::check_box:
 				control = CreateWindowExW(0, L"BUTTON", label.c_str(),
-				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-				                          12, y, 458, 24, _window,
-				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-				                          GetModuleHandleW(nullptr), nullptr);
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 12, y, 458, 24, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr),
+				                          nullptr);
 				if (control && std::get_if<bool>(&field.value) && std::get<bool>(field.value))
 					SendMessageW(control, BM_SETCHECK, BST_CHECKED, 0);
 				break;
 			case platform::modal_field_kind::choice:
 				control = CreateWindowExW(0, L"COMBOBOX", nullptr,
-				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-				                          170, y, 300, 180, _window,
-				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 170, y, 300, 180,
+				                          _window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
 				                          GetModuleHandleW(nullptr), nullptr);
 				for (const auto& choice : field.choices)
 				{
@@ -205,10 +203,9 @@ namespace
 				break;
 			case platform::modal_field_kind::search_list:
 				control = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
-				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY,
-				                          170, y, 300, 80, _window,
-				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-				                          GetModuleHandleW(nullptr), nullptr);
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY, 170, y, 300, 80, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr),
+				                          nullptr);
 				for (const auto& choice : field.choices)
 				{
 					const auto text = core::utf8_to_utf16(choice.first);
@@ -217,10 +214,9 @@ namespace
 				break;
 			case platform::modal_field_kind::action:
 				control = CreateWindowExW(0, L"BUTTON", label.c_str(),
-				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-				                          12, y, 458, 26, _window,
-				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-				                          GetModuleHandleW(nullptr), nullptr);
+				                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 12, y, 458, 26, _window,
+				                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr),
+				                          nullptr);
 				_command_fields[id] = index;
 				break;
 			}
@@ -234,8 +230,9 @@ namespace
 		HBITMAP make_preview(const platform::modal_preview& preview)
 		{
 			if (preview.width <= 0 || preview.height <= 0 ||
-				static_cast<size_t>(preview.width) > std::numeric_limits<size_t>::max() / static_cast<size_t>(preview.height) ||
-				preview.bgra_pixels.size() < static_cast<size_t>(preview.width) * static_cast<size_t>(preview.height))
+			    static_cast<size_t>(preview.width) >
+			        std::numeric_limits<size_t>::max() / static_cast<size_t>(preview.height) ||
+			    preview.bgra_pixels.size() < static_cast<size_t>(preview.width) * static_cast<size_t>(preview.height))
 				return nullptr;
 			BITMAPINFO info = {};
 			info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -281,13 +278,15 @@ namespace
 				{
 					const auto selected = static_cast<int>(SendMessageW(control, CB_GETCURSEL, 0, 0));
 					values[field.id] = selected >= 0 && selected < static_cast<int>(field.choices.size())
-						                   ? field.choices[selected].second : int64_t{0};
+					                       ? field.choices[selected].second
+					                       : int64_t{0};
 				}
 				else if (field.kind == platform::modal_field_kind::search_list)
 				{
 					const auto selected = static_cast<int>(SendMessageW(control, LB_GETCURSEL, 0, 0));
 					values[field.id] = selected >= 0 && selected < static_cast<int>(field.choices.size())
-						                   ? field.choices[selected].second : int64_t{0};
+					                       ? field.choices[selected].second
+					                       : int64_t{0};
 				}
 			}
 			if (_definition.validate)
@@ -305,8 +304,8 @@ namespace
 		}
 
 	public:
-		modal_dialog_host(HWND owner, platform::modal_definition definition)
-			: _definition(std::move(definition)), _owner(owner)
+		modal_dialog_host(HWND owner, platform::modal_definition definition) :
+			_definition(std::move(definition)), _owner(owner)
 		{
 			dialog_class();
 			const auto title = core::utf8_to_utf16(_definition.title);
@@ -314,13 +313,12 @@ namespace
 			const auto previews_height = std::min<size_t>(_definition.previews.size(), 20) * 104;
 			const auto height = static_cast<int>(std::min<size_t>(2000, 120 + fields_height + previews_height));
 			_window = CreateWindowExW(WS_EX_DLGMODALFRAME, L"LibdesktopModalDialog", title.c_str(),
-			                          WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-			                          CW_USEDEFAULT, CW_USEDEFAULT, 500, height,
-			                          owner, nullptr, GetModuleHandleW(nullptr), this);
+			                          WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
+			                          500, height, owner, nullptr, GetModuleHandleW(nullptr), this);
 			if (!_window) return;
 			const auto message = core::utf8_to_utf16(_definition.message);
-			CreateWindowExW(0, L"STATIC", message.c_str(), WS_CHILD | WS_VISIBLE,
-			                12, 10, 458, 32, _window, nullptr, GetModuleHandleW(nullptr), nullptr);
+			CreateWindowExW(0, L"STATIC", message.c_str(), WS_CHILD | WS_VISIBLE, 12, 10, 458, 32, _window, nullptr,
+			                GetModuleHandleW(nullptr), nullptr);
 			int y = 48;
 			for (const auto& preview : _definition.previews)
 			{
@@ -330,9 +328,9 @@ namespace
 					const auto width = std::min(458, preview.width);
 					const auto preview_height = std::min(96, preview.height);
 					const auto control = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", nullptr,
-					                                    WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE,
-					                                    12, y, width, preview_height, _window, nullptr,
-					                                    GetModuleHandleW(nullptr), nullptr);
+					                                     WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE, 12, y,
+					                                     width, preview_height, _window, nullptr,
+					                                     GetModuleHandleW(nullptr), nullptr);
 					SendMessageW(control, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(bitmap));
 					_preview_bitmaps.push_back(bitmap);
 				}
@@ -341,18 +339,19 @@ namespace
 			for (size_t i = 0; i != _definition.fields.size() && i < 40; ++i, y += 38) add_control(i, y);
 			const auto accept = core::utf8_to_utf16(_definition.accept);
 			const auto cancel = core::utf8_to_utf16(_definition.cancel);
-			CreateWindowExW(0, L"BUTTON", accept.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			                300, height - 58, 80, 28, _window, reinterpret_cast<HMENU>(1),
-			                GetModuleHandleW(nullptr), nullptr);
-			CreateWindowExW(0, L"BUTTON", cancel.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-			                390, height - 58, 80, 28, _window, reinterpret_cast<HMENU>(2),
-			                GetModuleHandleW(nullptr), nullptr);
+			CreateWindowExW(0, L"BUTTON", accept.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 300,
+			                height - 58, 80, 28, _window, reinterpret_cast<HMENU>(1), GetModuleHandleW(nullptr),
+			                nullptr);
+			CreateWindowExW(0, L"BUTTON", cancel.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 390,
+			                height - 58, 80, 28, _window, reinterpret_cast<HMENU>(2), GetModuleHandleW(nullptr),
+			                nullptr);
 		}
 
 		~modal_dialog_host()
 		{
 			if (_window) DestroyWindow(_window);
-			for (const auto bitmap : _preview_bitmaps) if (bitmap) DeleteObject(bitmap);
+			for (const auto bitmap : _preview_bitmaps)
+				if (bitmap) DeleteObject(bitmap);
 		}
 
 		std::optional<std::map<uint32_t, platform::modal_value>> run()
@@ -374,16 +373,18 @@ namespace
 }
 
 platform::message_box_result platform::message_box(platform::window* owner, const std::string_view text,
-                                                    const std::string_view title, const message_box_style style)
+                                                   const std::string_view title, const message_box_style style)
 {
+	if (detail::agent_skips("a message box")) return message_box_result::none;
 	const auto wide_text = core::utf8_to_utf16(text);
 	const auto wide_title = core::utf8_to_utf16(title);
-	return map_message_box_result(::MessageBoxW(native_owner(owner), wide_text.c_str(), wide_title.c_str(),
-	                                       message_box_flags(style)));
+	return map_message_box_result(
+		::MessageBoxW(native_owner(owner), wide_text.c_str(), wide_title.c_str(), message_box_flags(style)));
 }
 
 int platform::show_choice(platform::window* owner, const choice_definition& definition)
 {
+	if (detail::agent_skips("a choice")) return 0;
 	if (definition.buttons.empty()) return 0;
 	std::vector<std::wstring> labels;
 	std::vector<TASKDIALOG_BUTTON> buttons;
@@ -426,11 +427,13 @@ int platform::show_choice(platform::window* owner, const choice_definition& defi
 std::optional<std::map<uint32_t, platform::modal_value>> platform::show_modal_dialog(
 	platform::window* owner, platform::modal_definition definition)
 {
+	if (detail::agent_skips("a dialog")) return std::nullopt;
 	return modal_dialog_host(native_owner(owner), std::move(definition)).run();
 }
 
 bool platform::browse_for_folder(platform::window* owner, core::folder_path& path, const std::string_view title)
 {
+	if (detail::agent_skips("a folder picker")) return false;
 	const auto result = os::folder_dialog(reinterpret_cast<uintptr_t>(native_owner(owner)),
 	                                      title.empty() ? static_cast<std::string_view>(platform::text().select_folder)
 	                                                    : title,
@@ -442,6 +445,7 @@ bool platform::browse_for_folder(platform::window* owner, core::folder_path& pat
 
 bool platform::prompt_for_save_path(platform::window* owner, core::file_path& path)
 {
+	if (detail::agent_skips("a save picker")) return false;
 	const auto result = os::save_file_dialog(reinterpret_cast<uintptr_t>(native_owner(owner)), {}, path.pack(),
 	                                         image_save_filters());
 	if (!result.accepted()) return false;
@@ -453,6 +457,7 @@ bool platform::prompt_for_open_paths(platform::window* owner, std::vector<core::
                                      const std::vector<file_dialog_filter>& filters, const bool allow_multiple,
                                      const std::string_view title)
 {
+	if (detail::agent_skips("an open picker")) return false;
 	const auto result = os::open_file_dialog(reinterpret_cast<uintptr_t>(native_owner(owner)), title,
 	                                         convert_filters(filters), allow_multiple);
 	if (!result.accepted()) return false;
@@ -464,10 +469,10 @@ bool platform::prompt_for_open_paths(platform::window* owner, std::vector<core::
 bool platform::prompt_for_save_path(platform::window* owner, core::file_path& path,
                                     const std::vector<file_dialog_filter>& filters, const std::string_view title)
 {
+	if (detail::agent_skips("a save picker")) return false;
 	const auto result = os::save_file_dialog(reinterpret_cast<uintptr_t>(native_owner(owner)), title, path.pack(),
 	                                         convert_filters(filters));
 	if (!result.accepted()) return false;
 	path = core::file_path(result.paths.front());
 	return true;
 }
-

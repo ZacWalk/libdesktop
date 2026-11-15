@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Shell locks, tray publication, and unavailable-platform shell contracts.
 
@@ -42,7 +41,7 @@ namespace
 	void should_hold_instance_lock_until_release()
 	{
 		const auto name = std::format("platform-shell-tests-{}",
-		                             std::chrono::steady_clock::now().time_since_epoch().count());
+		                              std::chrono::steady_clock::now().time_since_epoch().count());
 		{
 			auto first = platform::try_lock_instance(name);
 			assert_equal(true, first.lock != nullptr, "first instance lock acquired");
@@ -101,6 +100,12 @@ namespace
 		assert_equal(true, !checker || checker->available(), "Windows checker is available when returned");
 #else
 		assert_equal(true, checker == nullptr, "Linux checker is unavailable");
+		const auto receiver = platform::receive_instance_requests("test", [](auto) { return true; });
+		assert_equal(true, receiver.receiver == nullptr && !receiver.already_running && !receiver.error.empty(),
+		             "Linux does not claim an instance receiver");
+		const auto request = platform::send_instance_request("test", {});
+		assert_equal(true, request.status == platform::instance_request_status::unavailable && !request.error.empty(),
+		             "Linux does not report a successful handoff");
 #endif
 		assert_equal(false, platform::begin_file_drag(nullptr, {}), "empty file drag does not start");
 		assert_equal(0, platform::show_choice(nullptr, {}), "empty choice is cancelled");

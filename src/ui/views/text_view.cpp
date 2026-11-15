@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Text-view scrolling, command routing, caret timing, and render metrics.
 
@@ -38,13 +37,13 @@ ui::view_host& ui::text_view::default_view_host()
 }
 
 ui::text_view::text_view(view_host& host, const view_theme& theme, view_context* const context,
-                         text_clipboard* const clipboard) : view_base(theme), _host(host), _context(context),
-                                                            _clipboard(clipboard ? clipboard : &system_clipboard())
+                         text_clipboard* const clipboard) :
+	view_base(theme), _host(host), _context(context), _clipboard(clipboard ? clipboard : &system_clipboard())
 {
 }
 
-ui::text_view::text_view(const view_theme& theme, view_context* const context,
-                         text_clipboard* const clipboard) : text_view(default_view_host(), theme, context, clipboard)
+ui::text_view::text_view(const view_theme& theme, view_context* const context, text_clipboard* const clipboard) :
+	text_view(default_view_host(), theme, context, clipboard)
 {
 }
 
@@ -118,10 +117,9 @@ void ui::text_view::zoom(const int delta)
 	if (_context) _context->on_zoom(delta);
 }
 
-bool ui::text_view::on_key(const int key, const platform::key_state keys)
+bool ui::text_view::on_key(const char32_t key, const platform::key_state keys)
 {
-	const auto k = static_cast<char32_t>(key);
-	if (k == platform::keys::ESCAPE)
+	if (key == platform::keys::ESCAPE)
 	{
 		on_escape();
 		return true;
@@ -129,18 +127,18 @@ bool ui::text_view::on_key(const int key, const platform::key_state keys)
 
 	if (keys.control && !keys.shift && !keys.alt)
 	{
-		if (k == platform::keys::OEM_PLUS || k == 0x6B)
+		if (key == platform::keys::OEM_PLUS || key == 0x6B)
 		{
 			zoom(2);
 			return true;
 		}
-		if (k == platform::keys::OEM_MINUS || k == 0x6D)
+		if (key == platform::keys::OEM_MINUS || key == 0x6D)
 		{
 			zoom(-2);
 			return true;
 		}
 
-		switch (k)
+		switch (key)
 		{
 		case U'A': select_all_text(); return true;
 		case U'C': (void)copy_text_to_clipboard(); return true;
@@ -152,22 +150,22 @@ bool ui::text_view::on_key(const int key, const platform::key_state keys)
 
 	if (!keys.control && !keys.shift && !keys.alt)
 	{
-		if (k == platform::keys::UP)
+		if (key == platform::keys::UP)
 		{
 			scroll_by(-1);
 			return true;
 		}
-		if (k == platform::keys::DOWN)
+		if (key == platform::keys::DOWN)
 		{
 			scroll_by(1);
 			return true;
 		}
-		if (k == platform::keys::PRIOR)
+		if (key == platform::keys::PRIOR)
 		{
 			scroll_by(-_screen_lines);
 			return true;
 		}
-		if (k == platform::keys::NEXT)
+		if (key == platform::keys::NEXT)
 		{
 			scroll_by(_screen_lines);
 			return true;
@@ -205,10 +203,10 @@ std::vector<ui::command_ptr> ui::text_view::default_popup_menu()
 {
 	std::vector<command_ptr> items;
 
-	const auto make = [](const std::string_view text, const std::function<void()>& action, const bool enabled)
+	const auto make = [](const std::string_view text, const std::function<void()>& action, const bool is_enabled)
 	{
 		auto command = std::make_shared<ui::command>(text, std::any{}, action, false);
-		command->enable = enabled;
+		command->enable = is_enabled;
 		return command;
 	};
 
@@ -250,10 +248,8 @@ void ui::text_view::ensure_visible(const text_location& point)
 	const auto line_bottom = line_top + _font_extent.cy;
 	const auto visible_height = std::max(0, _view_extent.cy - text_top());
 
-	if (line_bottom > _scroll_offset.y + visible_height)
-		set_scroll_pixel(line_bottom - visible_height);
-	else if (line_top < _scroll_offset.y)
-		set_scroll_pixel(line_top);
+	if (line_bottom > _scroll_offset.y + visible_height) set_scroll_pixel(line_bottom - visible_height);
+	else if (line_top < _scroll_offset.y) set_scroll_pixel(line_top);
 }
 
 void ui::text_view::invalidate_lines(const int start, const int end)

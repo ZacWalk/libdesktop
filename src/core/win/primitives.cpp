@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "libdesktop/core.h"
 #include "libdesktop/core/cpu_features.h"
@@ -98,11 +97,9 @@ void core::thread_event::create(const bool manual_reset, const bool initial_stat
 {
 	DWORD flags = 0;
 
-	if (manual_reset)
-		flags |= CREATE_EVENT_MANUAL_RESET;
+	if (manual_reset) flags |= CREATE_EVENT_MANUAL_RESET;
 
-	if (initial_state)
-		flags |= CREATE_EVENT_INITIAL_SET;
+	if (initial_state) flags |= CREATE_EVENT_INITIAL_SET;
 
 	auto* const h = ::CreateEventEx(nullptr, nullptr, flags, EVENT_ALL_ACCESS);
 
@@ -134,33 +131,27 @@ void core::thread_event::set() const noexcept
 	if (_h) SetEvent(_h);
 }
 
-
-_Acquires_exclusive_lock_(this)
-void core::mutex::ex_lock() const
+_Acquires_exclusive_lock_(this) void core::mutex::ex_lock() const
 {
 	AcquireSRWLockExclusive(std::bit_cast<PSRWLOCK>(&_cs));
 }
 
-_When_(return != 0, _Acquires_exclusive_lock_(this))
-bool core::mutex::try_ex_lock() const
+_When_(return != 0, _Acquires_exclusive_lock_(this)) bool core::mutex::try_ex_lock() const
 {
 	return TryAcquireSRWLockExclusive(std::bit_cast<PSRWLOCK>(&_cs)) != 0;
 }
 
-_Releases_exclusive_lock_(this)
-void core::mutex::ex_unlock() const
+_Releases_exclusive_lock_(this) void core::mutex::ex_unlock() const
 {
 	ReleaseSRWLockExclusive(std::bit_cast<PSRWLOCK>(&_cs));
 }
 
-_Acquires_shared_lock_(this)
-void core::mutex::sh_lock() const
+_Acquires_shared_lock_(this) void core::mutex::sh_lock() const
 {
 	AcquireSRWLockShared(std::bit_cast<PSRWLOCK>(&_cs));
 }
 
-_Releases_shared_lock_(this)
-void core::mutex::sh_unlock() const
+_Releases_shared_lock_(this) void core::mutex::sh_unlock() const
 {
 	ReleaseSRWLockShared(std::bit_cast<PSRWLOCK>(&_cs));
 }
@@ -178,8 +169,8 @@ void core::set_thread_description(const std::string_view name)
 			{
 				auto* const kernel32 = GetModuleHandleW(L"kernel32.dll");
 				return kernel32
-					       ? std::bit_cast<pfnSetThreadDescription>(GetProcAddress(kernel32, "SetThreadDescription"))
-					       : nullptr;
+				           ? std::bit_cast<pfnSetThreadDescription>(GetProcAddress(kernel32, "SetThreadDescription"))
+				           : nullptr;
 			}();
 
 			if (set_thread_description_proc != nullptr)
@@ -246,20 +237,20 @@ core::day_t core::to_date(const uint64_t timestamp)
 	const auto file_time = ts_to_ft(timestamp);
 	SYSTEMTIME system_time = {};
 	FileTimeToSystemTime(&file_time, &system_time);
-	return {system_time.wYear, system_time.wMonth, system_time.wDay, system_time.wHour, system_time.wMinute,
-	        system_time.wSecond};
+	return {system_time.wYear, system_time.wMonth,  system_time.wDay,
+	        system_time.wHour, system_time.wMinute, system_time.wSecond};
 }
 
 uint64_t core::from_date(const core::day_t& day)
 {
 	SYSTEMTIME system_time = {0};
 
-	system_time.wYear = day.year;
-	system_time.wMonth = day.month;
-	system_time.wDay = day.day;
-	system_time.wHour = day.hour;
-	system_time.wMinute = day.minute;
-	system_time.wSecond = day.second;
+	system_time.wYear = static_cast<WORD>(day.year);
+	system_time.wMonth = static_cast<WORD>(day.month);
+	system_time.wDay = static_cast<WORD>(day.day);
+	system_time.wHour = static_cast<WORD>(day.hour);
+	system_time.wMinute = static_cast<WORD>(day.minute);
+	system_time.wSecond = static_cast<WORD>(day.second);
 
 	if (system_time.wMonth == 0) system_time.wMonth = 1;
 	if (system_time.wDay == 0) system_time.wDay = 1;

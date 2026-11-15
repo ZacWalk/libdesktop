@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Core process-local platform primitives and synchronization types.
 
@@ -49,32 +48,21 @@ namespace core
 		mutable uintptr_t _cs = 0;
 
 	public:
-		_Acquires_exclusive_lock_(this)
-		void ex_lock() const;
+		_Acquires_exclusive_lock_(this) void ex_lock() const;
 
 		// For a caller that must never block, such as the crash handler reading state a worker
 		// mutates. Answers false rather than waiting; the caller decides what a refused read means.
-		_When_(return != 0, _Acquires_exclusive_lock_(this))
-		bool try_ex_lock() const;
+		_When_(return != 0, _Acquires_exclusive_lock_(this)) bool try_ex_lock() const;
 
-		_Releases_exclusive_lock_(this)
-		void ex_unlock() const;
+		_Releases_exclusive_lock_(this) void ex_unlock() const;
 
-		_Acquires_shared_lock_(this)
-		void sh_lock() const;
+		_Acquires_shared_lock_(this) void sh_lock() const;
 
-		_Releases_shared_lock_(this)
-		void sh_unlock() const;
+		_Releases_shared_lock_(this) void sh_unlock() const;
 
-		void unlock() const
-		{
-			ex_unlock();
-		}
+		void unlock() const { ex_unlock(); }
 
-		void lock() const
-		{
-			ex_lock();
-		}
+		void lock() const { ex_lock(); }
 
 		friend class shared_lock;
 		friend class exclusive_lock;
@@ -86,15 +74,9 @@ namespace core
 		bool _locked = false;
 
 	public:
-		shared_lock(const mutex& rw) : _rw(rw)
-		{
-			lock();
-		}
+		shared_lock(const mutex& rw) : _rw(rw) { lock(); }
 
-		~shared_lock() override
-		{
-			unlock();
-		}
+		~shared_lock() override { unlock(); }
 
 		void unlock()
 		{
@@ -120,15 +102,9 @@ namespace core
 		const mutex& _rw;
 
 	public:
-		exclusive_lock(const mutex& rw) : _rw(rw)
-		{
-			_rw.ex_lock();
-		}
+		exclusive_lock(const mutex& rw) : _rw(rw) { _rw.ex_lock(); }
 
-		~exclusive_lock() override
-		{
-			_rw.ex_unlock();
-		}
+		~exclusive_lock() override { _rw.ex_unlock(); }
 	};
 
 	// Never waits. Held by callers that cannot afford to block on a lock another thread may be
@@ -140,9 +116,7 @@ namespace core
 		const bool _locked;
 
 	public:
-		try_exclusive_lock(const mutex& rw) : _rw(rw), _locked(rw.try_ex_lock())
-		{
-		}
+		try_exclusive_lock(const mutex& rw) : _rw(rw), _locked(rw.try_ex_lock()) {}
 
 		~try_exclusive_lock() override
 		{
@@ -194,15 +168,12 @@ namespace core
 		// succeeds. A 32-bit build gets 2GB in total (the exe is not large-address-aware), so it takes a
 		// sixteenth rather than the half a gigabyte a 64-bit build can ignore; at roughly 30 bytes per
 		// interned name that still covers a collection far larger than a 32-bit process can index.
-		constexpr static size_t reserve_size = sizeof(void*) == 8
-			                                      ? 1024_z * 1024_z * 1024_z
-			                                      : 128_z * 1024_z * 1024_z;
+		constexpr static size_t reserve_size = sizeof(void*) == 8 ? 1024_z * 1024_z * 1024_z : 128_z * 1024_z * 1024_z;
 
 		void* alloc(size_t size);
 	};
 
-	template <typename T>
-	class pool_allocator
+	template <typename T> class pool_allocator
 	{
 		memory_pool _pool;
 	};

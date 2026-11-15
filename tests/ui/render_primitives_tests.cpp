@@ -1,4 +1,4 @@
-// libdesktop-ui's bubble drawing test, which drives a headless frame through render primitives.
+// libdesktop-ui's bubble drawing test, which paints a headless bubble popup into a CPU surface.
 
 #include "libdesktop/render.h"
 #include "libdesktop/render/software.h"
@@ -49,86 +49,32 @@ namespace
 		core::recti bubble_work_area(core::recti) override { return work; }
 	};
 
-	void draw_bubble_reference(render::draw_context& dc, const core::recti bounds, const core::pointi focus,
-	                          const core::color32 background)
-	{
-		constexpr int padding = 16;
-		constexpr int radius = 8;
-
-		dc.clear(core::color(0.0f, 0.0f, 0.0f, 0.0f));
-		dc.draw_shadow({0, 0, bounds.width(), bounds.height()}, 32, 1.0f);
-
-		const auto l = static_cast<float>(padding);
-		const auto t = static_cast<float>(padding);
-		const auto r = static_cast<float>(bounds.width() - padding);
-		const auto b = static_cast<float>(bounds.height() - padding);
-		const auto clr = core::color(background, 1.0f);
-		const auto body = core::recti(core::round(l), core::round(t), core::round(r), core::round(b));
-		const auto edge = 0.83333f * (radius + 2);
-		const auto fill_grow = std::max(0, core::round(edge - radius));
-		const auto undo_emphasis = [](const float value) { return (value - 0.05f) / 0.9f; };
-		const core::color body_color(undo_emphasis(clr.r), undo_emphasis(clr.g), undo_emphasis(clr.b), clr.a);
-		dc.draw_rounded_rect(body.inflate(-fill_grow), body_color, radius);
-
-		const auto p = static_cast<float>(padding);
-		std::array<core::pointd, 3> pointer;
-		if (focus.y <= bounds.top)
-		{
-			const auto center = std::clamp(static_cast<float>(focus.x - bounds.left), l + 24.0f, r - 24.0f);
-			pointer = {{{center - p, t}, {center, t - p}, {center + p, t}}};
-		}
-		else if (focus.x >= bounds.right)
-		{
-			const auto center = std::clamp(static_cast<float>(focus.y - bounds.top), t + 24.0f, b - 24.0f);
-			pointer = {{{r, center - p}, {r + p, center}, {r, center + p}}};
-		}
-		else if (focus.y >= bounds.bottom)
-		{
-			const auto center = std::clamp(static_cast<float>(focus.x - bounds.left), l + 24.0f, r - 24.0f);
-			pointer = {{{center + p, b}, {center, b + p}, {center - p, b}}};
-		}
-		else
-		{
-			const auto center = std::clamp(static_cast<float>(focus.y - bounds.top), t + 24.0f, b - 24.0f);
-			pointer = {{{l, center + p}, {l - p, center}, {l, center - p}}};
-		}
-		dc.fill_polygon(std::span<const core::pointd>(pointer), clr);
-	}
-
-	core::surface_ptr make_bubble_test_shadow()
-	{
-		const auto shadow = std::make_shared<core::surface>();
-		shadow->alloc(64, 64, core::texture_format::ARGB);
-		for (auto y = 0; y < 64; ++y)
-		{
-			for (auto x = 0; x < 64; ++x)
-			{
-				const auto edge = std::max(std::abs(x - 31.5f), std::abs(y - 31.5f)) / 31.5f;
-				shadow->set_pixel(x, y, core::rgba(0, 0, 0, core::round(std::clamp(edge, 0.0f, 1.0f) * 160.0f)));
-			}
-		}
-		return shadow;
-	}
-
-	void should_draw_bubbles_with_generic_primitives()
+	// A bubble draws its own picture, the same on every backend: its body in the bubble's colour, an arrow out of the
+	// side facing what it points at and no other, and a soft shadow round it that is gone by the popup's corners.
+	void should_draw_a_bubble_with_its_arrow_and_shadow()
 	{
 		ui::style::install({});
-		const auto installed_decoder = render::decode_embedded_image;
-		const core::scope_exit restore_decoder([installed_decoder] { render::decode_embedded_image = installed_decoder; });
-		const auto shadow = make_bubble_test_shadow();
-		render::decode_embedded_image = [shadow](const core::cspan) { return shadow; };
+
+		enum class edge
+		{
+			top,
+			right,
+			bottom,
+			left
+		};
 
 		struct side
 		{
 			std::string_view name;
 			core::recti anchor;
 			bool horizontal;
+			edge facing;
 		};
 		const side sides[] = {
-			{"top", {300, 20, 340, 40}, false},
-			{"bottom", {300, 300, 340, 320}, false},
-			{"left", {20, 300, 60, 320}, true},
-			{"right", {300, 300, 340, 320}, true},
+			{"top", {300, 20, 340, 40}, false, edge::top},
+			{"bottom", {300, 300, 340, 320}, false, edge::bottom},
+			{"left", {20, 300, 60, 320}, true, edge::left},
+			{"right", {300, 300, 340, 320}, true, edge::right},
 		};
 
 		for (const auto& s : sides)
@@ -141,38 +87,57 @@ namespace
 			if (!host->popup) continue;
 			assert_equal(true, host->popup->bounds == placement.bounds, std::format("{} bubble placement", s.name));
 
-			const auto ui_surface = std::make_shared<core::surface>();
-			const auto ui_context = render::create_surface_context(ui_surface);
-			const auto reference_surface = std::make_shared<core::surface>();
-			const auto reference_context = render::create_surface_context(reference_surface);
-			assert_equal(true, ui_context != nullptr && reference_context != nullptr, std::format("{} contexts", s.name));
-			if (!ui_context || !reference_context) continue;
+			const auto surface = std::make_shared<core::surface>();
+			const auto context = render::create_surface_context(surface);
+			assert_equal(true, context != nullptr, std::format("{} context", s.name));
+			if (!context) continue;
 
 			const auto extent = placement.bounds.extent();
-			ui_context->begin_draw(extent, render::default_font_size, {});
-			ui_context->colors.background = ui::style::colors.bubble_background;
-			host->popup->paint(*ui_context);
-			assert_equal(false, ui_context->render().failed, std::format("{} UI bubble render", s.name));
+			context->begin_draw(extent, render::default_font_size, {});
+			context->colors.background = ui::style::colors.bubble_background;
+			host->popup->paint(*context);
+			assert_equal(false, context->render().failed, std::format("{} bubble render", s.name));
+			if (surface->dimensions() != extent) continue;
 
-			reference_context->begin_draw(extent, render::default_font_size, {});
-			reference_context->colors.background = ui::style::colors.bubble_background;
-			draw_bubble_reference(*reference_context, placement.bounds, placement.focus, ui::style::colors.bubble_background);
-			assert_equal(false, reference_context->render().failed, std::format("{} reference render", s.name));
+			const auto body = surface->get_pixel(extent.cx / 2, extent.cy / 2);
+			assert_equal(0xffu, body >> 24, std::format("{} body is opaque", s.name));
 
-			bool identical = ui_surface->dimensions() == reference_surface->dimensions();
-			if (identical)
+			// The middle of the margin round the body on each side: the arrow is the only body there.
+			const auto arrow_in = [&](const edge e)
 			{
-				for (auto y = 0; y < extent.cy && identical; ++y)
-					for (auto x = 0; x < extent.cx; ++x)
-						if (ui_surface->get_pixel(x, y) != reference_surface->get_pixel(x, y)) identical = false;
+				const auto horizontal_edge = e == edge::top || e == edge::bottom;
+				const auto across = e == edge::top || e == edge::left ? 8
+				                                                      : (horizontal_edge ? extent.cy : extent.cx) - 9;
+				auto found = 0;
+				for (auto along = 0; along < (horizontal_edge ? extent.cx : extent.cy); ++along)
+				{
+					const auto x = horizontal_edge ? along : across;
+					const auto y = horizontal_edge ? across : along;
+					if (surface->get_pixel(x, y) == body) ++found;
+				}
+				return found;
+			};
+
+			for (const auto e : {edge::top, edge::right, edge::bottom, edge::left})
+			{
+				assert_equal(e == s.facing, arrow_in(e) > 0,
+				             std::format("{} bubble's arrow only where it points", s.name));
 			}
-			assert_equal(true, identical, std::format("{} bubble pixels", s.name));
+
+			// Opposite the arrow there is only the shadow, a little way in from the popup's edge.
+			const auto opposite = static_cast<edge>((static_cast<int>(s.facing) + 2) % 4);
+			const auto x = opposite == edge::left ? 12 : opposite == edge::right ? extent.cx - 13 : extent.cx / 2;
+			const auto y = opposite == edge::top ? 12 : opposite == edge::bottom ? extent.cy - 13 : extent.cy / 2;
+			const auto shade = surface->get_pixel(x, y);
+			assert_equal(true, shade >> 24 > 0 && shade >> 24 < 0xffu && (shade & 0xffffffu) == 0,
+			             std::format("{} bubble's shadow is translucent black", s.name));
+			assert_equal(0u, surface->get_pixel(0, 0) >> 24,
+			             std::format("{} bubble's shadow is gone by its corners", s.name));
 		}
 	}
-
 }
 
 void register_ui_render_primitives_tests(test_registry& tests)
 {
-	tests.add("Should draw bubbles with generic primitives"s, should_draw_bubbles_with_generic_primitives);
+	tests.add("Should draw a bubble with its arrow and shadow"s, should_draw_a_bubble_with_its_arrow_and_shadow);
 }

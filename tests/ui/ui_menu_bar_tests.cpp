@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Headless menu-bar navigation, system-key routing, and recursive accelerator tests.
 
@@ -20,8 +19,8 @@ namespace
 	class fixed_measure final : public render::measure_context
 	{
 	public:
-		core::sizei measure_text(const std::string_view text, const render::font_face, const render::text_style, const int,
-		                         const int = 0) override
+		core::sizei measure_text(const std::string_view text, const render::font_face, const render::text_style,
+		                         const int, const int = 0) override
 		{
 			return {static_cast<int>(text.size()) * 8, 20};
 		}
@@ -49,14 +48,11 @@ namespace
 	public:
 		int key_count = 0;
 
-		explicit key_probe(const bool typing)
-		{
-			traits.typing = typing;
-		}
+		explicit key_probe(const bool typing) { traits.typing = typing; }
 
 		core::sizei measure_content(render::measure_context&, const int) const override { return {120, 24}; }
 		void paint(render::draw_context&, const bool) const override {}
-		bool on_key(const int, const platform::key_state) override
+		bool on_key(const char32_t, const platform::key_state) override
 		{
 			++key_count;
 			return false;
@@ -86,16 +82,21 @@ namespace
 		void capture_pointer(bool) override {}
 		void set_cursor(platform::cursor) override {}
 		core::pointi client_to_screen(const core::pointi loc) const override { return loc + core::pointi{100, 200}; }
-		void track_menu(core::recti, const std::vector<ui::command_ptr>& commands) override { menus.push_back(commands); }
-		ui::frame_ptr create_popup(const ui::frame_host_weak_ptr&, const render::color_style&) override { return nullptr; }
+		void track_menu(core::recti, const std::vector<ui::command_ptr>& commands) override
+		{
+			menus.push_back(commands);
+		}
+		ui::frame_ptr create_popup(const ui::frame_host_weak_ptr&, const render::color_style&) override
+		{
+			return nullptr;
+		}
 		std::shared_ptr<ui::frame_host> listener() const override { return events; }
 		void text_input(bool, core::recti) override {}
 		void caret_timer(bool, uint32_t) override {}
 		bool is_dialog() const override { return false; }
 		void close(bool) override {}
 
-		template <class T>
-		std::shared_ptr<T> add(const std::shared_ptr<T>& control, const core::recti bounds)
+		template <class T> std::shared_ptr<T> add(const std::shared_ptr<T>& control, const core::recti bounds)
 		{
 			events->roots.emplace_back(control, core::pointi{});
 			control->is_visible(true);
@@ -110,7 +111,10 @@ namespace
 		auto result = std::make_shared<ui::command>();
 		result->text = "Open";
 		result->kba.push_back({key, modifiers});
-		result->invoke = [&invoked] { invoked = true; };
+		result->invoke = [&invoked]
+		{
+			invoked = true;
+		};
 		return result;
 	}
 
@@ -118,7 +122,10 @@ namespace
 	{
 		auto result = std::make_shared<ui::command>();
 		result->text = text;
-		result->menu = [items = std::move(items)] { return items; };
+		result->menu = [items = std::move(items)]
+		{
+			return items;
+		};
 		return result;
 	}
 
@@ -131,8 +138,8 @@ namespace
 
 	void press_alt(test_host& host)
 	{
-		assert_equal(true, host.input->system_key(static_cast<int>(platform::keys::ALT), {}, true), "Alt down");
-		assert_equal(true, host.input->system_key(static_cast<int>(platform::keys::ALT), {}, false), "Alt up");
+		assert_equal(true, host.input->system_key(platform::keys::ALT, {}, true), "Alt down");
+		assert_equal(true, host.input->system_key(platform::keys::ALT, {}, false), "Alt up");
 	}
 
 	void should_dispatch_nested_accelerators_and_numpad()
@@ -170,9 +177,9 @@ namespace
 		bool invoked = false;
 		test_host host;
 		host.add(ui::make_menu_bar({make_menu("&Speed", {make_leaf(U'S', 0, invoked)})}), {0, 0, 320, 32});
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, true);
-		host.input->system_key(static_cast<int>(platform::keys::F4), alt_key(), true);
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, false);
+		host.input->system_key(platform::keys::ALT, {}, true);
+		host.input->system_key(platform::keys::F4, alt_key(), true);
+		host.input->system_key(platform::keys::ALT, {}, false);
 		assert_equal(0, static_cast<int>(host.menus.size()), "Alt+F4 did not open a mnemonic title");
 		assert_equal(false, host.input->in_system_mode(), "Alt+F4 did not enter menu mode");
 	}
@@ -181,9 +188,9 @@ namespace
 	{
 		test_host host;
 		host.add(ui::make_menu_bar({make_menu("&File", {std::make_shared<ui::command>()})}), {0, 0, 320, 32});
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, true);
-		host.input->key_down(static_cast<int>(platform::keys::RETURN), {});
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, false);
+		host.input->system_key(platform::keys::ALT, {}, true);
+		host.input->key_down(platform::keys::RETURN, {});
+		host.input->system_key(platform::keys::ALT, {}, false);
 		assert_equal(false, host.input->in_system_mode(), "Alt+Enter did not enter menu mode");
 	}
 
@@ -191,9 +198,9 @@ namespace
 	{
 		test_host host;
 		host.add(ui::make_menu_bar({make_menu("&File", {std::make_shared<ui::command>()})}), {0, 0, 320, 32});
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, true);
+		host.input->system_key(platform::keys::ALT, {}, true);
 		host.input->mouse_down({300, 300}, {});
-		host.input->system_key(static_cast<int>(platform::keys::ALT), {}, false);
+		host.input->system_key(platform::keys::ALT, {}, false);
 		assert_equal(false, host.input->in_system_mode(), "Alt+click did not enter menu mode");
 	}
 
@@ -205,6 +212,40 @@ namespace
 		assert_equal(true, host.input->in_system_mode(), "first Alt tap enters menu mode");
 		press_alt(host);
 		assert_equal(false, host.input->in_system_mode(), "second Alt tap leaves menu mode");
+	}
+
+	// Windows reports AltGr as Ctrl+Alt, and a native menu bar answers neither: AltGr+F types a character in some
+	// layouts, and a tap of AltGr alone types nothing.
+	void should_not_open_menus_for_ctrl_alt()
+	{
+		auto asked = 0;
+		const auto file = std::make_shared<ui::command>();
+		file->text = "&File";
+		file->menu = [&asked]
+		{
+			++asked;
+			return std::vector<ui::command_ptr>{};
+		};
+
+		test_host host;
+		host.add(ui::make_menu_bar({file}), {0, 0, 320, 32});
+		platform::key_state control;
+		control.control = true;
+		platform::key_state control_alt = control;
+		control_alt.alt = true;
+
+		host.input->system_key(platform::keys::ALT, control_alt, true);
+		host.input->system_key(U'F', control_alt, true);
+		assert_equal(0, asked, "Ctrl+Alt+F opens no menu");
+		host.input->system_key(platform::keys::ALT, control, false);
+		assert_equal(false, host.input->in_system_mode(), "and letting Alt go with Ctrl held enters no menu mode");
+
+		host.input->system_key(platform::keys::ALT, control_alt, true);
+		host.input->system_key(platform::keys::ALT, control, false);
+		assert_equal(false, host.input->in_system_mode(), "nor does a tap of AltGr alone");
+
+		host.input->system_key(U'F', alt_key(), true);
+		assert_equal(1, asked, "while Alt+F opens the menu it marks");
 	}
 
 	void should_keep_editor_focus_when_clicking_title()
@@ -223,12 +264,12 @@ namespace
 		const auto editor = host.add(std::make_shared<key_probe>(true), {0, 40, 320, 80});
 		host.add(ui::make_menu_bar({make_menu("&File", {std::make_shared<ui::command>()})}), {0, 0, 320, 32});
 		host.input->focus(editor);
-		host.input->system_key(static_cast<int>(platform::keys::F10), {}, true);
+		host.input->system_key(platform::keys::F10, {}, true);
 		assert_equal(true, host.input->focused() == editor, "F10 menu mode keeps editor focus");
-		host.input->system_key(static_cast<int>(platform::keys::ESCAPE), {}, true);
-		host.input->system_key(static_cast<int>(platform::keys::F10), {}, true);
-		host.input->system_key(static_cast<int>(U'Z'), {}, true);
-		host.input->system_key(static_cast<int>(platform::keys::DOWN), {}, true);
+		host.input->system_key(platform::keys::ESCAPE, {}, true);
+		host.input->system_key(platform::keys::F10, {}, true);
+		host.input->system_key(U'Z', {}, true);
+		host.input->system_key(platform::keys::DOWN, {}, true);
 		assert_equal(0, editor->key_count, "menu mode swallowed Escape, letters and Down");
 	}
 
@@ -241,9 +282,9 @@ namespace
 		test_host host;
 		host.add(ui::make_menu_bar({make_menu("&File", {first_item}), make_menu("&View", {second_item})}),
 		         {0, 0, 320, 32});
-		host.input->system_key(static_cast<int>(platform::keys::F10), {}, true);
-		host.input->system_key(static_cast<int>(platform::keys::RIGHT), {}, true);
-		host.input->system_key(static_cast<int>(platform::keys::DOWN), {}, true);
+		host.input->system_key(platform::keys::F10, {}, true);
+		host.input->system_key(platform::keys::RIGHT, {}, true);
+		host.input->system_key(platform::keys::DOWN, {}, true);
 		assert_equal(1, static_cast<int>(host.menus.size()), "Right moved to the next title");
 		assert_equal(true, host.menus.front().front() == second_item, "next title opened its menu");
 
@@ -262,14 +303,14 @@ namespace
 			core::recti menu_work_area(core::recti) override { return {0, 0, 1000, 800}; }
 			void run_menu_loop(ui::menu_session& session) override
 			{
-				session.key_down(static_cast<int>(platform::keys::DOWN), {});
-				assert_equal(true, session.takes_horizontal_key(static_cast<int>(platform::keys::RIGHT)),
+				session.key_down(platform::keys::DOWN, {});
+				assert_equal(true, session.takes_horizontal_key(platform::keys::RIGHT),
 				             "Right belongs to a submenu row");
-				session.key_down(static_cast<int>(platform::keys::RIGHT), {});
+				session.key_down(platform::keys::RIGHT, {});
 				submenu_opened = session.popups().size() == 2;
-				assert_equal(true, session.takes_horizontal_key(static_cast<int>(platform::keys::LEFT)),
+				assert_equal(true, session.takes_horizontal_key(platform::keys::LEFT),
 				             "Left belongs to an open submenu");
-				session.key_down(static_cast<int>(platform::keys::LEFT), {});
+				session.key_down(platform::keys::LEFT, {});
 				submenu_closed = session.popups().size() == 1;
 				session.cancel();
 			}
@@ -286,11 +327,13 @@ namespace
 
 void register_ui_menu_bar_tests(test_registry& tests)
 {
-	tests.add("Should dispatch nested accelerators and normalize numpad"s, should_dispatch_nested_accelerators_and_numpad);
+	tests.add("Should dispatch nested accelerators and normalize numpad"s,
+	          should_dispatch_nested_accelerators_and_numpad);
 	tests.add("Should reject Alt+F4 as a mnemonic"s, should_not_open_speed_for_alt_f4);
 	tests.add("Should reject Alt+Enter as a menu tap"s, should_not_enter_menu_mode_after_alt_enter);
 	tests.add("Should reject Alt+click as a menu tap"s, should_not_enter_menu_mode_after_alt_click);
 	tests.add("Should toggle menu mode with two Alt taps"s, should_toggle_menu_mode_with_two_alt_taps);
+	tests.add("Should not open menus for Ctrl+Alt"s, should_not_open_menus_for_ctrl_alt);
 	tests.add("Should preserve editor focus on title click"s, should_keep_editor_focus_when_clicking_title);
 	tests.add("Should swallow menu keys before typing controls"s, should_swallow_menu_keys_before_typing_control);
 	tests.add("Should preserve popup horizontal navigation"s, should_move_titles_and_preserve_popup_horizontal_keys);

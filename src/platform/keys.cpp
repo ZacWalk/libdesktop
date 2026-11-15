@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Portable keyboard label and accelerator formatting.
 
@@ -14,8 +13,7 @@ namespace
 {
 	bool is_not_virt_key(const int key)
 	{
-		return (key >= '0' && key <= '9') ||
-			(key >= 'A' && key <= 'Z');
+		return (key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z');
 	}
 }
 
@@ -70,7 +68,8 @@ std::string_view platform::keys::format(const char32_t key)
 	return "?";
 }
 
-std::string platform::format_keyboard_accelerator(const std::vector<platform::keyboard_accelerator_t>& keyboard_accelerators)
+std::string platform::format_keyboard_accelerator(
+	const std::vector<platform::keyboard_accelerator_t>& keyboard_accelerators)
 {
 	constexpr auto control = platform::keyboard_accelerator_t::control;
 	constexpr auto shift = platform::keyboard_accelerator_t::shift;

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The drawn controls and menu, driven without a window: a host stands in for the window layer,
 // text is 8 pixels a byte and 20 high so positions are arithmetic, and the models the controls edit
@@ -19,7 +18,11 @@
 
 using namespace std::literals;
 
+#include <condition_variable>
+#include <format>
+#include <mutex>
 #include <set>
+#include <thread>
 
 namespace
 {
@@ -29,9 +32,7 @@ namespace
 		std::string text;
 		int* updates = nullptr;
 
-		explicit fixed_layout(int& update_count) : updates(&update_count)
-		{
-		}
+		explicit fixed_layout(int& update_count) : updates(&update_count) {}
 
 		void update(const std::string_view text_in, render::text_style) override
 		{
@@ -61,12 +62,11 @@ namespace
 		int prefix_measures = 0;
 
 		core::sizei measure_text(const std::string_view text, render::font_face, const render::text_style style,
-		                   const int cx, int) override
+		                         const int cx, int) override
 		{
 			++prefix_measures;
 			const auto natural = static_cast<int>(text.size()) * 8;
-			const auto wraps = style == render::text_style::multiline ||
-				style == render::text_style::multiline_center;
+			const auto wraps = style == render::text_style::multiline || style == render::text_style::multiline_center;
 			const auto lines = wraps && cx > 0 ? std::max(1, (natural + cx - 1) / cx) : 1;
 			return {std::min(std::max(cx, 1), natural), 20 * lines};
 		}
@@ -87,6 +87,8 @@ namespace
 		bool visible = false;
 		bool destroyed = false;
 		int invalidations = 0;
+		// What draws in it and is given its pointer, as a window would give it.
+		ui::frame_host_weak_ptr content;
 
 		void destroy() override
 		{
@@ -132,10 +134,7 @@ namespace
 			focus.emplace_back(has_focus, child);
 		}
 
-		void command_hover(const ui::command_ptr& c, core::recti) override
-		{
-			hovered.push_back(c);
-		}
+		void command_hover(const ui::command_ptr& c, core::recti) override { hovered.push_back(c); }
 	};
 
 	// The window layer, as the controls see it: client pixels map to the screen 1000 across and 500 down.
@@ -159,18 +158,12 @@ namespace
 		bool caption = false;
 		core::recti caret;
 
-		test_host() : input(std::make_shared<ui::input_manager>(this))
-		{
-		}
+		test_host() : input(std::make_shared<ui::input_manager>(this)) {}
 
-		~test_host() override
-		{
-			input->detach();
-		}
+		~test_host() override { input->detach(); }
 
 		// A control at the root of the window's tree, found by its input manager as a layout finds it.
-		template <class T>
-		std::shared_ptr<T> add(std::shared_ptr<T> c)
+		template <class T> std::shared_ptr<T> add(std::shared_ptr<T> c)
 		{
 			events->roots.emplace_back(c, core::pointi{});
 			input->layout();
@@ -193,8 +186,9 @@ namespace
 			return add(ui::make_toolbar(styles, buttons));
 		}
 
-		ui::button_ptr create_button(const icon_index icon, const std::string_view title, const std::string_view details,
-		                             std::function<void()> invoke, const bool default_button)
+		ui::button_ptr create_button(const icon_index icon, const std::string_view title,
+		                             const std::string_view details, std::function<void()> invoke,
+		                             const bool default_button)
 		{
 			return add(ui::make_button(icon, title, details, std::move(invoke), default_button));
 		}
@@ -205,7 +199,8 @@ namespace
 			return add(ui::make_check_button(val, text, is_radio, std::move(changed), radio_group));
 		}
 
-		ui::date_time_control_ptr create_date_time_control(const core::date_t val, std::function<void(core::date_t)> changed,
+		ui::date_time_control_ptr create_date_time_control(const core::date_t val,
+		                                                   std::function<void(core::date_t)> changed,
 		                                                   const bool include_time)
 		{
 			return add(ui::make_date_time_control(val, std::move(changed), include_time));
@@ -264,9 +259,10 @@ namespace
 			menu_bounds.push_back(screen_bounds);
 		}
 
-		ui::frame_ptr create_popup(const ui::frame_host_weak_ptr&, const render::color_style&) override
+		ui::frame_ptr create_popup(const ui::frame_host_weak_ptr& content, const render::color_style&) override
 		{
 			auto popup = std::make_shared<recording_frame>();
+			popup->content = content;
 			popups.push_back(popup);
 			return popup;
 		}
@@ -294,15 +290,9 @@ namespace
 
 		bool presents_caption_button() const override { return caption; }
 
-		void type(const std::string_view text) const
-		{
-			input->text_input(text);
-		}
+		void type(const std::string_view text) const { input->text_input(text); }
 
-		bool key(const char32_t k, const platform::key_state keys = {}) const
-		{
-			return input->key_down(static_cast<int>(k), keys);
-		}
+		bool key(const char32_t k, const platform::key_state keys = {}) const { return input->key_down(k, keys); }
 
 		void click(const core::pointi loc, const platform::key_state keys = {}) const
 		{
@@ -351,11 +341,12 @@ namespace
 		{
 			ui::style::install({});
 			_ctx = render::create_software_draw_context(render::create_text_engine(render::default_font_size), _target,
-			                                        render::default_font_size);
+			                                            render::default_font_size);
 		}
 
 		// A set's controls, over a host's colours.
-		painted_canvas(test_host& host, const core::sizei extent, const render::color_style& colors) : painted_canvas(extent)
+		painted_canvas(test_host& host, const core::sizei extent, const render::color_style& colors) :
+			painted_canvas(extent)
 		{
 			_ctx->colors = colors;
 			host.metrics = _ctx.get();
@@ -395,7 +386,8 @@ namespace
 			auto result = 0;
 			for (auto y = r.top; y < r.bottom; ++y)
 			{
-				for (auto x = r.left; x < r.right; ++x) if (pixel(x, y) == rgb) ++result;
+				for (auto x = r.left; x < r.right; ++x)
+					if (pixel(x, y) == rgb) ++result;
 			}
 			return result;
 		}
@@ -407,7 +399,8 @@ namespace
 		auto result = 0;
 		for (const auto shift : {0, 8, 16})
 		{
-			result = std::max(result, std::abs(static_cast<int>(a >> shift & 0xff) - static_cast<int>(b >> shift & 0xff)));
+			result = std::max(result,
+			                  std::abs(static_cast<int>(a >> shift & 0xff) - static_cast<int>(b >> shift & 0xff)));
 		}
 		return result;
 	}
@@ -459,11 +452,14 @@ static void should_edit_single_line_text()
 	assert_equal_strict("keep selection", edit.text(), "failed cut preserves text");
 	assert_equal(true, edit.has_selection(), "failed cut preserves selection");
 	std::string cut_text;
-	assert_equal(true, edit.cut_to_clipboard([&cut_text](const std::string_view value)
+	assert_equal(true,
+	             edit.cut_to_clipboard(
+					 [&cut_text](const std::string_view value)
 	{
 		cut_text = value;
 		return true;
-	}), "successful cut is reported");
+	}),
+	             "successful cut is reported");
 	assert_equal_strict("selection", cut_text, "cut publishes selection before erasing");
 	assert_equal_strict("keep ", edit.text(), "successful cut erases selection");
 
@@ -521,9 +517,10 @@ static void should_edit_a_segmented_date()
 		assert_equal(true, mdy.segments() == std::vector{seg::month, seg::day, seg::year}, "month first");
 
 		const ui::date_edit_model ymd(ui::date_field_order::ymd, true);
-		assert_equal(true, ymd.segments() == std::vector{
-			             seg::year, seg::month, seg::day, seg::hour, seg::minute, seg::second
-		             }, "year first, and a clock is always most significant first");
+		assert_equal(true,
+		             ymd.segments() ==
+		                 std::vector{seg::year, seg::month, seg::day, seg::hour, seg::minute, seg::second},
+		             "year first, and a clock is always most significant first");
 	}
 
 	ui::date_edit_model m(ui::date_field_order::dmy, true);
@@ -747,7 +744,10 @@ static void should_place_the_caret_where_it_is_pressed()
 	host.place(edit, {0, 0, 300, 28}, true);
 
 	// The text starts 4 pixels in, and every byte is 8 wide.
-	const auto at = [](const int offset) { return core::pointi{4 + offset * 8, 14}; };
+	const auto at = [](const int offset)
+	{
+		return core::pointi{4 + offset * 8, 14};
+	};
 
 	host.input->mouse_down(at(6), {});
 	host.input->mouse_move(at(11));
@@ -766,14 +766,20 @@ static void should_place_the_caret_where_it_is_pressed()
 	assert_equal_strict("Oh hi", edit->window_text(), "a double press selects a word");
 
 	// A press within a character of more than one byte lands on the nearer side of it, never inside it.
-	edit->window_text("A\xc3\xa9" "B");
+	edit->window_text("A\xc3\xa9"
+	                  "B");
 	host.click({4 + 15, 14});
 	host.type("x");
-	assert_equal_strict("Ax\xc3\xa9" "B", edit->window_text(), "nearer its start, before it");
-	edit->window_text("A\xc3\xa9" "B");
+	assert_equal_strict("Ax\xc3\xa9"
+	                    "B",
+	                    edit->window_text(), "nearer its start, before it");
+	edit->window_text("A\xc3\xa9"
+	                  "B");
 	host.click({4 + 17, 14});
 	host.type("x");
-	assert_equal_strict("A\xc3\xa9" "xB", edit->window_text(), "nearer its end, after it");
+	assert_equal_strict("A\xc3\xa9"
+	                    "xB",
+	                    edit->window_text(), "nearer its end, after it");
 }
 
 // The address and filter boxes select everything when they take the focus, and the press that gave
@@ -801,12 +807,12 @@ static void should_keep_the_selection_a_focusing_press_made()
 static void should_offer_keys_to_the_owner_first()
 {
 	test_host host;
-	std::vector<int> offered;
+	std::vector<char32_t> offered;
 	ui::edit_styles styles;
-	styles.capture_key_down = [&offered](const int key, platform::key_state)
+	styles.capture_key_down = [&offered](const char32_t key, platform::key_state)
 	{
 		offered.push_back(key);
-		return key == static_cast<int>(platform::keys::RETURN);
+		return key == platform::keys::RETURN;
 	};
 
 	const auto edit = host.create_edit(styles, "abc", {});
@@ -816,7 +822,7 @@ static void should_offer_keys_to_the_owner_first()
 	assert_equal(true, host.key(platform::keys::RETURN), "a key the owner takes is taken");
 	assert_equal(true, host.key(platform::keys::LEFT), "and the edit still edits with the rest");
 	assert_equal(2_z, offered.size(), "the owner saw both");
-	assert_equal(true, offered.front() == static_cast<int>(platform::keys::RETURN), "in the order they came");
+	assert_equal(true, offered.front() == platform::keys::RETURN, "in the order they came");
 }
 
 // Selection offsets count the bytes of the UTF-8 text, and a negative offset is its end. One that falls
@@ -897,8 +903,7 @@ static void should_wrap_lines_and_move_between_them()
 	host.key(platform::keys::UP);
 	host.key(platform::keys::END);
 	host.type("Z");
-	assert_equal_strict("aaa bbbZ YcXcc", edit->window_text(),
-	                    "End stops before the space a line wrapped at");
+	assert_equal_strict("aaa bbbZ YcXcc", edit->window_text(), "End stops before the space a line wrapped at");
 }
 
 static void should_hit_test_the_last_trailing_spelling_character()
@@ -946,7 +951,8 @@ static void should_offer_spelling_suggestions_over_a_misspelled_word()
 
 	edit->window_text("teh");
 	const auto add = ui::probe_edit_context_commands(edit, {4 + 8, 15});
-	const auto add_word = std::ranges::find_if(add, [](const ui::command_ptr& c) { return c && c->text == "Add 'teh'"; });
+	const auto add_word = std::ranges::find_if(add,
+	                                           [](const ui::command_ptr& c) { return c && c->text == "Add 'teh'"; });
 	assert_equal(true, add_word != add.end(), "a word can be added to the dictionary");
 	(*add_word)->invoke();
 	assert_equal(1_z, dictionary.added.size(), "and the dictionary is given it");
@@ -984,6 +990,301 @@ static void should_shape_edit_text_once_per_change()
 	const auto settled = mc.layout_updates;
 	edit->window_text(edit->window_text());
 	assert_equal(settled, mc.layout_updates, "an unchanged text is not shaped again");
+}
+
+// The list of suggestions shows eight rows at a time and scrolls to show the row the keys choose, and with the
+// wheel and its scrollbar, so every suggestion it holds can be reached and chosen.
+static void should_scroll_a_list_of_suggestions_to_what_the_keys_choose()
+{
+	test_host host;
+	ui::edit_styles styles;
+	for (auto i = 0; i < 20; ++i) styles.auto_complete_list.push_back(std::format("item {:02}", i));
+	const auto edit = host.create_edit(styles, {}, {});
+	host.place(edit, {0, 0, 200, 28}, true);
+	edit->focus();
+
+	// A row is a line and 6 pixels, inside a border of one.
+	const auto row_y = [](const int shown)
+	{
+		return 1 + shown * 26 + 13;
+	};
+	const auto open = [&host, &edit]
+	{
+		edit->window_text({});
+		host.type("i");
+		return host.popups.empty() ? nullptr : host.popups.front()->content.lock();
+	};
+
+	auto list = open();
+	assert_equal(true, list != nullptr && host.popups.front()->visible, "typing drops the list down");
+	assert_equal(8 * 26 + 2, host.popups.front()->bounds.height(), "with room for eight of its twenty rows");
+
+	for (auto i = 0; i < 12; ++i) host.key(platform::keys::DOWN);
+	list->on_mouse_left_button_down({20, row_y(7)}, {});
+	assert_equal_strict("item 11", edit->window_text(), "Down scrolls the twelfth row into the last place shown");
+
+	list = open();
+	host.key(platform::keys::NEXT);
+	host.key(platform::keys::NEXT);
+	host.key(platform::keys::RETURN);
+	assert_equal_strict("item 15", edit->window_text(), "Page Down moves a page of rows at a time");
+
+	list = open();
+	auto handled = false;
+	list->on_mouse_wheel({20, row_y(0)}, -120, {}, handled);
+	list->on_mouse_left_button_down({20, row_y(0)}, {});
+	assert_equal(true, handled, "the list takes the wheel");
+	assert_equal_strict("item 03", edit->window_text(), "and scrolls three rows a detent");
+
+	// The scrollbar runs down the right inside the border, its thumb a page long at the top.
+	list = open();
+	list->on_mouse_left_button_down({195, row_y(7)}, {});
+	list->on_mouse_left_button_down({20, row_y(0)}, {});
+	assert_equal_strict("item 08", edit->window_text(), "a press on the scrollbar below its thumb shows the next page");
+
+	// A drag of the thumb whose pointer is taken before the release ends there, and the rows follow the pointer.
+	list = open();
+	list->on_mouse_left_button_down({195, row_y(0)}, {});
+	list->on_mouse_move({20, row_y(2)}, false);
+	host.key(platform::keys::RETURN);
+	assert_equal_strict("item 02", edit->window_text(), "a move no longer tracked ends the thumb's drag");
+}
+
+// A typed path's folders are listed on a worker, once for each folder whatever is typed in it. Neither typing nor
+// letting go of the edit waits for a slow drive to answer: had either waited, the drive would have answered late.
+static void should_list_a_typed_path_s_folders_on_a_worker()
+{
+	struct slow_drive
+	{
+		std::mutex lock;
+		std::condition_variable answered;
+		bool answer = false;
+		bool late = false;
+		std::vector<std::string> asked;
+	};
+
+	const auto drive = std::make_shared<slow_drive>();
+	ui::test_folder_lister([drive](const std::string& folder)
+	{
+		std::unique_lock lock(drive->lock);
+		drive->asked.push_back(folder);
+		if (!drive->answered.wait_for(lock, 5s, [&drive] { return drive->answer; })) drive->late = true;
+		return std::vector<std::string>{"Albatross", "Alpha", "Beta"};
+	});
+	const core::scope_exit restore([] { ui::test_folder_lister({}); });
+
+	const auto asked = [&drive]
+	{
+		std::lock_guard lock(drive->lock);
+		return drive->asked.size();
+	};
+	const auto wait_until_asked = [&asked](const size_t count)
+	{
+		for (auto i = 0; i < 500 && asked() < count; ++i) std::this_thread::sleep_for(10ms);
+		return asked();
+	};
+	const auto answer = [&drive](const bool now)
+	{
+		{
+			std::lock_guard lock(drive->lock);
+			drive->answer = now;
+		}
+		drive->answered.notify_all();
+	};
+
+	test_host host;
+	ui::edit_styles styles;
+	styles.file_system_auto_complete = true;
+	const auto edit = host.create_edit(styles, {}, {});
+	host.place(edit, {0, 0, 300, 28}, true);
+	edit->focus();
+
+	host.type("C:\\Photos\\");
+	assert_equal(1_z, wait_until_asked(1), "the folder a path names is listed on a worker");
+	host.type("A");
+	host.type("l");
+	assert_equal(1_z, asked(), "and the names typed in it wait for that listing rather than list it again");
+	assert_equal(true, host.popups.empty(), "nothing is offered until it answers");
+
+	answer(true);
+	platform::pump_ui_tasks(5000);
+	assert_equal(true, !host.popups.empty() && host.popups.front()->visible, "its answer is offered as it arrives");
+	host.key(platform::keys::DOWN);
+	host.key(platform::keys::DOWN);
+	host.key(platform::keys::RETURN);
+	assert_equal_strict("C:\\Photos\\Alpha", edit->window_text(),
+	                    "offering the folders whose names start with what was typed after the separator");
+
+	answer(false);
+	auto other = host.create_edit(styles, {}, {});
+	host.place(other, {0, 40, 300, 68}, true);
+	other->focus();
+	host.type("D:\\");
+	assert_equal(2_z, wait_until_asked(2), "another folder is listed");
+	host.events->roots.pop_back();
+	host.input->layout();
+	other.reset();
+	answer(true);
+	platform::pump_ui_tasks(5000);
+
+	std::lock_guard lock(drive->lock);
+	assert_equal(false, drive->late, "and the drive answered every listing in time");
+}
+
+// While its list is open, an edit takes the keys that work the list before the window offers them to its
+// application: Up and Down, Escape, and Return once a row is chosen. Down drops whole a list the edit has.
+static void should_take_the_keys_of_an_open_list_first()
+{
+	test_host host;
+	ui::edit_styles styles;
+	styles.auto_complete_list = {"apple", "apricot"};
+	const auto edit = host.create_edit(styles, {}, {});
+	host.place(edit, {0, 0, 200, 28}, true);
+	edit->focus();
+	const auto claims = [&host](const char32_t key, const platform::key_state keys = {})
+	{
+		return host.input->claims_key(key, keys);
+	};
+
+	assert_equal(false, claims(platform::keys::RETURN), "with no list open, Return is the window's");
+	assert_equal(false, claims(platform::keys::ESCAPE), "as is Escape");
+	assert_equal(true, claims(platform::keys::DOWN), "while Down drops the list the edit has");
+
+	host.type("ap");
+	assert_equal(true, claims(platform::keys::DOWN) && claims(platform::keys::UP), "an open list takes Up and Down");
+	assert_equal(true, claims(platform::keys::ESCAPE), "and Escape, which closes it");
+	assert_equal(false, claims(platform::keys::RETURN), "but not Return before a row is chosen");
+	assert_equal(false, claims(platform::keys::TAB), "nor Tab");
+	host.key(platform::keys::DOWN);
+	assert_equal(true, claims(platform::keys::RETURN), "Return chooses the row the keys reached");
+	assert_equal(false, claims(platform::keys::DOWN, control_key()), "and a key held with Ctrl is the window's");
+
+	host.key(platform::keys::ESCAPE);
+	assert_equal(false, claims(platform::keys::ESCAPE), "a closed list takes nothing");
+	edit->window_text("zebra");
+	assert_equal(false, claims(platform::keys::DOWN), "nor Down where the list has nothing to show");
+}
+
+// A multi-line edit taller than it shows scrolls with the wheel, three lines a detent, as far as its text goes, when
+// the wheel is left to what holds the edit; and by the scrollbar it then shows, paged by a press beside the thumb and
+// dragged by the thumb. None of it moves the caret.
+static void should_scroll_a_multi_line_edit_with_the_wheel_and_its_scrollbar()
+{
+	test_host host;
+	ui::edit_styles styles;
+	styles.multi_line = true;
+	const auto edit = host.create_edit(styles, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", {});
+	// Four of the ten lines of 20, inside 4 pixels of padding.
+	host.place(edit, {0, 0, 200, 88}, true);
+	edit->select(2, 2);
+	const auto top = [&edit]
+	{
+		return ui::probe_edit_range_bounds(edit, 0, 1).top;
+	};
+
+	assert_equal(4, top(), "the text shows from its first line");
+	assert_equal(true, host.input->wheel({50, 40}, -120, {}), "the wheel scrolls the text");
+	assert_equal(4 - 60, top(), "three lines a detent");
+	host.input->wheel({50, 40}, -120, {});
+	assert_equal(4 - 120, top(), "as far as its last line");
+	assert_equal(false, host.input->wheel({50, 40}, -120, {}), "past which the wheel is left to what holds the edit");
+	assert_equal(true, host.input->wheel({50, 40}, 60, {}), "and back, part of a detent at a time");
+	assert_equal(4 - 90, top(), "by part of three lines");
+
+	// The thumb runs down the right inside the padding: 80 pixels of track for 200 of text, 80 of them shown.
+	host.click({192, 6});
+	assert_equal(4 - 30, top(), "a press above the thumb pages up a view less a line");
+	host.input->mouse_down({192, 30}, {});
+	host.input->mouse_move({192, 54});
+	host.input->mouse_up({192, 54}, {});
+	assert_equal(4 - 90, top(), "and the thumb drags the text with it");
+
+	host.type("X");
+	assert_equal_strict("1\nX2\n3\n4\n5\n6\n7\n8\n9\n10", edit->window_text(), "none of which moved the caret");
+	assert_equal(4 - 20, top(), "which typing brings back into view");
+}
+
+// Text given to a multi-line edit without the focus reads from its first line. Its caret, at the end, comes into
+// view with the focus from the keyboard; a press that gives it the focus puts the caret where it lands in the text
+// as shown.
+static void should_show_the_text_a_multi_line_edit_is_given_from_its_first_line()
+{
+	test_host host;
+	ui::edit_styles styles;
+	styles.multi_line = true;
+	const auto edit = host.create_edit(styles, {}, {});
+	host.place(edit, {0, 0, 200, 88}, true);
+	const auto top_of = [&edit](const size_t offset)
+	{
+		return ui::probe_edit_range_bounds(edit, offset, offset + 1).top;
+	};
+
+	edit->window_text("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	assert_equal(4, top_of(0), "text given to an edit without the focus shows from its start");
+
+	host.click({4 + 4, 4 + 20 + 10});
+	host.type("X");
+	assert_equal_strict("1\nX2\n3\n4\n5\n6\n7\n8\n9\n10", edit->window_text(),
+	                    "a press that gives it the focus puts the caret where it lands");
+
+	edit->window_text("a\nb\nc\nd\ne\nf\ng");
+	assert_equal(4 + 3 * 20, top_of(12), "text given while it has the focus shows its caret, at the end");
+
+	const auto other = host.create_edit({}, "other", {});
+	host.place(other, {0, 100, 200, 128}, true);
+	other->focus();
+	edit->window_text("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	assert_equal(4, top_of(0), "given again once the focus has gone, it reads from the start");
+	host.key(platform::keys::TAB, shift_key());
+	assert_equal(4 + 3 * 20, top_of(18), "and Tab back to it brings the caret into view");
+}
+
+// A press whose pointer is taken before the button is let go - by a message box, another window, the system - ends
+// with no release: a slider settles where it was dragged, a button presses nothing and an edit selects no further.
+// The window lets go of the pointer even for a control its owner let go of mid-press.
+static void should_end_a_press_whose_pointer_is_taken()
+{
+	test_host host;
+	std::vector<std::pair<int, bool>> reports;
+	auto pressed = 0;
+	const auto slider = host.create_slider(0, 100, [&reports](const int pos, const bool tracking)
+	{ reports.emplace_back(pos, tracking); });
+	const auto button = host.create_button(icon_index{}, "Go", {}, [&pressed] { ++pressed; }, false);
+	const auto edit = host.create_edit({}, "hello world", {});
+	host.place(slider, {0, 0, 200, 30}, true);
+	host.place(button, {0, 40, 100, 70}, true);
+	host.place(edit, {0, 80, 300, 108}, true);
+
+	host.input->mouse_down({100, 15}, {});
+	assert_equal(true, host.captured && !reports.empty() && reports.back().second,
+	             "a press on a slider drags it, holding the pointer");
+	host.input->cancel_capture();
+	assert_equal(false, host.captured, "taken, the pointer is let go of");
+	assert_equal(false, reports.back().second, "and the slider settles where it was, as a release settles it");
+	const auto settled = reports.size();
+	host.input->mouse_move({180, 15});
+	host.input->mouse_up({180, 15}, {});
+	assert_equal(settled, reports.size(), "after which the pointer moving and let go of drags it no further");
+
+	host.input->mouse_down({50, 55}, {});
+	host.input->cancel_capture();
+	host.input->mouse_up({50, 55}, {});
+	assert_equal(0, pressed, "a button whose press was taken presses nothing");
+
+	host.input->mouse_down({4, 94}, {});
+	host.input->cancel_capture();
+	host.input->mouse_move({4 + 5 * 8, 94});
+	host.type("X");
+	assert_equal_strict("Xhello world", edit->window_text(), "and an edit selects no further than the press");
+
+	auto gone = host.create_button(icon_index{}, "Gone", {}, {}, false);
+	host.place(gone, {0, 120, 100, 150}, true);
+	host.input->mouse_down({50, 135}, {});
+	assert_equal(true, host.captured, "a press holds the pointer");
+	host.events->roots.pop_back();
+	gone.reset();
+	host.input->mouse_up({50, 135}, {});
+	assert_equal(false, host.captured, "and its release lets go of it though the control has gone");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1127,9 +1428,17 @@ static void should_press_a_dialog_button_with_the_key_its_label_marks()
 	assert_equal(static_cast<int>('A'), static_cast<int>(cjk.key), "with the letter it brackets");
 	assert_equal(static_cast<int>('C'), static_cast<int>(ui::parse_mnemonic("x (&c)").key),
 	             "a marked letter is its key in either case");
-	assert_equal(0, static_cast<int>(ui::parse_mnemonic("&\xd0\x9e" "K").key),
+	assert_equal(0,
+	             static_cast<int>(ui::parse_mnemonic("&\xd0\x9e"
+	                                                 "K")
+	                                  .key),
 	             "a character no key code names marks nothing");
-	assert_equal_strict("\xd0\x9e" "K", ui::parse_mnemonic("&\xd0\x9e" "K").text, "but is still shown whole");
+	assert_equal_strict("\xd0\x9e"
+	                    "K",
+	                    ui::parse_mnemonic("&\xd0\x9e"
+	                                       "K")
+	                        .text,
+	                    "but is still shown whole");
 	assert_equal(0_z, ui::parse_mnemonic("&OK").offset, "the underline goes under the marked letter");
 	assert_equal(3_z, ui::parse_mnemonic("As &JPEG").offset, "wherever it is in the label");
 	assert_equal(7_z, cjk.offset, "counted in the shown text's bytes");
@@ -1140,9 +1449,8 @@ static void should_press_a_dialog_button_with_the_key_its_label_marks()
 	auto pressed = 0;
 	auto checked = false;
 	const auto edit = host.create_edit({}, {}, {});
-	const auto check = host.create_check_button(false, "&Remember", false,
-	                                                 [&checked](const bool v) { checked = v; },
-	                                                 ui::radio_group_default);
+	const auto check = host.create_check_button(false, "&Remember", false, [&checked](const bool v) { checked = v; },
+	                                            ui::radio_group_default);
 	const auto ok = host.create_button(icon_index{}, "&OK", {}, [&pressed] { ++pressed; }, true);
 	host.place(edit, {0, 0, 100, 20}, true);
 	host.place(check, {0, 30, 100, 50}, true);
@@ -1175,7 +1483,7 @@ static void should_check_one_radio_button_in_its_group()
 	const auto make = [&](const char name, const bool checked, const int group)
 	{
 		return host.create_check_button(checked, std::string(1, name), true,
-		                                     [&heard, name](const bool v) { heard.emplace_back(name, v); }, group);
+		                                [&heard, name](const bool v) { heard.emplace_back(name, v); }, group);
 	};
 
 	constexpr auto scope_group = 1;
@@ -1189,7 +1497,8 @@ static void should_check_one_radio_button_in_its_group()
 
 	host.click({50, 30});
 	assert_equal(2_z, heard.size(), "both members of the group hear");
-	assert_equal(true, heard[0] == std::pair{'a', false} && heard[1] == std::pair{'b', true}, "the old one off, the new on");
+	assert_equal(true, heard[0] == std::pair{'a', false} && heard[1] == std::pair{'b', true},
+	             "the old one off, the new on");
 
 	heard.clear();
 	host.key(platform::keys::UP);
@@ -1207,9 +1516,7 @@ static void should_report_slider_changes_while_dragging_and_once_released()
 	host.fixed.padding2 = 8;
 	std::vector<std::pair<int, bool>> changes;
 	const auto slider = host.create_slider(0, 100, [&changes](const int v, const bool tracking)
-	{
-		changes.emplace_back(v, tracking);
-	});
+	{ changes.emplace_back(v, tracking); });
 	host.place(slider, {0, 0, 100, 20}, true);
 	slider->set_pos(100);
 	assert_equal(true, changes.empty(), "setting the position reports nothing");
@@ -1288,11 +1595,17 @@ static void should_invoke_a_toolbar_command_on_a_release_over_its_button()
 	auto invoked = 0;
 	const auto run = std::make_shared<ui::command>();
 	run->icon = static_cast<icon_index>(0xE000);
-	run->invoke = [&invoked] { ++invoked; };
+	run->invoke = [&invoked]
+	{
+		++invoked;
+	};
 
 	const auto more = std::make_shared<ui::command>();
 	more->icon = static_cast<icon_index>(0xE001);
-	more->menu = [] { return std::vector<ui::command_ptr>{std::make_shared<ui::command>("Item", std::any{}, [] {}, false)}; };
+	more->menu = []
+	{
+		return std::vector<ui::command_ptr>{std::make_shared<ui::command>("Item", std::any{}, [] {}, false)};
+	};
 
 	ui::toolbar_styles styles;
 	styles.button_extent = {30, 40};
@@ -1317,13 +1630,45 @@ static void should_invoke_a_toolbar_command_on_a_release_over_its_button()
 	host.input->mouse_down({10 + 38 + 15, 20}, {});
 	assert_equal(1_z, host.menus.size(), "a button with a menu drops it on the press");
 	assert_equal_strict("Item", command_texts(host.menus.front()), "with the command's menu");
-	assert_equal(true, host.menu_bounds.front() == toolbar->button_bounds(more),
-	             "beside the button, in screen pixels");
+	assert_equal(true, host.menu_bounds.front() == toolbar->button_bounds(more), "beside the button, in screen pixels");
 	assert_equal(false, host.captured, "having let go of the pointer for it");
 
 	more->visible = false;
 	toolbar->update_button_state(true, false);
 	assert_equal(true, toolbar->measure_toolbar(host.fixed, 1000).cx == 30 + 8, "a hidden command takes no room");
+}
+
+// The button the keys act on is lit only while the toolbar has the keyboard. Another frame of the window taking the
+// keyboard - Tab moving on through the window - leaves none lit, as no key reaches it, and the same button is lit
+// again when the keyboard comes back.
+static void should_light_a_toolbar_s_button_only_while_it_has_the_keyboard()
+{
+	test_host host;
+	const auto command = [](const int icon)
+	{
+		auto c = std::make_shared<ui::command>();
+		c->icon = static_cast<icon_index>(icon);
+		c->invoke = [] {};
+		return c;
+	};
+	const auto first = command(0xE000);
+	const auto second = command(0xE001);
+
+	ui::toolbar_styles styles;
+	styles.button_extent = {30, 40};
+	const auto toolbar = host.create_toolbar(styles, {first, second});
+	host.place(toolbar, {10, 10, 70, 50}, true);
+
+	host.take_keyboard_focus();
+	toolbar->focus();
+	host.key(platform::keys::RIGHT);
+	assert_equal(true, host.events->hovered.back() == second, "the keys light the second button");
+
+	host.lose_keyboard_focus();
+	assert_equal(true, host.events->hovered.back() == nullptr, "which goes out when the keyboard goes elsewhere");
+
+	host.take_keyboard_focus();
+	assert_equal(true, host.events->hovered.back() == second, "and is lit again when it comes back");
 }
 
 // A bar measures its toolbars for the slots it gives them before a frame has found them, as a view's bar
@@ -1348,6 +1693,95 @@ static void should_measure_a_toolbar_s_text_before_a_frame_finds_it()
 	host.add(toolbar);
 	assert_equal(true, toolbar->measure_toolbar(host.fixed, 1000) == measured,
 	             "found by a frame, it is the size it was measured");
+}
+
+// Whoever works a toolbar from outside it - an agent, a test - reads its buttons as they show: each one's command,
+// name, state, and where it is in its frame, at which a press runs it.
+static void should_describe_a_toolbar_s_buttons_where_they_show()
+{
+	test_host host;
+	auto runs = 0;
+	const auto command = [](const int icon, const std::string_view text)
+	{
+		auto c = std::make_shared<ui::command>();
+		c->icon = static_cast<icon_index>(icon);
+		c->text = text;
+		c->invoke = [] {};
+		return c;
+	};
+	const auto run = command(0xE000, "&Run");
+	run->invoke = [&runs]
+	{
+		++runs;
+	};
+	const auto dimmed = command(0xE001, "Dimmed");
+	dimmed->enable = false;
+	const auto checked = command(0xE002, "Checked");
+	checked->checked = true;
+	checked->toolbar_text = "Shown";
+	const auto hidden = command(0xE003, "Hidden");
+	hidden->visible = false;
+
+	ui::toolbar_styles styles;
+	styles.button_extent = {30, 40};
+	const auto toolbar = host.create_toolbar(styles, {run, nullptr, dimmed, checked, hidden});
+	host.place(toolbar, {10, 10, 10 + 30 + 8 + 30 + 30, 50}, true);
+
+	const auto shown = toolbar->buttons();
+	assert_equal(4_z, shown.size(), "a button for each command, and none for the separator");
+	assert_equal(true, shown[0].command == run, "each with its command");
+	assert_equal_strict("Run", shown[0].text, "named without the marker");
+	assert_equal(true, shown[0].bounds == core::recti(10, 10, 40, 50), "where it is in its frame");
+	assert_equal(true, shown[0].visible && shown[0].enabled && !shown[0].checked, "shown, enabled and unchecked");
+	assert_equal(true, shown[1].bounds.left == 48 && !shown[1].enabled, "past the separator, a dimmed one says so");
+	assert_equal(true, shown[2].checked, "as does a checked one");
+	assert_equal_strict("Shown", shown[2].text, "named as the toolbar names it");
+	assert_equal(true, !shown[3].visible && shown[3].bounds.is_empty(), "and a hidden one is nowhere");
+
+	host.click(shown[0].bounds.center());
+	assert_equal(1, runs, "a press where a button is runs its command");
+}
+
+// An application counting what has been used hears of each control used: a button pressed, a toolbar's command run -
+// with that command - and an edit's text typed, but not text the application set itself.
+static void should_tell_the_application_of_each_control_used()
+{
+	test_host host;
+	std::vector<std::pair<const ui::control*, ui::command_ptr>> used;
+	ui::on_control_used([&used](const ui::control& c, const ui::command_ptr& command)
+	{ used.emplace_back(&c, command); });
+	const core::scope_exit stop_counting([] { ui::on_control_used({}); });
+
+	const auto button = host.create_button(icon_index{}, "Go", {}, [] {}, false);
+	const auto run = std::make_shared<ui::command>();
+	run->icon = static_cast<icon_index>(0xE000);
+	run->invoke = [] {};
+	ui::toolbar_styles styles;
+	styles.button_extent = {30, 40};
+	const auto toolbar = host.create_toolbar(styles, {run});
+	const auto edit = host.create_edit({}, {}, {});
+	host.place(button, {0, 0, 100, 20}, true);
+	host.place(toolbar, {0, 30, 30, 70}, true);
+	host.place(edit, {0, 80, 200, 108}, true);
+
+	host.click({50, 10});
+	assert_equal(1_z, used.size(), "a press on a button is told");
+	assert_equal(true, used.back().first == button.get() && !used.back().second, "with no command");
+
+	host.click({15, 50});
+	assert_equal(2_z, used.size(), "a press on a toolbar's button is told");
+	assert_equal(true, used.back().first == toolbar.get() && used.back().second == run, "with the command it ran");
+
+	edit->focus();
+	host.type("a");
+	assert_equal(3_z, used.size(), "typing into an edit is told");
+	assert_equal(true, used.back().first == edit.get(), "as the edit's");
+	edit->window_text("set");
+	assert_equal(3_z, used.size(), "text the application sets is not");
+
+	ui::on_control_used({});
+	host.click({50, 10});
+	assert_equal(3_z, used.size(), "and with no listener, nothing is told");
 }
 
 static void should_invoke_the_maximize_caption_button_only_on_a_release_over_its_press()
@@ -1387,14 +1821,18 @@ static void should_answer_as_the_caption_button_only_for_maximize()
 	const auto maximize = std::make_shared<ui::command>();
 	maximize->icon = static_cast<icon_index>(0xE001);
 	maximize->caption_maximize = true;
-	maximize->invoke = [&maximized] { ++maximized; };
+	maximize->invoke = [&maximized]
+	{
+		++maximized;
+	};
 
 	ui::toolbar_styles styles;
 	styles.button_extent = {40, 40};
 	const auto toolbar = host.create_toolbar(styles, {other, maximize});
 	host.place(toolbar, {0, 0, 80, 40}, true);
 
-	assert_equal(0, host.input->caption_button_at({60, 20}), "a frame that offers no snap layouts has no caption button");
+	assert_equal(0, host.input->caption_button_at({60, 20}),
+	             "a frame that offers no snap layouts has no caption button");
 
 	host.caption = true;
 	const auto id = host.input->caption_button_at({60, 20});
@@ -1419,8 +1857,7 @@ static void should_step_and_type_a_date_field()
 	test_host host;
 	std::vector<core::date_t> changes;
 	const auto date = host.create_date_time_control(core::date_t(2025, 8, 16, 18, 11, 56),
-	                                                     [&changes](const core::date_t d) { changes.push_back(d); },
-	                                                     false);
+	                                                [&changes](const core::date_t d) { changes.push_back(d); }, false);
 	host.place(date, {0, 0, 160, 28}, true);
 	const auto next = host.create_edit({}, {}, {});
 	host.place(next, {0, 40, 160, 68}, true);
@@ -1445,6 +1882,29 @@ static void should_step_and_type_a_date_field()
 	assert_equal(true, date->has_focus(), "through every segment");
 	host.key(platform::keys::TAB);
 	assert_equal(true, next->has_focus(), "from the last segment it leaves the field");
+}
+
+static void should_set_a_date_field_from_code()
+{
+	test_host host;
+	std::vector<core::date_t> changes;
+	const auto date = host.create_date_time_control(core::date_t(2025, 8, 16, 18, 11, 56),
+	                                                [&changes](const core::date_t d) { changes.push_back(d); }, true);
+	host.place(date, {0, 0, 240, 28}, true);
+	const auto next = host.create_edit({}, {}, {});
+	host.place(next, {0, 40, 160, 68}, true);
+	date->focus();
+	host.key(platform::keys::HOME);
+	host.type("1");
+
+	const auto chosen = core::date_t(1985, 7, 14, 10, 30, 0);
+	date->date(chosen);
+	assert_equal(true, date->date() == chosen, "the field holds the date given");
+	assert_equal(true, !changes.empty() && changes.back() == chosen, "and its owner hears of it");
+	assert_equal(true, date->window_text().find("1985") != std::string::npos, "and shows it");
+
+	next->focus();
+	assert_equal(true, date->date() == chosen, "a digit typed before it was set is not applied afterwards");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1491,7 +1951,7 @@ namespace
 		core::recti laid_out;
 
 		core::sizei measure(render::measure_context&, int) const override { return extent; }
-		void layout(render::measure_context&, const core::recti bounds) override { laid_out = bounds; }
+		void layout(render::measure_context&, const core::recti bounds_in) override { laid_out = bounds_in; }
 		void render(render::draw_context&, core::pointi) const override {}
 	};
 }
@@ -1504,19 +1964,21 @@ static void should_choose_a_menu_command_with_the_keyboard()
 	const auto hidden = std::make_shared<ui::command>("Hidden", std::any{}, [] {}, false);
 	hidden->visible = false;
 	const auto submenu = std::make_shared<ui::command>("More", std::any{}, nullptr, false);
-	submenu->menu = [&nested] { return std::vector<ui::command_ptr>{menu_command("Deep", nested)}; };
-
-	const std::vector<ui::command_ptr> commands = {
-		menu_command("First", first), nullptr, hidden, nullptr, menu_command("Second", second), submenu
+	submenu->menu = [&nested]
+	{
+		return std::vector<ui::command_ptr>{menu_command("Deep", nested)};
 	};
+
+	const std::vector<ui::command_ptr> commands = {menu_command("First", first),   nullptr, hidden, nullptr,
+	                                               menu_command("Second", second), submenu};
 
 	test_menu_host host;
 	host.drive = [&host](ui::menu_session& session)
 	{
 		assert_equal(1_z, session.popups().size(), "the menu opens one popup");
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
@@ -1527,22 +1989,55 @@ static void should_choose_a_menu_command_with_the_keyboard()
 	host.popups.clear();
 	host.drive = [](ui::menu_session& session)
 	{
-		session.key_down(static_cast<int>(platform::keys::END), {});
-		session.key_down(static_cast<int>(platform::keys::RIGHT), {});
+		session.key_down(platform::keys::END, {});
+		session.key_down(platform::keys::RIGHT, {});
 		assert_equal(2_z, session.popups().size(), "Right opens the submenu");
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(1, nested, "and Return chooses from it");
 
 	host.drive = [](ui::menu_session& session)
 	{
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::ESCAPE), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::ESCAPE, {});
 		assert_equal(true, session.done(), "Escape closes the menu");
 	};
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(0, first, "and chooses nothing");
+}
+
+// An open menu counts as active, as a running command does, and as an open menu beside it, so an application
+// can tell its commands being shown from one of them running: the chosen command runs once the menu has gone.
+static void should_tell_an_open_menu_from_the_command_it_runs()
+{
+	const auto commands_before = ui::command_active.load();
+	const auto menus_before = ui::menu_active.load();
+	auto open_commands = -1;
+	auto open_menus = -1;
+	auto running_commands = -1;
+	auto running_menus = -1;
+	const auto chosen = std::make_shared<ui::command>("Chosen", std::any{}, [&]
+	{
+		running_commands = ui::command_active.load();
+		running_menus = ui::menu_active.load();
+	}, false);
+
+	test_menu_host host;
+	host.drive = [&](ui::menu_session& session)
+	{
+		open_commands = ui::command_active.load();
+		open_menus = ui::menu_active.load();
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RETURN, {});
+	};
+
+	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, {chosen});
+	assert_equal(commands_before + 1, open_commands, "an open menu counts as active");
+	assert_equal(menus_before + 1, open_menus, "and as an open menu");
+	assert_equal(commands_before + 1, running_commands, "the command it runs is active");
+	assert_equal(menus_before, running_menus, "with the menu no longer open");
+	assert_equal(menus_before, ui::menu_active.load(), "and nothing is left raised");
 }
 
 static void should_open_a_menu_beside_its_button_and_inside_the_display()
@@ -1551,7 +2046,10 @@ static void should_open_a_menu_beside_its_button_and_inside_the_display()
 	const std::vector<ui::command_ptr> commands = {menu_command("One", invoked), menu_command("Two", invoked)};
 	test_menu_host host;
 	core::recti shown;
-	host.drive = [&host, &shown](ui::menu_session&) { shown = host.popups.back().first->bounds; };
+	host.drive = [&host, &shown](ui::menu_session&)
+	{
+		shown = host.popups.back().first->bounds;
+	};
 
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(true, shown.top == 120 && shown.left == 100, "below a button in the top half of its window");
@@ -1563,8 +2061,10 @@ static void should_open_a_menu_beside_its_button_and_inside_the_display()
 	assert_equal(true, shown.right == 740, "right-aligned to one in the right half");
 
 	ui::track_drawn_menu(host, core::recti(core::pointi{1910, 1030}, core::sizei{}), {0, 0, 800, 600}, commands);
-	assert_equal(true, host.work.contains(shown.top_left()) && shown.right <= host.work.right &&
-	             shown.bottom <= host.work.bottom, "a menu at a point near the corner stays on the display");
+	assert_equal(true,
+	             host.work.contains(shown.top_left()) && shown.right <= host.work.right &&
+	                 shown.bottom <= host.work.bottom,
+	             "a menu at a point near the corner stays on the display");
 	assert_equal(true, shown.right <= 1910 && shown.bottom <= 1030, "opening up and to the left of it");
 }
 
@@ -1577,13 +2077,19 @@ static void should_open_the_submenu_of_the_next_item_the_pointer_rests_on()
 	const auto submenu = [&invoked](const std::string_view text)
 	{
 		auto c = std::make_shared<ui::command>(text, std::any{}, nullptr, false);
-		c->menu = [&invoked] { return std::vector<ui::command_ptr>{menu_command("Item", invoked)}; };
+		c->menu = [&invoked]
+		{
+			return std::vector<ui::command_ptr>{menu_command("Item", invoked)};
+		};
 		return c;
 	};
 	const std::vector<ui::command_ptr> commands = {submenu("Colors"), submenu("Sizes"), menu_command("Plain", invoked)};
 
 	// Rows are 28 high under a 3 pixel border with this host's text.
-	const auto row = [](const int i) { return core::pointi{20, 3 + 28 * i + 14}; };
+	const auto row = [](const int i)
+	{
+		return core::pointi{20, 3 + 28 * i + 14};
+	};
 
 	test_menu_host host;
 	host.drive = [&host, &row](ui::menu_session& session)
@@ -1605,8 +2111,8 @@ static void should_open_the_submenu_of_the_next_item_the_pointer_rests_on()
 		// rather than the one whose submenu it is.
 		root->on_mouse_move(row(2), false);
 		root->on_mouse_leave(row(2));
-		session.key_down(static_cast<int>(platform::keys::LEFT), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::LEFT, {});
+		session.key_down(platform::keys::RETURN, {});
 		assert_equal(2_z, session.popups().size(), "so Return there opens that submenu again");
 		session.cancel();
 	};
@@ -1653,9 +2159,9 @@ static void should_choose_from_a_row_of_buttons_in_a_menu()
 	test_menu_host host;
 	host.drive = [](ui::menu_session& session)
 	{
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::RIGHT), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RIGHT, {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(1, copy, "Down reaches the row, Right moves to its second button and Return chooses it");
@@ -1674,9 +2180,9 @@ static void should_choose_from_a_row_of_buttons_in_a_menu()
 
 	host.drive = [](ui::menu_session& session)
 	{
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(1, rename, "the items after the row are a step down from it");
@@ -1697,21 +2203,25 @@ static void should_draw_a_row_of_buttons_as_a_command_bar_does()
 		const auto popup = host.popups.back().second.lock();
 		painted_canvas canvas(host.popups.back().first->bounds.extent());
 		const auto background = painted_canvas::rgb(ui::style::colors.menu_background);
-		const auto rule = painted_canvas::rgb(core::average(ui::style::colors.menu_background,
-		                                                  ui::style::colors.view_background));
+		const auto rule = painted_canvas::rgb(
+			core::average(ui::style::colors.menu_background, ui::style::colors.view_background));
 		const auto lit = painted_canvas::rgb(core::lighten(ui::style::colors.menu_background, 0.22f));
-		const auto ink = [&canvas, background](const core::recti r) { return r.width() * r.height() - canvas.count(r, background); };
+		const auto ink = [&canvas, background](const core::recti r)
+		{
+			return r.width() * r.height() - canvas.count(r, background);
+		};
 
 		// The buttons span 7 to 67, 67 to 127 and 127 to 187, from 3 to 65: a 10 pixel margin, an 18 pixel
 		// icon, a 4 pixel gap, a 20 pixel name and a 10 pixel margin.
 		canvas.paint(*popup);
-		assert_equal(true, canvas.pixel(67, 34) == rule && canvas.pixel(127, 34) == rule, "a line between each two buttons");
+		assert_equal(true, canvas.pixel(67, 34) == rule && canvas.pixel(127, 34) == rule,
+		             "a line between each two buttons");
 		assert_equal(true, canvas.pixel(67, 12) == background && canvas.pixel(67, 55) == background,
 		             "as tall as their icons and names");
 		assert_equal(true, ink({77, 35, 117, 55}) > 0, "the second button's name is under its icon");
 		assert_equal(0, ink({68, 3, 127, 35}), "and nothing is drawn above it but the icon it does not have");
 
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
+		session.key_down(platform::keys::DOWN, {});
 		canvas.paint(*popup);
 		assert_equal(true, canvas.pixel(10, 5) == lit && canvas.pixel(66, 64) == lit,
 		             "the selected button's whole share is lit");
@@ -1735,9 +2245,8 @@ static void should_choose_a_menu_item_by_its_marked_letter()
 	auto wrap = 0;
 	const auto wrap_command = menu_command("&Wrap lines", wrap);
 	wrap_command->checked = true;
-	const std::vector<ui::command_ptr> commands = {
-		menu_command("&Open...", open), menu_command("&Print", print), menu_command("&Paste", paste), wrap_command
-	};
+	const std::vector<ui::command_ptr> commands = {menu_command("&Open...", open), menu_command("&Print", print),
+	                                               menu_command("&Paste", paste), wrap_command};
 
 	const auto saved_icons = ui::chrome_icons();
 	const core::scope_exit restore_icons([saved_icons] { ui::set_chrome_icons(saved_icons); });
@@ -1763,7 +2272,7 @@ static void should_choose_a_menu_item_by_its_marked_letter()
 		session.key_down('P', {});
 		assert_equal(false, session.done(), "a letter two items mark selects rather than chooses");
 		session.key_down('P', {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(0, print, "the first is passed over");
@@ -1783,8 +2292,8 @@ static void should_not_say_why_a_menu_item_is_dimmed()
 	host.drive = [&host, &shown](ui::menu_session& session)
 	{
 		shown = host.popups.back().first->bounds;
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, {convert});
@@ -1815,14 +2324,93 @@ static void should_show_content_in_a_menu_without_choosing_it()
 		const auto popup = host.popups.back().second.lock();
 		popup->on_mouse_left_button_up({20, 20}, {});
 		assert_equal(false, session.done(), "a click on the content chooses nothing");
-		session.key_down(static_cast<int>(platform::keys::DOWN), {});
-		session.key_down(static_cast<int>(platform::keys::RETURN), {});
+		session.key_down(platform::keys::DOWN, {});
+		session.key_down(platform::keys::RETURN, {});
 	};
 
 	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
 	assert_equal(1, invoked, "Down passes over the content to the first command");
 	assert_equal(true, content->laid_out == core::recti(7, 7, shown.width() - 7, 47),
 	             "the content is laid out across the top of the menu, inside its border and inset");
+}
+
+// Whoever works a menu from outside it - an agent, a test - finds it open and reads its levels as they show: each
+// row's kind, its text without the marker, its keys and state, a row of buttons cell by cell, and where the level's
+// popup shows it; a submenu's level says which row it opened from. A press where a row shows works it as the
+// pointer would.
+static void should_describe_an_open_menu_where_its_popups_show_it()
+{
+	auto cut = 0;
+	auto copy = 0;
+	auto open = 0;
+	auto dimmed_runs = 0;
+	auto deep = 0;
+	const auto clipboard = std::make_shared<ui::command>();
+	clipboard->buttons = {menu_command("&Cut", cut), menu_command("&Copy", copy)};
+	const auto open_command = menu_command("&Open...", open);
+	open_command->keyboard_accelerator_text = "Ctrl+O";
+	open_command->checked = true;
+	const auto dimmed = menu_command("Dimmed", dimmed_runs);
+	dimmed->enable = false;
+	const auto more = std::make_shared<ui::command>("&More", std::any{}, nullptr, false);
+	more->menu = [&deep]
+	{
+		return std::vector<ui::command_ptr>{menu_command("Deep", deep)};
+	};
+	const std::vector<ui::command_ptr> commands = {clipboard, nullptr, open_command, dimmed, more};
+
+	assert_equal(true, ui::open_menu_session() == nullptr, "no menu is open before one is shown");
+
+	test_menu_host host;
+	host.drive = [&](ui::menu_session& session)
+	{
+		using kind = ui::menu_row_state::kind;
+		assert_equal(true, ui::open_menu_session() == &session, "the menu is found open while its loop runs");
+
+		auto levels = session.levels();
+		assert_equal(1_z, levels.size(), "it opens as one level");
+		const auto& first = levels.front();
+		assert_equal(true, first.popup == host.popups.front().first, "drawn in its popup");
+		assert_equal(-1, first.opened_from, "and opened from no row");
+		assert_equal(5_z, first.rows.size(), "a row for each command, and one for the separator");
+
+		const auto& buttons = first.rows[0];
+		assert_equal(true, buttons.type == kind::buttons && buttons.cells.size() == 2,
+		             "a row of buttons, cell by cell");
+		assert_equal_strict("Cut", buttons.cells[0].text, "each named without its marker");
+		assert_equal(true, buttons.cells[1].command == clipboard->buttons[1], "with its command");
+		assert_equal(true, buttons.cells[1].bounds.left >= buttons.cells[0].bounds.right, "beside the one before");
+		assert_equal(true, first.rows[1].type == kind::separator, "a separator");
+
+		const auto& open_row = first.rows[2];
+		assert_equal(true, open_row.type == kind::item && open_row.command == open_command, "an item and its command");
+		assert_equal_strict("Open...", open_row.text, "named without its marker");
+		assert_equal_strict("Ctrl+O", open_row.keys, "with its keys");
+		assert_equal(true, open_row.enabled && open_row.checked && !open_row.submenu, "and its state");
+		assert_equal(true, open_row.bounds.top >= buttons.bounds.bottom, "below the rows before it");
+		assert_equal(false, first.rows[3].enabled, "a dimmed item says so");
+		assert_equal(true, first.rows[4].submenu, "as does one opening a submenu");
+
+		const auto root = host.popups.front().second.lock();
+		const auto more_at = first.rows[4].bounds.center();
+		root->on_mouse_move(more_at, false);
+		root->on_mouse_left_button_down(more_at, {});
+		levels = session.levels();
+		assert_equal(2_z, levels.size(), "a press where the submenu's item shows opens it");
+		assert_equal(true, levels[0].rows[4].selected, "lighting the item");
+		assert_equal(4, levels[1].opened_from, "which the second level says it opened from");
+		assert_equal(true, levels[1].popup == host.popups.back().first, "drawn in a popup of its own");
+
+		const auto nested = host.popups.back().second.lock();
+		const auto deep_at = levels[1].rows.front().bounds.center();
+		nested->on_mouse_move(deep_at, false);
+		nested->on_mouse_left_button_down(deep_at, {});
+		nested->on_mouse_left_button_up(deep_at, {});
+	};
+
+	ui::track_drawn_menu(host, {100, 100, 140, 120}, {0, 0, 800, 600}, commands);
+	assert_equal(1, deep, "and a press where its item shows chooses it");
+	assert_equal(true, ui::open_menu_session() == nullptr, "after which no menu is open");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1990,8 +2578,10 @@ static void should_give_the_keyboard_back_to_the_frame_when_its_control_is_disab
 	assert_equal(false, edit->has_focus(), "a disabled edit gives up the focus");
 	assert_equal(true, host.input->focused() == nullptr, "which no control holds then");
 	assert_equal(1, host.keyboard_to_frame_count, "the window has it itself");
-	assert_equal(true, !host.events->focus.empty() && !host.events->focus.back().first &&
-	                   host.events->focus.back().second == edit, "and its host heard the edit lose it");
+	assert_equal(true,
+	             !host.events->focus.empty() && !host.events->focus.back().first &&
+	                 host.events->focus.back().second == edit,
+	             "and its host heard the edit lose it");
 }
 
 // The frame focusing itself - a press on its ground, or its owner giving it the keyboard - takes the focus
@@ -2102,7 +2692,7 @@ static void should_draw_every_control_into_the_software_canvas()
 	ui::style::install({});
 	const auto target = render::create_memory_present_target();
 	const auto ctx = render::create_software_draw_context(render::create_text_engine(render::default_font_size), target,
-	                                                  render::default_font_size);
+	                                                      render::default_font_size);
 	ctx->colors = {0x00202020, 0x00f0f0f0, 0x00c08040};
 
 	test_host host;
@@ -2119,12 +2709,8 @@ static void should_draw_every_control_into_the_software_canvas()
 	const auto toolbar = host.create_toolbar({}, {run});
 
 	const std::vector<std::pair<ui::control_ptr, core::recti>> placed = {
-		{button, {10, 10, 190, 50}},
-		{check, {10, 60, 190, 90}},
-		{slider, {10, 100, 190, 130}},
-		{edit, {10, 140, 190, 170}},
-		{date, {10, 180, 190, 210}},
-		{toolbar, {10, 220, 190, 260}},
+		{button, {10, 10, 190, 50}}, {check, {10, 60, 190, 90}},  {slider, {10, 100, 190, 130}},
+		{edit, {10, 140, 190, 170}}, {date, {10, 180, 190, 210}}, {toolbar, {10, 220, 190, 260}},
 	};
 
 	for (const auto& [c, r] : placed) host.place(c, r, true);
@@ -2170,7 +2756,8 @@ static void should_draw_every_control_into_the_software_canvas()
 	auto outside = 0;
 	for (auto y = 0; y < extent.cy; ++y)
 	{
-		for (auto x = 200; x < extent.cx; ++x) if (pixel(x, y) != background) ++outside;
+		for (auto x = 200; x < extent.cx; ++x)
+			if (pixel(x, y) != background) ++outside;
 	}
 	assert_equal(0, outside, "and nothing draws outside its bounds");
 }
@@ -2182,7 +2769,8 @@ static void should_draw_the_slider_handle_apart_from_the_panel_it_is_on()
 	ui::style::install({});
 	// The panels the application puts sliders on: dialogs and the edit view, the bars, groups and views.
 	const render::color_style panels[] = {
-		{ui::style::colors.dialog_background, ui::style::colors.dialog_text, ui::style::colors.dialog_selected_background},
+		{ui::style::colors.dialog_background, ui::style::colors.dialog_text,
+	     ui::style::colors.dialog_selected_background},
 		{ui::style::colors.toolbar_background, ui::style::colors.view_text, ui::style::colors.view_selected_background},
 		{ui::style::colors.group_background, ui::style::colors.view_text, ui::style::colors.view_selected_background},
 		{ui::style::colors.view_background, ui::style::colors.view_text, ui::style::colors.view_selected_background},
@@ -2240,6 +2828,33 @@ static void should_hide_the_selection_of_an_edit_that_loses_the_focus()
 	assert_equal(0, canvas.count({0, 40, 200, 70}, selection), "nor does one whose window lost the keyboard");
 }
 
+// Drawing a multi-line edit leaves its text where the wheel scrolled it, the caret out of view, until typing brings
+// the caret back. An edit with the focus was scrolled back to its caret each time it was drawn.
+static void should_leave_a_multi_line_edit_where_the_wheel_scrolled_it()
+{
+	test_host host;
+	painted_canvas canvas(host, {200, 140}, {0x00202020, 0x00f0f0f0, 0x00c08040});
+	ui::edit_styles styles;
+	styles.multi_line = true;
+	const auto edit = host.create_edit(styles, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12", {});
+	host.place(edit, {0, 0, 200, 100}, true);
+	edit->focus();
+	canvas.paint(host);
+	const auto top = [&edit]
+	{
+		return ui::probe_edit_range_bounds(edit, 0, 1).top;
+	};
+	const auto first = top();
+
+	assert_equal(true, host.input->wheel({50, 50}, -120, {}), "the wheel scrolls the edit with the focus");
+	const auto scrolled = top();
+	assert_equal(true, scrolled < first, "its text moving up from the caret");
+	canvas.paint(host);
+	assert_equal(scrolled, top(), "and drawing it leaves it there");
+	host.type("x");
+	assert_equal(first, top(), "until typing brings the caret back into view");
+}
+
 void register_render_controls_tests(test_registry& tests)
 {
 	tests.add("Should edit single-line text"s, should_edit_single_line_text);
@@ -2261,6 +2876,15 @@ void register_render_controls_tests(test_registry& tests)
 	tests.add("Should offer spelling suggestions over a misspelled word"s,
 	          should_offer_spelling_suggestions_over_a_misspelled_word);
 	tests.add("Should shape edit text once per change"s, should_shape_edit_text_once_per_change);
+	tests.add("Should scroll a list of suggestions to what the keys choose"s,
+	          should_scroll_a_list_of_suggestions_to_what_the_keys_choose);
+	tests.add("Should list a typed path's folders on a worker"s, should_list_a_typed_path_s_folders_on_a_worker);
+	tests.add("Should take the keys of an open list first"s, should_take_the_keys_of_an_open_list_first);
+	tests.add("Should scroll a multi-line edit with the wheel and its scrollbar"s,
+	          should_scroll_a_multi_line_edit_with_the_wheel_and_its_scrollbar);
+	tests.add("Should show the text a multi-line edit is given from its first line"s,
+	          should_show_the_text_a_multi_line_edit_is_given_from_its_first_line);
+	tests.add("Should end a press whose pointer is taken"s, should_end_a_press_whose_pointer_is_taken);
 	tests.add("Should move focus with Tab in creation order"s, should_move_focus_with_tab_in_creation_order);
 	tests.add("Should give the focus back only after the application had it"s,
 	          should_give_the_focus_back_only_after_the_application_had_it);
@@ -2274,27 +2898,38 @@ void register_render_controls_tests(test_registry& tests)
 	          should_report_slider_changes_while_dragging_and_once_released);
 	tests.add("Should invoke a toolbar command on a release over its button"s,
 	          should_invoke_a_toolbar_command_on_a_release_over_its_button);
+	tests.add("Should light a toolbar's button only while it has the keyboard"s,
+	          should_light_a_toolbar_s_button_only_while_it_has_the_keyboard);
 	tests.add("Should measure a toolbar's text before a frame finds it"s,
 	          should_measure_a_toolbar_s_text_before_a_frame_finds_it);
+	tests.add("Should describe a toolbar's buttons where they show"s,
+	          should_describe_a_toolbar_s_buttons_where_they_show);
+	tests.add("Should tell the application of each control used"s, should_tell_the_application_of_each_control_used);
 	tests.add("Should invoke the maximize caption button only on a release over its press"s,
 	          should_invoke_the_maximize_caption_button_only_on_a_release_over_its_press);
 	tests.add("Should answer as the caption button only for maximize"s,
 	          should_answer_as_the_caption_button_only_for_maximize);
 	tests.add("Should step and type a date field"s, should_step_and_type_a_date_field);
+	tests.add("Should set a date field from code"s, should_set_a_date_field_from_code);
 	tests.add("Should choose a menu command with the keyboard"s, should_choose_a_menu_command_with_the_keyboard);
+	tests.add("Should tell an open menu from the command it runs"s, should_tell_an_open_menu_from_the_command_it_runs);
 	tests.add("Should open a menu beside its button and inside the display"s,
 	          should_open_a_menu_beside_its_button_and_inside_the_display);
 	tests.add("Should open the submenu of the next item the pointer rests on"s,
 	          should_open_the_submenu_of_the_next_item_the_pointer_rests_on);
 	tests.add("Should draw the caption glyphs a size down"s, should_draw_the_caption_glyphs_a_size_down);
 	tests.add("Should choose from a row of buttons in a menu"s, should_choose_from_a_row_of_buttons_in_a_menu);
-	tests.add("Should draw a row of buttons as a command bar does"s, should_draw_a_row_of_buttons_as_a_command_bar_does);
+	tests.add("Should draw a row of buttons as a command bar does"s,
+	          should_draw_a_row_of_buttons_as_a_command_bar_does);
 	tests.add("Should not say why a menu item is dimmed"s, should_not_say_why_a_menu_item_is_dimmed);
 	tests.add("Should choose a menu item by its marked letter"s, should_choose_a_menu_item_by_its_marked_letter);
 	tests.add("Should show content in a menu without choosing it"s, should_show_content_in_a_menu_without_choosing_it);
+	tests.add("Should describe an open menu where its popups show it"s,
+	          should_describe_an_open_menu_where_its_popups_show_it);
 	tests.add("Should lay out controls as elements"s, should_lay_out_controls_as_elements);
 	tests.add("Should make controls apart from any window"s, should_make_controls_apart_from_any_window);
-	tests.add("Should disable the controls a disabled element holds"s, should_disable_the_controls_a_disabled_element_holds);
+	tests.add("Should disable the controls a disabled element holds"s,
+	          should_disable_the_controls_a_disabled_element_holds);
 	tests.add("Should tab in the order of the tree"s, should_tab_in_the_order_of_the_tree);
 	tests.add("Should give the keyboard back to the frame when its control goes"s,
 	          should_give_the_keyboard_back_to_the_frame_when_its_control_goes);
@@ -2310,4 +2945,6 @@ void register_render_controls_tests(test_registry& tests)
 	          should_draw_the_slider_handle_apart_from_the_panel_it_is_on);
 	tests.add("Should hide the selection of an edit that loses the focus"s,
 	          should_hide_the_selection_of_an_edit_that_loses_the_focus);
+	tests.add("Should leave a multi-line edit where the wheel scrolled it"s,
+	          should_leave_a_multi_line_edit_where_the_wheel_scrolled_it);
 }

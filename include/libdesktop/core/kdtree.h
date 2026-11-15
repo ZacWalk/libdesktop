@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: KD-tree spatial index over caller-owned points, with nearest-neighbor and rectangle
 // queries - the closest named place to a GPS coordinate, say, or the markers inside a map's visible
@@ -67,8 +66,8 @@ public:
 		_payloads.shrink_to_fit();
 	}
 
-	void emplace_back(const float x, const float y, const uint32_t offset, const uint32_t country,
-	                  const uint32_t id, const float population)
+	void emplace_back(const float x, const float y, const uint32_t offset, const uint32_t country, const uint32_t id,
+	                  const float population)
 	{
 		_points.emplace_back(kd_point{x, y});
 		_payloads.emplace_back(kd_payload{offset, country, id, population});
@@ -190,14 +189,11 @@ class kd_tree
 
 			while (true)
 			{
-				while (data.point(left).x < split_val)
-					left++;
+				while (data.point(left).x < split_val) left++;
 
-				while (data.point(right).x > split_val)
-					right--;
+				while (data.point(right).x > split_val) right--;
 
-				if (right < left)
-					break;
+				if (right < left) break;
 
 				if (core::equiv(data.point(left).x, data.point(right).x))
 				{
@@ -216,14 +212,11 @@ class kd_tree
 
 			while (true)
 			{
-				while (data.point(left).y < split_val)
-					left++;
+				while (data.point(left).y < split_val) left++;
 
-				while (data.point(right).y > split_val)
-					right--;
+				while (data.point(right).y > split_val) right--;
 
-				if (right < left)
-					break;
+				if (right < left) break;
 
 				if (core::equiv(data.point(left).y, data.point(right).y))
 				{
@@ -283,16 +276,14 @@ class kd_tree
 		// Nearer box first: it usually tightens closest_d2 enough to prune the other outright.
 		const auto near_first = d1 <= d2;
 
-		if ((near_first ? d1 : d2) < ti.closest_d2)
-			find_closest_to_pt(data, ti, near_first ? child1 : child2);
+		if ((near_first ? d1 : d2) < ti.closest_d2) find_closest_to_pt(data, ti, near_first ? child1 : child2);
 
-		if ((near_first ? d2 : d1) < ti.closest_d2)
-			find_closest_to_pt(data, ti, near_first ? child2 : child1);
+		if ((near_first ? d2 : d1) < ti.closest_d2) find_closest_to_pt(data, ti, near_first ? child2 : child1);
 	}
 
 	// Collect every point inside the axis-aligned rectangle [xmin,xmax]x[ymin,ymax].
-	void find_in_bounds(const kd_points& data, const float xmin, const float ymin, const float xmax,
-	                    const float ymax, std::vector<kd_coordinates_t>& out, const uint32_t index) const
+	void find_in_bounds(const kd_points& data, const float xmin, const float ymin, const float xmax, const float ymax,
+	                    std::vector<kd_coordinates_t>& out, const uint32_t index) const
 	{
 		const auto& node = _nodes[index];
 
@@ -339,16 +330,12 @@ public:
 		build_node(data, 0, data.size());
 	}
 
-	bool is_empty() const
-	{
-		return _nodes.empty();
-	}
+	bool is_empty() const { return _nodes.empty(); }
 
 	// `y_scale` weights the second axis before the distance is squared. A caller holding geographic
 	// degrees passes cos(latitude) so that longitude counts for what it is worth at that latitude;
 	// one holding an isotropic plane leaves it at one.
-	kd_coordinates_t find_closest(const kd_points& data, const float x, const float y,
-	                              const float y_scale = 1.0f) const
+	kd_coordinates_t find_closest(const kd_points& data, const float x, const float y, const float y_scale = 1.0f) const
 	{
 		if (_nodes.empty())
 		{
@@ -366,8 +353,8 @@ public:
 	}
 
 	// Append every point within the axis-aligned bounds to `out`.
-	void find_in_bounds(const kd_points& data, const float xmin, const float ymin, const float xmax,
-	                    const float ymax, std::vector<kd_coordinates_t>& out) const
+	void find_in_bounds(const kd_points& data, const float xmin, const float ymin, const float xmax, const float ymax,
+	                    std::vector<kd_coordinates_t>& out) const
 	{
 		if (!_nodes.empty())
 		{

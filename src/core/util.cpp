@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Core utility functions and data types. Implements file paths, dates, blobs,
 // logging, and other foundational types used throughout the application.
@@ -71,7 +70,6 @@ df_assert_pod(core::cspan);
 df_assert_pod(core::span);
 df_assert_move_only(core::blob);
 
-
 std::atomic_int core::cancel_token::empty;
 
 double core::now()
@@ -81,14 +79,14 @@ double core::now()
 
 int64_t core::now_ms()
 {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::steady_clock::now().time_since_epoch()).count();
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
 }
 
 int64_t core::now_us()
 {
-	return std::chrono::duration_cast<std::chrono::microseconds>(
-		std::chrono::steady_clock::now().time_since_epoch()).count();
+	return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
 }
 
 std::string_view core::app_file_stem()
@@ -98,6 +96,7 @@ std::string_view core::app_file_stem()
 
 static core::mutex log_mutex;
 _Guarded_by_(log_mutex) static core::log_sink s_log_sink = nullptr;
+_Guarded_by_(log_mutex) static core::log_sink s_log_observer = nullptr;
 _Guarded_by_(log_mutex) static size_t log_bytes = 0;
 _Guarded_by_(log_mutex) static bool log_truncated = false;
 
@@ -160,6 +159,12 @@ void core::set_log_sink(const core::log_sink sink)
 	s_log_sink = sink;
 }
 
+void core::set_log_observer(const core::log_sink observer)
+{
+	core::exclusive_lock lock(log_mutex);
+	s_log_observer = observer;
+}
+
 void core::log(const std::string_view context, const std::string_view message)
 {
 	core::exclusive_lock ll(log_mutex);
@@ -169,36 +174,34 @@ void core::log(const std::string_view context, const std::string_view message)
 	core::debug_output(std::format("{}:{}\n", context, message));
 #endif
 
-	if (s_log_sink != nullptr && (!log_truncated || is_session_summary(context)))
+	if ((s_log_sink != nullptr || s_log_observer != nullptr) && (!log_truncated || is_session_summary(context)))
 	{
 		const auto time = core::tick_count() - start_time;
 		const auto thread_id = core::current_thread_id();
 
 		std::ostringstream line;
-		line << std::right << std::setfill('0') << std::setw(8) << thread_id
-			<< " "
-			<< std::setw(8) << time
-			<< " "
-			<< std::setfill(' ')
-			// setw is a minimum, so a context longer than the column would otherwise abut the message.
-			<< std::left << std::setw(32) << context << ' '
-			<< scrub_user_identity(message) << '\n';
+		line << std::right << std::setfill('0') << std::setw(8) << thread_id << " " << std::setw(8) << time << " "
+			 << std::setfill(' ')
+			 // setw is a minimum, so a context longer than the column would otherwise abut the message.
+			 << std::left << std::setw(32) << context << ' ' << scrub_user_identity(message) << '\n';
 		const auto formatted = line.str();
-		s_log_sink(formatted);
+		if (s_log_sink != nullptr) s_log_sink(formatted);
+		if (s_log_observer != nullptr) s_log_observer(formatted);
 		log_bytes += formatted.size();
 
 		if (!log_truncated && log_bytes >= max_log_bytes)
 		{
 			log_truncated = true;
-			const auto marker = std::format("*** log truncated at {} bytes - only end-of-session summaries follow ***\n",
-			                               max_log_bytes);
-			s_log_sink(marker);
+			const auto marker = std::format(
+				"*** log truncated at {} bytes - only end-of-session summaries follow ***\n", max_log_bytes);
+			if (s_log_sink != nullptr) s_log_sink(marker);
+			if (s_log_observer != nullptr) s_log_observer(marker);
 			log_bytes += marker.size();
 		}
 	}
 }
 
-void core::trace(const std::string_view message)
+void core::trace([[maybe_unused]] const std::string_view message)
 {
 #ifdef _DEBUG
 	core::debug_output(std::format("{}\n", message));
@@ -256,8 +259,8 @@ std::vector<std::string> core::url_extract_all(const std::string_view text)
 	static const std::regex url_regex(R"((https?:\/\/[^\s\"\']+))");
 	std::vector<std::string> result;
 
-	for (std::regex_iterator<std::string_view::const_iterator> i(text.begin(), text.end(), url_regex), end;
-	     i != end; ++i)
+	for (std::regex_iterator<std::string_view::const_iterator> i(text.begin(), text.end(), url_regex), end; i != end;
+	     ++i)
 	{
 		auto found = (*i)[1].str();
 		if (std::ranges::find(result, found) == result.end()) result.emplace_back(std::move(found));
@@ -269,8 +272,7 @@ std::vector<std::string> core::url_extract_all(const std::string_view text)
 std::string core::date_t::to_xmp_date() const
 {
 	const auto st = date();
-	return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", st.year, st.month, st.day, st.hour, st.minute,
-	                   st.second);
+	return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", st.year, st.month, st.day, st.hour, st.minute, st.second);
 }
 
 core::date_t core::date_t::from(const std::string_view r)
@@ -290,10 +292,7 @@ namespace
 		std::string_view _s;
 		size_t _at = 0;
 
-		int peek() const
-		{
-			return _at < _s.size() ? static_cast<unsigned char>(_s[_at]) : -1;
-		}
+		int peek() const { return _at < _s.size() ? static_cast<unsigned char>(_s[_at]) : -1; }
 
 		static bool space(const int c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 		static bool digit(const int c) { return c >= '0' && c <= '9'; }
@@ -304,7 +303,10 @@ namespace
 		// exponent of its base: positive for one too large, negative for one too small.
 		static int64_t leading_exponent(const std::string_view s, const bool hex)
 		{
-			const auto in_number = [hex](const char c) { return hex ? hex_digit(static_cast<unsigned char>(c)) : digit(c); };
+			const auto in_number = [hex](const char c)
+			{
+				return hex ? hex_digit(static_cast<unsigned char>(c)) : digit(c);
+			};
 			size_t i = 0;
 			int64_t integer_digits = 0;
 			int64_t fraction_zeros = 0;
@@ -336,7 +338,8 @@ namespace
 				++i;
 				const auto negative = i < s.size() && s[i] == '-';
 				if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
-				for (; i < s.size() && digit(s[i]); ++i) exponent = std::min<int64_t>(exponent * 10 + (s[i] - '0'), 1000000000000);
+				for (; i < s.size() && digit(s[i]); ++i)
+					exponent = std::min<int64_t>(exponent * 10 + (s[i] - '0'), 1000000000000);
 				if (negative) exponent = -exponent;
 			}
 
@@ -365,8 +368,8 @@ namespace
 			else if (error == std::errc::result_out_of_range)
 			{
 				value = leading_exponent(number.substr(0, static_cast<size_t>(end - number.data())), hex) > 0
-					        ? std::numeric_limits<double>::infinity()
-					        : 0.0;
+				            ? std::numeric_limits<double>::infinity()
+				            : 0.0;
 			}
 
 			out = negative ? -value : value;
@@ -385,9 +388,7 @@ namespace
 		}
 
 	public:
-		explicit date_text(const std::string_view s) : _s(s.substr(0, s.find('\0')))
-		{
-		}
+		explicit date_text(const std::string_view s) : _s(s.substr(0, s.find('\0'))) {}
 
 		// White space in a format: a run of it, or none.
 		date_text& spaces()
@@ -405,8 +406,7 @@ namespace
 		}
 
 		// %Ns, N one less than the buffer: after white space, 1 to N characters that are not.
-		template <size_t N>
-		bool word(char (&out)[N])
+		template <size_t N> bool word(char (&out)[N])
 		{
 			spaces();
 			size_t n = 0;
@@ -445,9 +445,10 @@ namespace
 			if (!digits) return false;
 
 			constexpr auto long_max = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-			const auto value = negative
-				                   ? past || magnitude > long_max + 1 ? std::numeric_limits<int64_t>::min() : static_cast<int64_t>(0 - magnitude)
-				                   : past || magnitude > long_max ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(magnitude);
+			const auto value = negative ? past || magnitude > long_max + 1 ? std::numeric_limits<int64_t>::min()
+			                                                               : static_cast<int64_t>(0 - magnitude)
+			                   : past || magnitude > long_max ? std::numeric_limits<int64_t>::max()
+			                                                  : static_cast<int64_t>(magnitude);
 			out = static_cast<int>(static_cast<uint32_t>(static_cast<uint64_t>(value)));
 			return true;
 		}
@@ -565,18 +566,21 @@ static bool parse_iso_8601_like(const std::string_view r, core::day_t& result)
 		{
 			date_text t(r);
 			return t.word(day) && t.spaces().word(month) && t.spaces().integer(dd) && t.spaces().integer(hh) &&
-				t.is(':') && t.integer(min) && t.is(':') && t.integer(ss) && (!colon || t.is(':')) &&
-				t.spaces().integer(yyyy);
+			       t.is(':') && t.integer(min) && t.is(':') && t.integer(ss) && (!colon || t.is(':')) &&
+			       t.spaces().integer(yyyy);
 		};
 
 		// "%4d<a>%2d<a>%2d<b>%2d<c>%2d<c>%lg", each separator a character, a space or none.
 		const auto numeric = [&](const char a, const char b, const char c)
 		{
-			const auto separator = [](date_text& t, const char s) { return s == 0 || (s == ' ' ? (t.spaces(), true) : t.is(s)); };
+			const auto separator = [](date_text& t, const char s)
+			{
+				return s == 0 || (s == ' ' ? (t.spaces(), true) : t.is(s));
+			};
 			date_text t(r);
 			return t.integer(yyyy, 4) && separator(t, a) && t.integer(mm, 2) && separator(t, a) && t.integer(dd, 2) &&
-				separator(t, b) && t.integer(hh, 2) && separator(t, c) && t.integer(min, 2) && separator(t, c) &&
-				t.real(sec);
+			       separator(t, b) && t.integer(hh, 2) && separator(t, c) && t.integer(min, 2) && separator(t, c) &&
+			       t.real(sec);
 		};
 
 		// "%4d-%2d-%2d", or with the month's name: "%4d-%3s-%2d".
@@ -584,7 +588,7 @@ static bool parse_iso_8601_like(const std::string_view r, core::day_t& result)
 		{
 			date_text t(r);
 			return t.integer(yyyy, 4) && t.is('-') && (named ? t.word(month) : t.integer(mm, 2)) && t.is('-') &&
-				t.integer(dd, 2);
+			       t.integer(dd, 2);
 		};
 
 		if (camera(false) || camera(true))
@@ -594,10 +598,10 @@ static bool parse_iso_8601_like(const std::string_view r, core::day_t& result)
 			success = mm != 0;
 		}
 		else if (numeric('-', ' ', ':') || // "2006-01-14 15:51:31"
-			numeric(':', ' ', ':') || // "2006:01:14 15:51:31"
-			numeric('-', 'T', ':') || // "2006-01-14T15:51:31"
-			numeric(0, 'T', 0) || // "20060114T155131"
-			numeric(0, 0, 0)) // "20060114155131"
+		         numeric(':', ' ', ':') || // "2006:01:14 15:51:31"
+		         numeric('-', 'T', ':') || // "2006-01-14T15:51:31"
+		         numeric(0, 'T', 0) ||     // "20060114T155131"
+		         numeric(0, 0, 0))         // "20060114155131"
 		{
 			success = true;
 		}
@@ -665,7 +669,6 @@ bool core::date_t::parse_xml_date(const std::string_view r)
 }
 
 core::file_size core::file_size::null;
-
 
 uint32_t core::crc32c(const void* data, const size_t len)
 {

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The parts of the CPU rasterizer that are not inline - the present target that presents
 // nothing, and the probe that proves tiled rasterisation is seamless and that one platform's
@@ -31,10 +30,7 @@ namespace
 		core::sizei _extent;
 
 	public:
-		bool is_layered() const override
-		{
-			return false;
-		}
+		bool is_layered() const override { return false; }
 
 		render::software_buffer acquire_buffer(const core::sizei extent) override
 		{
@@ -60,18 +56,11 @@ namespace
 			_extent = {};
 		}
 
-		bool begin_present() override
-		{
-			return _extent.cx > 0 && _extent.cy > 0;
-		}
+		bool begin_present() override { return _extent.cx > 0 && _extent.cy > 0; }
 
-		void present_tile(core::recti, core::pointi) override
-		{
-		}
+		void present_tile(core::recti, core::pointi) override {}
 
-		void end_present(int) override
-		{
-		}
+		void end_present(int) override {}
 	};
 
 	class surface_present_target final : public render::software_present_target
@@ -80,9 +69,7 @@ namespace
 		core::sizei _extent;
 
 	public:
-		explicit surface_present_target(core::surface_ptr surface) : _surface(std::move(surface))
-		{
-		}
+		explicit surface_present_target(core::surface_ptr surface) : _surface(std::move(surface)) {}
 
 		bool is_layered() const override
 		{
@@ -99,9 +86,10 @@ namespace
 			// A surface that already fits is drawn on in place, so what the caller put there survives
 			// - a label drawn onto a canvas keeps the canvas. Only a fresh allocation starts blank.
 			if (_surface->empty() || _surface->dimensions() != extent || !packed ||
-				_surface->orientation() != core::orientation::top_left)
+			    _surface->orientation() != core::orientation::top_left)
 			{
-				if (!_surface->alloc(extent, packed ? format : core::texture_format::ARGB, core::orientation::top_left)) return {};
+				if (!_surface->alloc(extent, packed ? format : core::texture_format::ARGB, core::orientation::top_left))
+					return {};
 				_surface->make_blank();
 			}
 			_extent = extent;
@@ -114,18 +102,11 @@ namespace
 			// The caller owns the surface and must keep its pixels after render() returns.
 		}
 
-		bool begin_present() override
-		{
-			return _surface && !_surface->empty();
-		}
+		bool begin_present() override { return _surface && !_surface->empty(); }
 
-		void present_tile(core::recti, core::pointi) override
-		{
-		}
+		void present_tile(core::recti, core::pointi) override {}
 
-		void end_present(int) override
-		{
-		}
+		void end_present(int) override {}
 	};
 
 	// An even spread across the whole rendering, so every primitive in the scene is represented and
@@ -140,7 +121,7 @@ namespace
 		{
 			const auto* const p = pixels.data() + (i * step + step / 2) * 4;
 			samples[i] = static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 |
-				static_cast<uint32_t>(p[2]) << 16 | static_cast<uint32_t>(p[3]) << 24;
+			             static_cast<uint32_t>(p[2]) << 16 | static_cast<uint32_t>(p[3]) << 24;
 		}
 	}
 }
@@ -154,8 +135,8 @@ render::draw_context_device_ptr render::create_surface_context(const core::surfa
 	if (!target) return {};
 
 	const auto context = render::create_software_draw_context(render::create_text_engine(render::default_font_size),
-	                                                         std::make_shared<surface_present_target>(target),
-	                                                         render::default_font_size);
+	                                                          std::make_shared<surface_present_target>(target),
+	                                                          render::default_font_size);
 	if (context && !target->empty()) context->begin_draw(target->dimensions(), render::default_font_size, {});
 	return context;
 }
@@ -223,15 +204,14 @@ render::rasterizer_probe render::probe_software_rasterizer()
 		canvas.fill_rounded_rect(core::recti(17, 51, 145, 121), core::color(0.3f, 0.7f, 0.4f, 0.8f), 23);
 		canvas.fill_border_gradient(core::recti(41, 63, 161, 111), core::recti(29, 55, 173, 123),
 		                            core::color(0.95f, 0.35f, 0.15f, 0.9f), core::color(0.05f, 0.55f, 0.85f, 0.4f));
+		canvas.fill_shadow(core::recti(37, 21, 171, 117), 19, 0.6f);
 		canvas.fill_triangle({13.5, 97.25}, {121.75, 71.5}, {87.25, 137.75}, core::color(0.6f, 0.2f, 0.8f, 0.55f));
 		canvas.blend_glyph(57, 19, glyph.data(), glyph_extent, core::color(1.0f, 1.0f, 0.4f, 0.85f));
 		canvas.blend_glyph(131, 88, glyph.data(), glyph_extent, core::color(0.2f, 0.9f, 1.0f, 0.7f));
-		canvas.blit_surface(*source, source_rect, core::recti(63, 29, 187, 119), 0.75f,
-		                    texture_sampler::bilinear, true);
-		canvas.blit_surface(*source, source_rect, core::recti(9, 83, 101, 133), 0.6f,
-		                    texture_sampler::bicubic, true);
-		canvas.blit_surface(*source, source_rect, core::recti(151, 5, 199, 67), 1.0f,
-		                    texture_sampler::point, true);
+		canvas.blit_surface(*source, source_rect, core::recti(63, 29, 187, 119), 0.75f, texture_sampler::bilinear,
+		                    true);
+		canvas.blit_surface(*source, source_rect, core::recti(9, 83, 101, 133), 0.6f, texture_sampler::bicubic, true);
+		canvas.blit_surface(*source, source_rect, core::recti(151, 5, 199, 67), 1.0f, texture_sampler::point, true);
 		canvas.blit_quad(*source, source_rect, rotated, 0.8f, texture_sampler::bilinear, true);
 	};
 
@@ -253,7 +233,7 @@ render::rasterizer_probe render::probe_software_rasterizer()
 		for (auto tx = 0; tx < extent.cx; tx += tile_edge)
 		{
 			const auto tile = core::recti(tx, ty, tx + tile_edge, ty + tile_edge)
-				.intersection(core::recti(0, 0, extent.cx, extent.cy));
+			                      .intersection(core::recti(0, 0, extent.cx, extent.cy));
 
 			std::ranges::fill(tile_bits, fill);
 

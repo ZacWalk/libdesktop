@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Shared Windows Direct3D, DirectWrite, WIC, and renderer types.
 
@@ -34,7 +33,6 @@ constexpr int max_index_count = 6 * 512;
 constexpr int max_text_len = 2000;
 
 // The scene clear colour is render::scene_clear_shade; the Windows backends spell it unqualified.
-
 
 bool is_device_loss_error(HRESULT hr);
 
@@ -79,6 +77,10 @@ constexpr UINT WM_RENDER_DEVICE_LOST = WM_APP + 0x3d1;
 namespace render
 {
 	bool probe_d3d11_pixel_snapping();
+	// Draws with a Direct3D draw context into an offscreen target on a WARP device and reads back what it drew:
+	// what a test holds the hardware backend's pixels against the software renderer's with. Null when no
+	// WARP device could be made.
+	core::surface_ptr test_draw_d3d11(core::sizei extent, const std::function<void(draw_context&)>& draw);
 }
 struct char_pos_width
 {
@@ -104,18 +106,16 @@ struct text_line
 // The backend interface is ui's, not Windows'. Imported here so the Windows layer can keep
 // spelling it unqualified, which is how it reads in every backend and in the window layer.
 
-
-
 render::draw_context_device_ptr d3d11_create_context(const factories_ptr& f, const ComPtr<IDXGISwapChain>& swap_chain,
-                                             int base_font_size);
+                                                     int base_font_size);
 // A texture on the factories' Direct3D device, as every hardware draw context makes them.
 render::texture_ptr d3d11_create_texture(const factories_ptr& f);
 render::draw_context_device_ptr create_software_draw_context(const factories_ptr& f, HWND hwnd, bool layered,
-                                                     int base_font_size);
+                                                             int base_font_size);
 // One that presents to target rather than to a window: where a test reads back what it drew.
 render::draw_context_device_ptr create_software_draw_context(const factories_ptr& f,
-                                                     std::shared_ptr<render::software_present_target> target,
-                                                     int base_font_size);
+                                                             std::shared_ptr<render::software_present_target> target,
+                                                             int base_font_size);
 constexpr int swap_buffer_count = 2;
 constexpr auto back_buffer_format = DXGI_FORMAT_B8G8R8A8_UNORM; // DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -131,10 +131,7 @@ struct render_char_result
 	int x = 0;
 	int glyph = 0;
 
-	bool is_empty() const
-	{
-		return cx < 1 && cy < 1;
-	}
+	bool is_empty() const { return cx < 1 && cy < 1; }
 };
 
 class font_renderer
@@ -148,11 +145,13 @@ public:
 	bool _underline = false;
 	bool _strikeout = false;
 	DWRITE_FONT_METRICS _metrics{};
-
+	// The layout cache below has no lock. A window's font is the UI thread's; one made for a text engine
+	// standing alone belongs to the one thread drawing with that engine, whichever it is.
+	bool _ui_thread_only = true;
 
 	explicit font_renderer(const ComPtr<IDWriteFactory>& factory, const ComPtr<IDWriteFontFace>& face,
-	                       ComPtr<IDWriteTextFormat> text_format, int font_size,
-	                       bool underline = false, bool strikeout = false);
+	                       ComPtr<IDWriteTextFormat> text_format, int font_size, bool underline = false,
+	                       bool strikeout = false);
 
 	uint32_t calc_line_height() const;
 	uint32_t calc_base_line_height() const;
@@ -162,8 +161,8 @@ public:
 	void draw(render::draw_context*, IDWriteTextRenderer*, std::wstring_view text, core::recti bounds,
 	          render::text_style style, core::color color, core::color bg,
 	          const std::vector<render::text_highlight_t>& highlights);
-	static void draw(render::draw_context*, IDWriteTextRenderer*, IDWriteTextLayout*, core::recti bounds, core::color color,
-	                 core::color bg);
+	static void draw(render::draw_context*, IDWriteTextRenderer*, IDWriteTextLayout*, core::recti bounds,
+	                 core::color color, core::color bg);
 
 	// Same two operations against the layout cache below. Callers hand over UTF-8 because the
 	// conversion to UTF-16 is itself per-call work the cache removes.
@@ -302,8 +301,8 @@ public:
 class text_layout_impl final : public render::text_layout
 {
 public:
-	explicit text_layout_impl(const font_renderer_ptr& renderer, const render::font_face font) : _renderer(renderer),
-		_font(font)
+	explicit text_layout_impl(const font_renderer_ptr& renderer, const render::font_face font) :
+		_renderer(renderer), _font(font)
 	{
 	}
 
@@ -361,9 +360,7 @@ public:
 		texture_views_ptr views;
 	};
 
-	explicit d3d11_texture_pool(const size_t budget_bytes) : _budget(budget_bytes)
-	{
-	}
+	explicit d3d11_texture_pool(const size_t budget_bytes) : _budget(budget_bytes) {}
 
 	// Keeps the texture unless it would take more than an eighth of the budget, as a full-size photograph
 	// would; the oldest entries make room for it.
@@ -374,15 +371,9 @@ public:
 
 	void clear();
 
-	size_t size() const
-	{
-		return _entries.size();
-	}
+	size_t size() const { return _entries.size(); }
 
-	size_t bytes() const
-	{
-		return _bytes;
-	}
+	size_t bytes() const { return _bytes; }
 
 	static size_t texture_bytes(core::sizei dims, core::texture_format format);
 
@@ -409,6 +400,10 @@ struct factories
 	bool supports_nv12 = false;
 	bool supports_p010 = false;
 
+	// Made for a text engine standing alone (render::create_text_engine), whose fonts serve the one thread
+	// drawing with it, rather than for the application's windows, whose fonts are the UI thread's.
+	bool standalone = false;
+
 	ComPtr<ID3D11Device> d3d_device;
 	ComPtr<ID3D11DeviceContext> d3d_context;
 	ComPtr<IDXGIDevice> dxgi_device;
@@ -421,9 +416,8 @@ struct factories
 
 	std::unordered_map<uint64_t, font_renderer_ptr> font_renderers;
 
-	font_renderer_ptr create_font_face(const wchar_t* font_name, int font_height, int weight = 400,
-	                                  bool italic = false, bool underline = false, bool strikeout = false,
-	                                  bool cell_size = false) const;
+	font_renderer_ptr create_font_face(const wchar_t* font_name, int font_height, int weight = 400, bool italic = false,
+	                                   bool underline = false, bool strikeout = false, bool cell_size = false) const;
 	font_renderer_ptr create_icon_font_face(int font_height);
 	font_renderer_ptr font_face(render::font_face font, int base_font_size);
 	void reset();
@@ -454,6 +448,5 @@ HRESULT create_icon_font_collection(IDWriteFactory* dwrite_factory, IDWriteFontC
 // was, so nothing can overflow a layout box that did not already overflow.
 constexpr int icon_font_scale_num = 11;
 constexpr int icon_font_scale_den = 10;
-
 
 using factories_ptr = std::shared_ptr<factories>;

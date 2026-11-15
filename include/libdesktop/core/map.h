@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Hash map and set templates. Provides custom hash containers
 // optimized for file paths, strings, and other common key types.
@@ -50,61 +49,34 @@ namespace core
 			return folder ^ (name + 0x9e3779b9u + (folder << 6) + (folder >> 2));
 		}
 
-		size_t operator()(const folder_path path) const
-		{
-			return path_text_hash(path.text());
-		}
+		size_t operator()(const folder_path path) const { return path_text_hash(path.text()); }
 
-		size_t operator()(const core::cached s) const
-		{
-			return s.ihash();
-		}
+		size_t operator()(const core::cached s) const { return s.ihash(); }
 
-		size_t operator()(const std::string_view s) const
-		{
-			return core::fnv1a_i(s);
-		}
+		size_t operator()(const std::string_view s) const { return core::fnv1a_i(s); }
 	};
 
 	struct path_iless
 	{
-		bool operator()(const file_path l, const file_path r) const
-		{
-			return l.icmp(r) < 0;
-		}
+		bool operator()(const file_path l, const file_path r) const { return l.icmp(r) < 0; }
 
-		bool operator()(const std::string_view l, const std::string_view r) const
-		{
-			return core::icmp(l, r) < 0;
-		}
+		bool operator()(const std::string_view l, const std::string_view r) const { return core::icmp(l, r) < 0; }
 
-		bool operator()(const folder_path l, const folder_path r) const
-		{
-			return l.compare(r) < 0;
-		}
+		bool operator()(const folder_path l, const folder_path r) const { return l.compare(r) < 0; }
 	};
 
 	// Ordering for a path held only as a string, under the identity rule in util_path.h. Distinct
 	// from path_iless, which folds case unconditionally because it orders text rather than paths.
 	struct path_key_less
 	{
-		bool operator()(const std::string_view l, const std::string_view r) const
-		{
-			return compare_path_key(l, r) < 0;
-		}
+		bool operator()(const std::string_view l, const std::string_view r) const { return compare_path_key(l, r) < 0; }
 	};
 
 	struct ieq
 	{
-		bool operator()(const file_path l, const file_path r) const
-		{
-			return l.icmp(r) == 0;
-		}
+		bool operator()(const file_path l, const file_path r) const { return l.icmp(r) == 0; }
 
-		bool operator()(const folder_path l, const folder_path r) const
-		{
-			return l.compare(r) == 0;
-		}
+		bool operator()(const folder_path l, const folder_path r) const { return l.compare(r) == 0; }
 
 		bool operator()(const std::string_view l, const std::string_view r) const
 		{
@@ -118,18 +90,12 @@ namespace core
 
 	struct hash
 	{
-		uint32_t operator()(const std::string_view r) const
-		{
-			return core::crc32c(r.data(), r.size());
-		}
+		uint32_t operator()(const std::string_view r) const { return core::crc32c(r.data(), r.size()); }
 	};
 
 	struct eq
 	{
-		bool operator()(const std::string_view l, const std::string_view r) const
-		{
-			return l.compare(r) == 0;
-		}
+		bool operator()(const std::string_view l, const std::string_view r) const { return l.compare(r) == 0; }
 	};
 
 	using string_map = hash_map<std::string, std::string, ihash, ieq>;
@@ -162,8 +128,7 @@ namespace core
 
 		struct include_all
 		{
-			template <typename T>
-			bool operator()(const T&) const { return true; }
+			template <typename T> bool operator()(const T&) const { return true; }
 		};
 
 		template <typename Range, typename FolderOf, typename Include = include_all>
@@ -216,10 +181,7 @@ namespace core
 		bool empty() const { return _groups.empty(); }
 
 		// Indices into the sequence build() was given. Valid until the next build().
-		std::span<const uint32_t> elements(const group& g) const
-		{
-			return {_order.data() + g.first, g.count};
-		}
+		std::span<const uint32_t> elements(const group& g) const { return {_order.data() + g.first, g.count}; }
 
 		void clear()
 		{

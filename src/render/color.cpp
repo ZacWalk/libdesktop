@@ -1,226 +1,227 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Purpose: Color adjustment algorithms. Implements spline-based tone curves,
-// saturation, vibrance, contrast, and brightness adjustments for image editing.
+// Purpose: The photo editor's colour adjustment: a monotone tone curve built from the darks, midtones,
+// lights, contrast and brightness controls, white balance gains, saturation and vibrance - graded on the CPU
+// through grade_color at a byte or sixteen bits a channel, and handed to the previews as a texture_transform.
 
 #include "libdesktop/render.h"
 
-
-class spline_interpolator final : public core::no_copy
+namespace
 {
-	using point_t = std::pair<double, double>;
-
-	std::vector<point_t> points;
-	std::vector<double> y2;
-
-public:
-	spline_interpolator() = default;
-
-	int size() const
+	// Fritsch-Carlson monotone cubic through knots that rise strictly. Unlike a natural spline it never
+	// overshoots a knot, so the curve can neither fold back on itself nor run past black or white between
+	// knots - which a natural spline does, and the clamp after it then flattens into clipped tones.
+	class monotone_curve final
 	{
-		return static_cast<int>(points.size());
-	}
+		static constexpr int knots = 5;
 
-	void add(const double x, const double y)
-	{
-		points.emplace_back(x, y);
-	}
+		std::array<double, knots> _x{};
+		std::array<double, knots> _y{};
+		std::array<double, knots> _slope{};
 
-	void clear()
-	{
-		points.clear();
-	}
-
-	// Interpolate() and PreCompute() are adapted from:
-	// NUMERICAL RECIPES IN C: THE ART OF SCIENTIFIC COMPUTING
-	// ISBN 0-521-43108-5, page 113, section 3.3.
-
-	double interpolate(const double x)
-	{
-		if (y2.empty())
+		// A one-sided three-point estimate at an end, held to the monotone region.
+		static double end_slope(const double h0, const double h1, const double d0, const double d1)
 		{
-			pre_compute();
+			const auto slope = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+			if (slope * d0 <= 0.0) return 0.0;
+			if (d0 * d1 <= 0.0 && std::abs(slope) > std::abs(3.0 * d0)) return 3.0 * d0;
+			return slope;
 		}
 
-		// We will find the right place in the table by means of
-		// bisection. This is optimal if sequential calls to this
-		// routine are at random values of x. If sequential calls
-		const int n = static_cast<int>(points.size());
-		auto klo = 0;
-		auto khi = n - 1;
-
-		while (khi - klo > 1)
+	public:
+		monotone_curve(const std::array<double, knots>& x, const std::array<double, knots>& y) : _x(x), _y(y)
 		{
-			const auto k = (khi + klo) >> 1; // are in order, and closely spaced, one would do better
+			std::array<double, knots - 1> h{};
+			std::array<double, knots - 1> d{};
 
-			if (points[k].first > x)
+			for (auto i = 0; i < knots - 1; ++i)
 			{
-				khi = k; // to store previous values of klo and khi and test if
+				h[i] = x[i + 1] - x[i];
+				d[i] = (y[i + 1] - y[i]) / h[i];
 			}
-			else
+
+			for (auto i = 1; i < knots - 1; ++i)
 			{
-				klo = k;
+				if (d[i - 1] * d[i] <= 0.0) continue;
+
+				const auto w1 = 2.0 * h[i] + h[i - 1];
+				const auto w2 = h[i] + 2.0 * h[i - 1];
+				_slope[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
 			}
+
+			_slope[0] = end_slope(h[0], h[1], d[0], d[1]);
+			_slope[knots - 1] = end_slope(h[knots - 2], h[knots - 3], d[knots - 2], d[knots - 3]);
 		}
 
-		const auto kvhi = points[khi];
-		const auto kvlo = points[klo];
+		double operator()(const double x) const
+		{
+			if (x <= _x[0]) return _y[0];
+			if (x >= _x[knots - 1]) return _y[knots - 1];
 
-		const auto h = kvhi.first - kvlo.first;
-		const auto a = (kvhi.first - x) / h;
-		const auto b = (x - kvlo.first) / h;
+			auto k = 0;
+			while (x > _x[k + 1]) ++k;
 
-		// Cubic spline polynomial is now evaluated.
-		return a * kvlo.second + b * kvhi.second + ((a * a * a - a) * y2[klo] + (b * b * b - b) * y2[khi]) * (h * h) /
-			6.0;
-		//return a*ya[klo] + b*ya[khi] + ((a*a*a - a)*y2[klo] + (b*b*b - b)*y2[khi])*(h*h)/6.0;
-	}
+			const auto h = _x[k + 1] - _x[k];
+			const auto t = (x - _x[k]) / h;
+			const auto t2 = t * t;
+			const auto t3 = t2 * t;
 
-private:
-	void pre_compute()
+			return (2.0 * t3 - 3.0 * t2 + 1.0) * _y[k] + (t3 - 2.0 * t2 + t) * h * _slope[k] +
+			       (-2.0 * t3 + 3.0 * t2) * _y[k + 1] + (t3 - t2) * h * _slope[k + 1];
+		}
+	};
+
+	// The steepness k of the tanh S-curve whose slope at its pivot is c, for c > 1: k / tanh(k) = c.
+	double contrast_steepness(const double c)
 	{
-		std::ranges::sort(points, [](auto&& l, auto&& r) { return l.first < r.first; });
+		auto low = 0.0;
+		auto high = 40.0;
 
-		const int n = static_cast<int>(points.size());
-		std::vector<double> u;
-		u.resize(n);
-		y2.resize(n);
-
-		u[0] = 0;
-		y2[0] = 0;
-
-		for (auto i = 1; i < n - 1; ++i)
+		for (auto i = 0; i < 64; ++i)
 		{
-			const auto kv = points[i];
-			const auto kv1 = points[i + 1];
-			const auto kv2 = points[i - 1];
-
-			// This is the decomposition loop of the tridiagonal algorithm. 
-			// y2 and u are used for temporary storage of the decomposed factors.
-			const auto wx = kv1.first - kv2.first;
-			const auto sig = (kv.first - kv2.first) / wx;
-			const auto p = sig * y2[i - 1] + 2.0;
-
-			y2[i] = (sig - 1.0) / p;
-
-			const auto ddydx = (kv1.second - kv.second) / (kv1.first - kv.first) - (kv.second - kv2.second) / (kv.first
-				- kv2.
-				first);
-
-			u[i] = (6.0 * ddydx / wx - sig * u[i - 1]) / p;
+			const auto k = (low + high) * 0.5;
+			(k / std::tanh(k) < c ? low : high) = k;
 		}
 
-		y2[n - 1] = 0;
-
-		// This is the backsubstitution loop of the tridiagonal algorithm
-		for (auto i = n - 2; i >= 0; --i)
-		{
-			y2[i] = y2[i] * y2[i + 1] + u[i];
-		}
+		return (low + high) * 0.5;
 	}
-};
 
+	double to_unit(const uint16_t v)
+	{
+		return v / 65535.0;
+	}
 
-void render::color_adjust::color_params(const double vibrance, const double saturation,
-                                    const double darks, const double midtones, const double lights,
-                                    const double contrast, const double brightness, const double temperature,
-                                    const double tint)
+	uint16_t from_unit16(const double v)
+	{
+		return static_cast<uint16_t>(std::clamp(core::round(v * 65535.0), 0, 65535));
+	}
+
+	uint8_t from_unit8(const double v)
+	{
+		return static_cast<uint8_t>(core::byte_clamp(core::round(v * 255.0)));
+	}
+}
+
+render::color_adjust::color_adjust() noexcept
 {
-	_saturation = saturation + 1.0;
+	for (auto i = 0; i < curve_len; ++i)
+	{
+		_curve[i] = i / static_cast<double>(curve_len - 1);
+	}
+}
+
+void render::color_adjust::color_params(double vibrance, double saturation, double darks, double midtones,
+                                        double lights, double contrast, double brightness, double temperature,
+                                        double tint)
+{
+	for (auto* const control :
+	     {&vibrance, &saturation, &darks, &midtones, &lights, &contrast, &brightness, &temperature, &tint})
+	{
+		*control = std::clamp(*control, -1.0, 1.0);
+	}
+
+	_saturation = 1.0 + saturation;
 	_vibrance = vibrance;
-	_temperature = temperature;
-	_tint = tint;
 
-	const auto cc = contrast / (contrast < 0.0 ? 2 : 1.5) + 1.0;
-	const auto bb = brightness / 3.0;
+	// Temperature runs from blue to amber and tint from green to magenta. The gains are scaled together so a
+	// neutral keeps its luma: white balance moves the colour, not the exposure, and pushes no highlight past
+	// white that grade_color's fit would then have to pull back.
+	const auto red = 1.0 + 0.2 * temperature + 0.1 * tint;
+	const auto green = 1.0 - 0.2 * tint;
+	const auto blue = 1.0 - 0.2 * temperature + 0.1 * tint;
+	const auto neutral = 1.0 / (0.2126 * red + 0.7152 * green + 0.0722 * blue);
+	_red_gain = red * neutral;
+	_green_gain = green * neutral;
+	_blue_gain = blue * neutral;
 
-	constexpr double t = 0.0;
-	const double d = (0.2 + darks * 0.1 - 0.5) * cc + 0.5 + bb;
-	const double m = (0.5 + midtones * 0.1 - 0.5) * cc + 0.5 + bb;
-	const double l = (0.8 + lights * 0.1 - 0.5) * cc + 0.5 + bb;
-	constexpr double b = 1.0;
-
-	spline_interpolator interpolator;
-	interpolator.add(0.0, std::clamp(t, 0.0, 1.0));
-	interpolator.add(0.2, std::clamp(d, 0.0, 1.0));
-	interpolator.add(0.5, std::clamp(m, 0.0, 1.0));
-	interpolator.add(0.8, std::clamp(l, 0.0, 1.0));
-	interpolator.add(1.0, std::clamp(b, 0.0, 1.0));
+	// Darks, midtones and lights move the curve at a fifth, a half and four fifths by up to a tenth, so
+	// the knots always rise. Contrast is an S-curve about the middle grey whose slope there is 2^contrast,
+	// rolling off into both ends rather than clipping them, the negative setting the positive's inverse.
+	// Brightness bends the midtones by t(1 + a) / (1 + at), which holds black and white where they are and
+	// is undone by the opposite setting.
+	const monotone_curve shape({0.0, 0.2, 0.5, 0.8, 1.0},
+	                           {0.0, 0.2 + darks * 0.1, 0.5 + midtones * 0.1, 0.8 + lights * 0.1, 1.0});
+	const auto steepness = std::abs(contrast) > 1e-9 ? contrast_steepness(std::exp2(std::abs(contrast))) : 0.0;
+	const auto steepness_tanh = std::tanh(steepness);
+	const auto lift = std::exp(1.2 * brightness) - 1.0;
 
 	for (auto i = 0; i < curve_len; ++i)
 	{
-		// Sampled at the centre of the bin the lookup below selects, and clamped because the spline is
-		// only pinned at its knots and overshoots between them.
-		_curve[i] = std::clamp(interpolator.interpolate((i + 0.5) / curve_len), 0.0, 1.0);
+		auto v = shape(i / static_cast<double>(curve_len - 1));
+
+		if (steepness > 0.0)
+		{
+			v = contrast > 0.0 ? 0.5 + 0.5 * std::tanh(steepness * (2.0 * v - 1.0)) / steepness_tanh
+			                   : 0.5 + 0.5 * std::atanh((2.0 * v - 1.0) * steepness_tanh) / steepness;
+		}
+
+		v = v * (1.0 + lift) / (1.0 + lift * v);
+		_curve[i] = std::clamp(v, 0.0, 1.0);
 	}
 }
 
-core::color32 render::color_adjust::adjust_color(double y, double u, double v, const double a) const
+double render::color_adjust::tone(const double x) const noexcept
 {
-	y = _curve[std::clamp(static_cast<int>(y * curve_len), 0, curve_len - 1)];
-
-	if (!core::is_zero(_vibrance))
-	{
-		const auto xx = -0.105 - u;
-		const auto yy = 0.227 - v;
-		const auto d = sqrt(xx * xx + yy * yy);
-		const auto sat = _saturation * (1.0 + _vibrance * d * 4.0);
-
-		u *= sat;
-		v *= sat;
-	}
-	else
-	{
-		u *= _saturation;
-		v *= _saturation;
-	}
-
-	u = std::clamp(u, -1.0, 1.0);
-	v = std::clamp(v, -1.0, 1.0);
-
-	// Exact inverse of the forward matrix below (U = 0.492(B-Y), V = 0.877(R-Y)); rounder constants
-	// leave a residual error on every edited pixel.
-	const auto r = y + 1.14025 * v;
-	const auto g = y - 0.39473 * u - 0.58081 * v;
-	const auto b = y + 2.03252 * u;
-
-	// Rounded, not truncated: truncation biases every edited pixel half a level darker.
-	return core::byte_clamp(core::round(b * 255.0)) |
-		core::byte_clamp(core::round(g * 255.0)) << 8 |
-		core::byte_clamp(core::round(r * 255.0)) << 16 |
-		core::byte_clamp(core::round(a * 255.0)) << 24;
+	const auto position = std::clamp(x, 0.0, 1.0) * (curve_len - 1);
+	const auto index = std::min(static_cast<int>(position), curve_len - 2);
+	return _curve[index] + (_curve[index + 1] - _curve[index]) * (position - index);
 }
 
-bool render::color_adjust::apply(const core::const_surface_ptr& src, uint8_t* dst, const size_t dst_stride,
-                             const core::cancel_token& token) const
+bool render::color_adjust::apply(const core::const_surface_ptr& src, uint8_t* const dst, const size_t dst_stride,
+                                 const core::cancel_token& token) const
 {
+	const auto format = src->format();
+	const auto wide = core::is_wide(format);
+
+	if (!wide && !core::is_packed(format)) return false;
+
 	const auto dims = src->dimensions();
 
 	for (auto yy = 0; yy < dims.cy; ++yy)
 	{
-		const auto* s = std::bit_cast<const core::color32*>(src->pixels() + yy * src->stride());
-		auto* d = std::bit_cast<core::color32*>(dst + yy * dst_stride);
-
-		for (auto xx = 0; xx < dims.cx; ++xx)
+		if (wide)
 		{
-			const auto c = *s++;
+			// Red first, sixteen bits a channel.
+			const auto* s = std::bit_cast<const uint16_t*>(src->pixels() + yy * src->stride());
+			auto* d = std::bit_cast<uint16_t*>(dst + yy * dst_stride);
 
-			const auto r = std::clamp(core::get_b(c) / 255.0 * (1.0 + 0.2 * _temperature + 0.1 * _tint), 0.0, 1.0);
-			const auto g = std::clamp(core::get_g(c) / 255.0 * (1.0 - 0.2 * _tint), 0.0, 1.0);
-			const auto b = std::clamp(core::get_r(c) / 255.0 * (1.0 - 0.2 * _temperature + 0.1 * _tint), 0.0, 1.0);
-			const auto a = core::get_a(c) / 255.0;
+			for (auto xx = 0; xx < dims.cx; ++xx, s += 4, d += 4)
+			{
+				auto r = to_unit(s[0]);
+				auto g = to_unit(s[1]);
+				auto b = to_unit(s[2]);
+				grade_color(r, g, b, _curve.data(), curve_len, _saturation, _vibrance, _red_gain, _green_gain,
+				            _blue_gain);
+				d[0] = from_unit16(r);
+				d[1] = from_unit16(g);
+				d[2] = from_unit16(b);
+				d[3] = s[3];
+			}
+		}
+		else
+		{
+			// Blue first, a byte a channel.
+			const auto* s = src->pixels() + yy * src->stride();
+			auto* d = dst + yy * dst_stride;
 
-			const auto y = 0.299 * r + 0.587 * g + 0.114 * b;
-			const auto u = -0.147 * r - 0.289 * g + 0.436 * b;
-			const auto v = 0.615 * r - 0.515 * g - 0.100 * b;
-
-			*d++ = adjust_color(y, u, v, a);
+			for (auto xx = 0; xx < dims.cx; ++xx, s += 4, d += 4)
+			{
+				auto r = s[2] / 255.0;
+				auto g = s[1] / 255.0;
+				auto b = s[0] / 255.0;
+				grade_color(r, g, b, _curve.data(), curve_len, _saturation, _vibrance, _red_gain, _green_gain,
+				            _blue_gain);
+				// Rounded, not truncated: truncation biases every edited pixel half a level darker.
+				d[0] = from_unit8(b);
+				d[1] = from_unit8(g);
+				d[2] = from_unit8(r);
+				d[3] = s[3];
+			}
 		}
 
 		if (token.is_cancelled())
@@ -234,19 +235,16 @@ bool render::color_adjust::apply(const core::const_surface_ptr& src, uint8_t* ds
 
 void render::color_adjust::populate_texture_transform(texture_transform& transform) const
 {
-	constexpr auto bin = curve_len / texture_transform::curve_len;
-
 	for (auto index = 0; index < texture_transform::curve_len; ++index)
 	{
-		// Centre of the source bins this preview entry stands in for, so the preview curve tracks the
-		// saved one instead of drifting toward the shadow end of each bin.
-		transform.curve[index] = static_cast<float>(_curve[index * bin + bin / 2]);
+		transform.curve[index] = static_cast<float>(
+			tone(index / static_cast<double>(texture_transform::curve_len - 1)));
 	}
 
 	transform.saturation = static_cast<float>(_saturation);
 	transform.vibrance = static_cast<float>(_vibrance);
-	transform.red_gain = static_cast<float>(1.0 + 0.2 * _temperature + 0.1 * _tint);
-	transform.green_gain = static_cast<float>(1.0 - 0.2 * _tint);
-	transform.blue_gain = static_cast<float>(1.0 - 0.2 * _temperature + 0.1 * _tint);
+	transform.red_gain = static_cast<float>(_red_gain);
+	transform.green_gain = static_cast<float>(_green_gain);
+	transform.blue_gain = static_cast<float>(_blue_gain);
 	transform.has_color_changes = true;
 }

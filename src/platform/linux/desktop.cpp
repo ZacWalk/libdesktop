@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Stand-ins for the Windows desktop integration surface. docs/platform.md lists which of
 // these map to an XDG portal, which map to nothing, and which are product decisions rather than
@@ -15,7 +14,6 @@
 // depend on it out of the interface.
 
 #include "libdesktop/platform.h"
-
 
 #include <unistd.h>
 #include <sys/stat.h>
@@ -129,7 +127,7 @@ namespace
 	constexpr int max_collision_attempts = 1000;
 
 	core::file_path collision_file_candidate(const core::folder_path folder, const std::string_view name,
-	                                       const int attempt)
+	                                         const int attempt)
 	{
 		if (attempt == 0) return folder.combine_file(name);
 
@@ -140,7 +138,7 @@ namespace
 	}
 
 	core::folder_path collision_folder_candidate(const core::folder_path parent, const std::string_view name,
-	                                           const int attempt)
+	                                             const int attempt)
 	{
 		return attempt == 0 ? parent.combine(name) : parent.combine(std::format("{} ({})", name, attempt + 1));
 	}
@@ -212,7 +210,7 @@ namespace
 		{
 			directory_identity current_id;
 			if (directory_identity_of_text(std::string(folder.text()), current_id) &&
-				same_directory(source_id, current_id))
+			    same_directory(source_id, current_id))
 			{
 				return true;
 			}
@@ -241,9 +239,9 @@ namespace
 		if (::symlink(std::string_view(target.data(), static_cast<size_t>(target_len)).data(),
 		              destination_text.c_str()) != 0)
 		{
-			return errno == EEXIST
-				       ? platform::file_op_result{platform::file_op_result_code::ALREADY_EXISTS}
-				       : platform::file_op_result{platform::file_op_result_code::FAILED, std::string(::strerror(errno))};
+			return errno == EEXIST ? platform::file_op_result{platform::file_op_result_code::ALREADY_EXISTS}
+			                       : platform::file_op_result{platform::file_op_result_code::FAILED,
+			                                                  std::string(::strerror(errno))};
 		}
 
 		return {platform::file_op_result_code::OK};
@@ -256,16 +254,12 @@ namespace
 
 		if (destination_is_same_or_descendant(source, destination))
 		{
-			return {
-				platform::file_op_result_code::FAILED,
-				std::format("Cannot copy {} into itself", source.text())
-			};
+			return {platform::file_op_result_code::FAILED, std::format("Cannot copy {} into itself", source.text())};
 		}
 
-		if (const auto created = replace_existing
-			                         ? platform::create_folder(destination)
-			                         : create_folder_exclusive(destination);
-			created.failed())
+		if (const auto created = replace_existing ? platform::create_folder(destination)
+		                                          : create_folder_exclusive(destination);
+		    created.failed())
 		{
 			return created;
 		}
@@ -288,8 +282,8 @@ namespace
 				platform::test_linux_before_copy_folder_file_path(destination.combine_file(file.name));
 			}
 
-			const auto result = platform::copy_file(source.combine_file(file.name),
-			                                        destination.combine_file(file.name), !replace_existing, false);
+			const auto result = platform::copy_file(source.combine_file(file.name), destination.combine_file(file.name),
+			                                        !replace_existing, false);
 			if (result.code == platform::file_op_result_code::ALREADY_EXISTS)
 			{
 				return {platform::file_op_result_code::FAILED, std::format("Destination exists: {}", file.name)};
@@ -302,8 +296,8 @@ namespace
 			const auto child_source = source.combine(folder.name);
 			const auto child_destination = destination.combine(folder.name);
 			const auto result = is_directory_symlink(child_source)
-				                    ? copy_directory_symlink(child_source, child_destination, replace_existing)
-				                    : copy_folder_contents(child_source, child_destination, replace_existing);
+			                        ? copy_directory_symlink(child_source, child_destination, replace_existing)
+			                        : copy_folder_contents(child_source, child_destination, replace_existing);
 			if (result.code == platform::file_op_result_code::ALREADY_EXISTS)
 			{
 				return {platform::file_op_result_code::FAILED, std::format("Destination exists: {}", folder.name)};
@@ -395,10 +389,7 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 	{
 		if (destination_is_same_or_descendant(folder, target))
 		{
-			return {
-				file_op_result_code::FAILED,
-				std::format("Cannot copy {} into itself", folder.text())
-			};
+			return {file_op_result_code::FAILED, std::format("Cannot copy {} into itself", folder.text())};
 		}
 	}
 
@@ -424,7 +415,8 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 
 		for (auto attempt = 0; attempt < attempts; ++attempt)
 		{
-			destination = replace_existing ? target.combine_file(file.name()) : collision_file_candidate(target, file.name(), attempt);
+			destination = replace_existing ? target.combine_file(file.name())
+			                               : collision_file_candidate(target, file.name(), attempt);
 			if (test_linux_before_claim_file_path) test_linux_before_claim_file_path(destination);
 
 			copied = copy_file(file, destination, !replace_existing, false);
@@ -435,9 +427,8 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 		{
 			if (!replace_existing && copied.code == file_op_result_code::ALREADY_EXISTS)
 			{
-				return stopped_by({
-					file_op_result_code::FAILED, std::format("Could not find a free name for {}", file.str())
-				});
+				return stopped_by(
+					{file_op_result_code::FAILED, std::format("Could not find a free name for {}", file.str())});
 			}
 
 			return stopped_by(copied);
@@ -464,7 +455,8 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 
 		for (auto attempt = 0; attempt < attempts; ++attempt)
 		{
-			destination = replace_existing ? target.combine(folder.name()) : collision_folder_candidate(target, folder.name(), attempt);
+			destination = replace_existing ? target.combine(folder.name())
+			                               : collision_folder_candidate(target, folder.name(), attempt);
 			if (test_linux_before_claim_folder_path) test_linux_before_claim_folder_path(destination);
 
 			copied = copy_folder_contents(folder, destination, replace_existing);
@@ -475,9 +467,8 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 		{
 			if (!replace_existing && copied.code == file_op_result_code::ALREADY_EXISTS)
 			{
-				return stopped_by({
-					file_op_result_code::FAILED, std::format("Could not find a free name for {}", folder.text())
-				});
+				return stopped_by(
+					{file_op_result_code::FAILED, std::format("Could not find a free name for {}", folder.text())});
 			}
 
 			// The folder was created and partly filled before the failure, so it is named too.
@@ -502,9 +493,8 @@ platform::file_op_result platform::move_or_copy(const std::vector<core::file_pat
 
 platform::file_op_result platform::replacement_flush_result(const bool flushed, std::string error_message)
 {
-	return flushed
-		       ? file_op_result{file_op_result_code::OK}
-		       : file_op_result{file_op_result_code::FAILED, std::move(error_message)};
+	return flushed ? file_op_result{file_op_result_code::OK}
+	               : file_op_result{file_op_result_code::FAILED, std::move(error_message)};
 }
 
 core::folder_path platform::temp_folder()
@@ -514,6 +504,10 @@ core::folder_path platform::temp_folder()
 
 core::file_path platform::running_app_path()
 {
+	// The program running, as Windows answers: its file need not be named after the application.
+	char buffer[PATH_MAX] = {};
+	const auto len = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+	if (len > 0) return core::file_path(std::string_view(buffer, static_cast<size_t>(len)));
 	return known_path(known_folder::running_app_folder).combine_file(core::app_file_stem());
 }
 
@@ -683,7 +677,6 @@ int platform::display_frequency()
 {
 	return 60;
 }
-
 
 // The seam tests use to simulate a cloud placeholder. Empty means "ask the filesystem", which is
 // all this build can do.

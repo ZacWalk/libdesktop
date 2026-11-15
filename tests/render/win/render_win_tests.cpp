@@ -36,8 +36,10 @@ static void should_need_sampling_for_planar_video()
 	assert_equal(false, can_sample_texture_format(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE),
 	             "nor is sampling a format that cannot be a 2D texture");
 	assert_equal(false, can_sample_texture_format(0), "nothing supported");
-	assert_equal(true, can_sample_texture_format(D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE |
-		             D3D11_FORMAT_SUPPORT_DECODER_OUTPUT), "a device that samples it");
+	assert_equal(true,
+	             can_sample_texture_format(D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE |
+	                                       D3D11_FORMAT_SUPPORT_DECODER_OUTPUT),
+	             "a device that samples it");
 }
 
 // Intel parts report the 128MB carved out at boot as dedicated memory, and allocate textures from shared
@@ -53,7 +55,8 @@ static void should_count_shared_memory_for_an_integrated_gpu()
 		return static_cast<uint64_t>(calc_texture_budget(gpu_bytes, total_phys));
 	};
 
-	assert_equal(128 * mb + 8 * gb, gpu_texture_memory(128 * mb, 8 * gb, true), "an integrated part uses shared memory");
+	assert_equal(128 * mb + 8 * gb, gpu_texture_memory(128 * mb, 8 * gb, true),
+	             "an integrated part uses shared memory");
 	assert_equal(8 * gb, gpu_texture_memory(8 * gb, 16 * gb, false), "a discrete card uses its own");
 	assert_equal(8 * gb, gpu_texture_memory(0, 8 * gb, false), "an adapter with none of its own still has somewhere");
 
@@ -71,8 +74,8 @@ static ComPtr<ID3D11Device> create_warp_device(ComPtr<ID3D11DeviceContext>& cont
 {
 	ComPtr<ID3D11Device> device;
 
-	if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr,
-	                             0, D3D11_SDK_VERSION, &device, nullptr, &context)))
+	if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+	                             D3D11_SDK_VERSION, &device, nullptr, &context)))
 	{
 		return {};
 	}
@@ -225,7 +228,9 @@ static void should_translate_highlight_spans_to_utf16_clusters()
 {
 	const auto highlight = core::color(1.0f, 0.0f, 0.0f, 1.0f);
 	const auto plain = core::color(0.0f, 0.0f, 1.0f, 1.0f);
-	const std::string text = "\xf0\x9f\x98\x80" "caf\xc3\xa9" "X";
+	const std::string text = "\xf0\x9f\x98\x80"
+							 "caf\xc3\xa9"
+							 "X";
 	const auto converted = render::utf8_to_utf16(text, {{4, 5, highlight}});
 
 	assert_equal(7_z, converted.text.size(), "emoji is preserved as a surrogate pair");
@@ -300,20 +305,309 @@ static void should_snap_gpu_text_in_pixel_coordinates()
 	             "text callbacks report enabled snapping, identity transform and one pixel per DIP");
 }
 
+// Direct3D cuts a polygon into triangles where the software renderer scans it, so the two are held to the
+// same picture: crisp ones to the same pixels, smooth ones to the same pixels but at their edges. Each
+// shader dithers by a level, which is the tolerance.
+static void should_draw_polygons_on_direct3d_as_the_software_renderer_does()
+{
+	constexpr core::sizei extent{96, 64};
+	const core::color white(1.0f, 1.0f, 1.0f, 1.0f);
+	// Concave, with many corners turned in, so the triangles must be cut around them.
+	const std::array<core::pointd, 12> star{{{48.3, 2.7},
+	                                         {55.1, 22.4},
+	                                         {75.6, 13.9},
+	                                         {62.8, 31.3},
+	                                         {84.2, 44.6},
+	                                         {58.9, 41.8},
+	                                         {50.4, 61.2},
+	                                         {41.7, 42.3},
+	                                         {14.6, 48.9},
+	                                         {33.2, 31.7},
+	                                         {16.8, 10.2},
+	                                         {40.9, 21.6}}};
+	const std::array<core::pointd, 4> box{{{3.3, 3.6}, {28.7, 3.6}, {28.7, 29.4}, {3.3, 29.4}}};
+	const auto gradient = render::paint::linear({3.3, 0.0}, core::color(0.9f, 0.2f, 0.1f, 1.0f), {28.7, 0.0},
+	                                            core::color(0.1f, 0.3f, 0.9f, 0.6f));
 
+	for (const auto smooth : {false, true})
+	{
+		const auto draw = [&](render::draw_context& dc)
+		{
+			dc.clear(core::color(0.0f, 0.0f, 0.0f, 1.0f));
+			dc.draw_polygon(star, {.fill = core::color(0.2f, 0.8f, 0.4f, 1.0f), .smooth = smooth});
+			dc.draw_polygon(box, {.fill = gradient, .border = white, .border_width = 2.5, .smooth = smooth});
+		};
+
+		const auto gpu = render::test_draw_d3d11(extent, draw);
+		assert_equal(true, gpu != nullptr, "a WARP device draws the scene");
+		if (!gpu) return;
+
+		const auto cpu = std::make_shared<core::surface>();
+		const auto context = render::create_surface_context(cpu);
+		context->begin_draw(extent, render::default_font_size, {});
+		draw(*context);
+		context->render();
+
+		auto lit = 0;
+		auto differ = 0;
+
+		for (auto y = 0; y < extent.cy; ++y)
+		{
+			for (auto x = 0; x < extent.cx; ++x)
+			{
+				const auto a = gpu->get_pixel(x, y);
+				const auto b = cpu->get_pixel(x, y);
+				if ((b & 0xffffff) != 0) ++lit;
+
+				auto worst = 0;
+				for (auto shift = 0; shift < 24; shift += 8)
+					worst = std::max(worst, std::abs(static_cast<int>(a >> shift & 0xff) -
+					                                 static_cast<int>(b >> shift & 0xff)));
+				if (worst > (smooth ? 24 : 2)) ++differ;
+			}
+		}
+
+		assert_equal(true, lit > 1500, "the scene is drawn");
+		// Smooth edges are a fringe on one and coverage on the other, which part only at sharp corners; a crisp
+		// pixel differs only where an edge passes within the GPU's sub-pixel precision of its centre.
+		assert_equal(true, differ <= (smooth ? 16 : 2),
+		             std::format("Direct3D draws what the software renderer draws ({} of {} pixels differ)", differ,
+		                         lit));
+	}
+}
+
+// Polygons a vertices object holds are drawn by the scene that draws it, on Direct3D as on the CPU.
+static void should_draw_vertex_polygons_on_direct3d()
+{
+	const std::array<core::pointd, 3> triangle{{{4.0, 4.0}, {28.0, 4.0}, {4.0, 28.0}}};
+	const auto gpu = render::test_draw_d3d11({32, 32}, [&](render::draw_context& dc)
+	{
+		dc.clear(core::color(0.0f, 0.0f, 0.0f, 1.0f));
+		const auto verts = dc.create_vertices();
+		const render::vertex_polygon polygons[] = {
+			{triangle, {.fill = core::color(0.0f, 0.0f, 1.0f, 1.0f), .smooth = false}}};
+		verts->update_polygons(polygons);
+		dc.draw_vertices(verts);
+	});
+
+	assert_equal(true, gpu != nullptr, "a WARP device draws the scene");
+	if (!gpu) return;
+	assert_equal(0xff0000ffu, gpu->get_pixel(8, 8) | 0xff000000u, "the polygon is drawn");
+	assert_equal(0xff000000u, gpu->get_pixel(24, 24) | 0xff000000u, "and nothing beside it");
+}
+
+// A grey picture: level(x, y) is 0 to 255, or 0 to 65535 for a wide format, red, green and blue alike.
+static core::surface_ptr make_grey_picture(const core::sizei extent, const core::texture_format format,
+                                           const std::function<int(int, int)>& level)
+{
+	const auto picture = std::make_shared<core::surface>();
+	if (!picture->alloc(extent, format)) return {};
+
+	for (auto y = 0; y < extent.cy; ++y)
+	{
+		for (auto x = 0; x < extent.cx; ++x)
+		{
+			const auto v = static_cast<uint32_t>(level(x, y));
+
+			if (core::is_wide(format))
+			{
+				auto* const p = std::bit_cast<uint16_t*>(picture->pixels_line(y)) + x * 4;
+				p[0] = p[1] = p[2] = static_cast<uint16_t>(v);
+				p[3] = 0xffff;
+			}
+			else
+			{
+				picture->set_pixel(x, y, 0xff000000u | v << 16 | v << 8 | v);
+			}
+		}
+	}
+
+	return picture;
+}
+
+// Full-range NV12: luma(x, y) for each pixel, and cb and cr for each chroma sample (x, y) of the half-size plane.
+static core::surface_ptr make_nv12_picture(const core::sizei extent, const std::function<int(int, int)>& luma,
+                                           const std::function<std::pair<int, int>(int, int)>& chroma)
+{
+	const auto planes = std::make_shared<core::surface>();
+	if (!planes->alloc(extent, core::texture_format::NV12)) return {};
+	planes->color_space(core::color_space::rec601_full);
+
+	const auto stride = planes->stride();
+	auto* const luma_plane = planes->pixels();
+	auto* const chroma_plane = luma_plane + stride * extent.cy;
+
+	for (auto y = 0; y < extent.cy; ++y)
+		for (auto x = 0; x < extent.cx; ++x) luma_plane[stride * y + x] = static_cast<uint8_t>(luma(x, y));
+
+	for (auto y = 0; y < extent.cy / 2; ++y)
+	{
+		for (auto x = 0; x < extent.cx / 2; ++x)
+		{
+			const auto [cb, cr] = chroma(x, y);
+			chroma_plane[stride * y + x * 2] = static_cast<uint8_t>(cb);
+			chroma_plane[stride * y + x * 2 + 1] = static_cast<uint8_t>(cr);
+		}
+	}
+
+	return planes;
+}
+
+// Draws a picture whole into a target of the given extent with Direct3D, YUV textures allowed.
+static core::surface_ptr draw_picture_on_direct3d(const core::const_surface_ptr& picture, const core::sizei extent,
+                                                  const render::texture_sampler sampler)
+{
+	const auto yuv_before = render::yuv_textures_enabled;
+	render::yuv_textures_enabled = true;
+
+	auto drawn = render::test_draw_d3d11(extent, [&](render::draw_context& dc)
+	{
+		dc.clear(core::color(0.0f, 0.0f, 0.0f, 1.0f));
+		const auto texture = dc.create_texture();
+		texture->update(picture);
+		dc.draw_texture(texture, core::recti(0, 0, extent.cx, extent.cy), 1.0f, sampler);
+	});
+
+	render::yuv_textures_enabled = yuv_before;
+	return drawn;
+}
+
+static int red_of(const core::color32 c)
+{
+	return static_cast<int>(c >> 16 & 0xff);
+}
+
+// A picture's chroma is read where its stream sites it. Left-sited chroma lies on every other luma column, so
+// the column a sample lies on shows that sample alone; read as centred, that column takes the sample a quarter
+// from the one before it. Drawn bilinearly at one to one, the two differ by that blend.
+static void should_read_chroma_where_it_is_sited()
+{
+	constexpr core::sizei extent{8, 4};
+	const auto red_across = [&](const core::chroma_siting siting)
+	{
+		// Neutral and redder chroma samples in turn across the picture, over mid grey.
+		const auto planes = make_nv12_picture(extent, [](int, int) { return 128; },
+		                                      [](const int x, int) { return std::pair{128, x % 2 ? 160 : 128}; });
+		planes->chroma_siting(siting);
+
+		std::array<int, extent.cx> red{};
+		const auto gpu = draw_picture_on_direct3d(planes, extent, render::texture_sampler::bilinear);
+		if (gpu)
+			for (auto x = 0; x < extent.cx; ++x) red[x] = red_of(gpu->get_pixel(x, 1));
+		return red;
+	};
+
+	const auto left = red_across(core::chroma_siting::left);
+	const auto centred = red_across(core::chroma_siting::center);
+
+	// Full-range BT.601: red is luma plus 1.402 times Cr's offset. Column 2 lies on the redder sample (Cr 160)
+	// when left-sited, 174; centred, it takes three quarters of it (Cr 152), 162.
+	assert_equal(true, std::abs(left[2] - 174) <= 1,
+	             std::format("left-sited, column 2 shows the sample ({})", left[2]));
+	assert_equal(true, std::abs(centred[2] - 162) <= 1,
+	             std::format("centred, column 2 blends it with the one before ({})", centred[2]));
+	assert_equal(true, std::abs(left[0] - 128) <= 1 && std::abs(centred[0] - 128) <= 1,
+	             std::format("column 0 is the neutral sample either way ({}, {})", left[0], centred[0]));
+}
+
+// A picture drawn at a quarter of its size averages the texels under each pixel: stripes one texel white in four
+// come out a quarter grey. Read at one point a pixel, they came out black - the point fell between two black
+// texels - and as the picture moved, they shimmered between black and grey.
+static void should_average_a_picture_drawn_small()
+{
+	constexpr core::sizei source{96, 96};
+	constexpr core::sizei extent{24, 24};
+	const auto stripe = [](const int x, int)
+	{
+		return x % 4 == 0 ? 255 : 0;
+	};
+
+	for (const auto& [name, picture] :
+	     {std::pair{"RGB", make_grey_picture(source, core::texture_format::RGB, stripe)},
+	      std::pair{"NV12", make_nv12_picture(source, stripe, [](int, int) { return std::pair{128, 128}; })}})
+	{
+		const auto gpu = draw_picture_on_direct3d(picture, extent, render::texture_sampler::bilinear);
+		assert_equal(true, gpu != nullptr, "a WARP device draws the scene");
+		if (!gpu) return;
+
+		auto off = 0;
+		std::string row;
+
+		for (auto y = 0; y < extent.cy; ++y)
+			for (auto x = 0; x < extent.cx; ++x)
+				if (std::abs(red_of(gpu->get_pixel(x, y)) - 64) > 2) ++off;
+
+		for (auto x = 0; x < extent.cx; ++x) row += std::format(" {}", red_of(gpu->get_pixel(x, 3)));
+
+		assert_equal(0, off, std::format("{}: every pixel is the stripes' average (row 3:{})", name, row));
+	}
+}
+
+// A colour the 8-bit target cannot hold - a 16-bit texel between two levels - is dithered between them, so a
+// gradient of such colours does not band. One it holds exactly - an 8-bit texel drawn at one to one - is the
+// same pixel it was.
+static void should_dither_only_what_the_target_cannot_hold()
+{
+	constexpr core::sizei extent{16, 16};
+	const auto exact = make_grey_picture(extent, core::texture_format::RGB,
+	                                     [](const int x, const int y) { return 100 + (x + y) % 7; });
+	const auto exact_drawn = draw_picture_on_direct3d(exact, extent, render::texture_sampler::point);
+	assert_equal(true, exact_drawn != nullptr, "a WARP device draws the scene");
+	if (!exact_drawn) return;
+
+	auto changed = 0;
+
+	for (auto y = 0; y < extent.cy; ++y)
+		for (auto x = 0; x < extent.cx; ++x)
+			if (red_of(exact_drawn->get_pixel(x, y)) != 100 + (x + y) % 7) ++changed;
+
+	assert_equal(0, changed, "an 8-bit picture at one to one is drawn exactly");
+
+	// Level 100.5 of 255, held in sixteen bits.
+	const auto between = make_grey_picture(extent, core::texture_format::RGBX16, [](int, int) { return 25829; });
+	const auto between_drawn = draw_picture_on_direct3d(between, extent, render::texture_sampler::point);
+	assert_equal(true, between_drawn != nullptr, "a WARP device draws the scene");
+	if (!between_drawn) return;
+
+	auto lower = 0;
+	auto upper = 0;
+
+	for (auto y = 0; y < extent.cy; ++y)
+	{
+		for (auto x = 0; x < extent.cx; ++x)
+		{
+			const auto red = red_of(between_drawn->get_pixel(x, y));
+			if (red == 100) ++lower;
+			if (red == 101) ++upper;
+		}
+	}
+
+	assert_equal(extent.cx * extent.cy, lower + upper, "every pixel is one of the two levels either side");
+	assert_equal(true, lower > 64 && upper > 64,
+	             std::format("and both are used, half and half ({} and {})", lower, upper));
+}
 
 void register_render_win_tests(test_registry& tests)
 {
+	tests.add("Should read chroma where it is sited"s, should_read_chroma_where_it_is_sited);
+	tests.add("Should average a picture drawn small"s, should_average_a_picture_drawn_small);
+	tests.add("Should dither only what the target cannot hold"s, should_dither_only_what_the_target_cannot_hold);
+	tests.add("Should draw polygons on Direct3D as the software renderer does"s,
+	          should_draw_polygons_on_direct3d_as_the_software_renderer_does);
+	tests.add("Should draw vertex polygons on Direct3D"s, should_draw_vertex_polygons_on_direct3d);
 	tests.add("Should snap GPU text in pixel coordinates"s, should_snap_gpu_text_in_pixel_coordinates);
 	tests.add("Should classify DXGI device loss"s, should_classify_dxgi_device_loss);
-	tests.add("Should recognise the Microsoft Basic Render Driver as software"s, should_recognise_the_basic_render_driver);
+	tests.add("Should recognise the Microsoft Basic Render Driver as software"s,
+	          should_recognise_the_basic_render_driver);
 	tests.add("Should need shader sampling for planar video textures"s, should_need_sampling_for_planar_video);
 	tests.add("Should count shared memory for an integrated GPU"s, should_count_shared_memory_for_an_integrated_gpu);
-	tests.add("Should recycle a texture only when nothing draws it"s, should_recycle_a_texture_only_when_nothing_draws_it);
+	tests.add("Should recycle a texture only when nothing draws it"s,
+	          should_recycle_a_texture_only_when_nothing_draws_it);
 	tests.add("Issue #219: Should fall back for missing glyphs"s, should_fall_back_for_missing_glyphs);
 	tests.add("Issue #232/#189: Should cache font faces per face and size"s, should_cache_font_faces_per_face_and_size);
 	tests.add("Issue #189: Should key glyph cache by size"s, should_key_glyph_cache_by_size);
-	tests.add("Should translate highlight spans to utf16 clusters"s, should_translate_highlight_spans_to_utf16_clusters);
+	tests.add("Should translate highlight spans to utf16 clusters"s,
+	          should_translate_highlight_spans_to_utf16_clusters);
 	tests.add("Should build text cluster spans once per run"s, should_build_text_cluster_spans_once_per_run);
 	tests.add("Should apply positive ascender offsets upward"s, should_apply_positive_ascender_offsets_upward);
 	tests.add("Should clear text highlights between draws"s, should_clear_text_highlights_between_draws);

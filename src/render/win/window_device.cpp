@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: A Direct3D or software renderer bound to one platform::window.
 
@@ -14,8 +13,8 @@
 
 bool is_device_loss_error(const HRESULT hr)
 {
-	return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
-		hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+	return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
+	       hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
 
 namespace render::detail
@@ -26,21 +25,14 @@ namespace render::detail
 	bool backend_gpu_active();
 	factories_ptr backend_factories();
 
-	void register_window_device(void* key, std::function<void()> prepare_loss,
-	                            std::function<void()> rebuild_loss, std::function<void()> update_font,
-	                            std::function<void()> invalidate);
+	void register_window_device(void* key, std::function<void()> prepare_loss, std::function<void()> rebuild_loss,
+	                            std::function<void()> update_font, std::function<void()> invalidate);
 	void unregister_window_device(void* key);
 	void device_lost();
 }
 
 namespace
 {
-	constexpr auto ui_component_snap = 8;
-	constexpr auto ui_baseline_snap = 4;
-	constexpr auto ui_cx_resize_handle = 12;
-	constexpr auto ui_scroll_width = 20;
-	constexpr auto ui_base_icon_cxy = 18;
-
 	constexpr uint32_t hidden_standby_timer_id = 0xD1FF;
 	constexpr uint32_t hidden_standby_poll_ms = 250;
 
@@ -74,23 +66,13 @@ namespace render
 		bool _present_occluded = false;
 		bool _hidden_standby = false;
 
-		int font_size_for_window() const
-		{
-			return core::round(_scale * static_cast<double>(render::base_font_size()));
-		}
+		int font_size_for_window() const { return core::round(_scale * static_cast<double>(render::base_font_size())); }
 
 		void update_metrics()
 		{
 			if (!_context) return;
 
-			const auto ui_scale = _scale * render::base_font_size() /
-				static_cast<double>(render::default_font_size);
-			_context->scale_factor = ui_scale;
-			_context->icon_cxy = core::round(ui_base_icon_cxy * ui_scale);
-			_context->padding2 = core::round(ui_component_snap * ui_scale);
-			_context->padding1 = core::round(ui_baseline_snap * ui_scale);
-			_context->handle_cxy = core::round(ui_cx_resize_handle * ui_scale);
-			_context->scroll_width = core::round(ui_scroll_width * ui_scale);
+			_context->scale_metrics(_scale * render::base_font_size() / static_cast<double>(render::default_font_size));
 		}
 
 		void update_font_and_metrics()
@@ -131,8 +113,8 @@ namespace render
 					desc.Height = _buffer_extent.cy;
 
 					ComPtr<IDXGISwapChain1> swap_chain1;
-					hr = factory2->CreateSwapChainForHwnd(_factories->d3d_device.Get(), hwnd, &desc, nullptr,
-					                                             nullptr, &swap_chain1);
+					hr = factory2->CreateSwapChainForHwnd(_factories->d3d_device.Get(), hwnd, &desc, nullptr, nullptr,
+					                                      &swap_chain1);
 					if (SUCCEEDED(hr)) _swap_chain = swap_chain1;
 				}
 
@@ -159,8 +141,7 @@ namespace render
 
 			if (!_context)
 			{
-				_context = ::create_software_draw_context(_factories, hwnd, _options.layered,
-				                                         font_size_for_window());
+				_context = ::create_software_draw_context(_factories, hwnd, _options.layered, font_size_for_window());
 			}
 
 			update_metrics();
@@ -220,11 +201,13 @@ namespace render
 
 			ComPtr<ID3D11Device> device;
 			const auto reason = _swap_chain && SUCCEEDED(_swap_chain->GetDevice(IID_PPV_ARGS(&device))) && device
-				                    ? device->GetDeviceRemovedReason()
-				                    : hr;
-			core::log(__FUNCTION__, std::format(
-				"{} failed with HRESULT 0x{:08x}; device reason 0x{:08x}. Switching to CPU software rendering.",
-				operation, static_cast<uint32_t>(hr), static_cast<uint32_t>(reason)));
+			                        ? device->GetDeviceRemovedReason()
+			                        : hr;
+			core::log(
+				__FUNCTION__,
+				std::format(
+					"{} failed with HRESULT 0x{:08x}; device reason 0x{:08x}. Switching to CPU software rendering.",
+					operation, static_cast<uint32_t>(hr), static_cast<uint32_t>(reason)));
 
 			platform::fail_crash_guard(platform::crash_guard::gpu_render);
 			detail::device_lost();
@@ -259,7 +242,7 @@ namespace render
 			HRESULT hr;
 			{
 				core::perf_timer timer(render::gpu_perf.present_us, &render::gpu_perf.present_max_us,
-				                     &render::gpu_perf.present_latency);
+				                       &render::gpu_perf.present_latency);
 				hr = _swap_chain->Present(0, 0);
 			}
 
@@ -279,16 +262,12 @@ namespace render
 		}
 
 	public:
-		window_device_win(platform::window& window, const device_options& options)
-			: _window(window), _scale(window.scale()), _options(options), _factories(detail::backend_factories()),
-			  _extent(window.client_extent()), _use_d3d(options.gpu && !options.layered)
+		window_device_win(platform::window& window, const device_options& options) :
+			_window(window), _scale(window.scale()), _options(options), _factories(detail::backend_factories()),
+			_extent(window.client_extent()), _use_d3d(options.gpu && !options.layered)
 		{
-			detail::register_window_device(
-				this,
-				[this] { prepare_device_loss(); },
-				[this] { rebuild_device(); },
-				[this] { update_font_and_metrics(); },
-				[this] { _window.invalidate(); });
+			detail::register_window_device(this, [this] { prepare_device_loss(); }, [this] { rebuild_device(); },
+			                               [this] { update_font_and_metrics(); }, [this] { _window.invalidate(); });
 
 			if (create_draw_context() && render::gpu_active()) detail::device_lost();
 			if (_context && !_extent.is_empty()) _context->resize(_extent);
@@ -316,20 +295,19 @@ namespace render
 
 			core::bump(render::ui_perf.paints);
 			core::perf_timer timer(render::ui_perf.paint_us, &render::ui_perf.paint_max_us,
-			                     &render::ui_perf.paint_latency);
+			                       &render::ui_perf.paint_latency);
 			auto context = _context;
 			context->begin_draw(_extent, font_size_for_window(), actual_damage);
 
 			{
 				core::perf_timer build(render::ui_perf.scene_build_us, &render::ui_perf.scene_build_max_us,
-				                     &render::ui_perf.scene_build_latency);
+				                       &render::ui_perf.scene_build_latency);
 				if (draw) draw(*context);
 			}
 
 			const auto presented = [&context]
 			{
-				core::perf_timer backend(render::ui_perf.backend_render_us,
-				                         &render::ui_perf.backend_render_max_us,
+				core::perf_timer backend(render::ui_perf.backend_render_us, &render::ui_perf.backend_render_max_us,
 				                         &render::ui_perf.backend_render_latency);
 				return context->render();
 			}();
@@ -343,7 +321,7 @@ namespace render
 			present();
 		}
 
-		void redraw() override
+		void redraw(const core::recti changed) override
 		{
 			core::bump(render::ui_perf.redraws);
 			if (!_context || !_context->is_valid())
@@ -353,7 +331,7 @@ namespace render
 			}
 
 			if (skip_hidden_frame()) return;
-			_context->reset_damage();
+			_context->reset_damage(changed);
 			const auto presented = _context->render();
 			if (presented.failed)
 			{
@@ -385,8 +363,8 @@ namespace render
 					                                           back_buffer_format, 0);
 					if (FAILED(hr))
 					{
-						core::log(__FUNCTION__, std::format("ResizeBuffers failed 0x{:08x}",
-					                                  static_cast<uint32_t>(hr)));
+						core::log(__FUNCTION__,
+						          std::format("ResizeBuffers failed 0x{:08x}", static_cast<uint32_t>(hr)));
 						handle_device_loss(hr, "ResizeBuffers");
 					}
 					else
@@ -473,8 +451,7 @@ namespace render::detail
 	}
 }
 
-render::window_device_ptr render::create_window_device(platform::window& window,
-                                                        const render::device_options& options)
+render::window_device_ptr render::create_window_device(platform::window& window, const render::device_options& options)
 {
 	return std::make_shared<render::window_device_win>(window, options);
 }

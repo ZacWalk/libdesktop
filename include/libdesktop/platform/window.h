@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: A native window and the events it reports. The platform never draws into a window -
 // render binds a device to it - and knows nothing of what is shown there: ui's frames and an
@@ -113,52 +112,55 @@ namespace platform
 	public:
 		virtual ~window_events() = default;
 
-		virtual void created(window& w) {}
+		virtual void created(window& /*w*/) {}
 		virtual void destroyed() {}
 
-		virtual void size_changed(core::sizei client, bool minimized) {}
+		virtual void size_changed(core::sizei /*client*/, bool /*minimized*/) {}
 		// Empty damage is the whole client area.
-		virtual void paint(core::recti damage) {}
-		virtual void scale_changed(double scale) {}
+		virtual void paint(core::recti /*damage*/) {}
+		virtual void scale_changed(double /*scale*/) {}
 
-		virtual void pointer_move(core::pointi loc, key_state keys) {}
+		virtual void pointer_move(core::pointi /*loc*/, key_state /*keys*/) {}
 		virtual void pointer_leave() {}
-		virtual void pointer_down(pointer_button button, core::pointi loc, key_state keys) {}
-		virtual void pointer_up(pointer_button button, core::pointi loc, key_state keys) {}
-		virtual void double_click(pointer_button button, core::pointi loc, key_state keys) {}
+		virtual void pointer_down(pointer_button /*button*/, core::pointi /*loc*/, key_state /*keys*/) {}
+		virtual void pointer_up(pointer_button /*button*/, core::pointi /*loc*/, key_state /*keys*/) {}
+		virtual void double_click(pointer_button /*button*/, core::pointi /*loc*/, key_state /*keys*/) {}
 		// True when handled; delta is in the platform's wheel units, 120 to a detent.
-		virtual bool wheel(core::pointi loc, int delta, wheel_axis axis, key_state keys) { return false; }
-		virtual bool pinch(core::pointi loc, int delta, bool begins) { return false; }
-		virtual void pan_start(core::pointi loc) {}
-		virtual void pan(core::pointi start, core::pointi current) {}
-		virtual void pan_end(core::pointi start, core::pointi end) {}
-		virtual bool touch_double_tap(core::pointi loc) { return false; }
+		virtual bool wheel(core::pointi /*loc*/, int /*delta*/, wheel_axis /*axis*/, key_state /*keys*/)
+		{
+			return false;
+		}
+		virtual bool pinch(core::pointi /*loc*/, int /*delta*/, bool /*begins*/) { return false; }
+		virtual void pan_start(core::pointi /*loc*/) {}
+		virtual void pan(core::pointi /*start*/, core::pointi /*current*/) {}
+		virtual void pan_end(core::pointi /*start*/, core::pointi /*end*/) {}
+		virtual bool touch_double_tap(core::pointi /*loc*/) { return false; }
 
 		// Keys carry the platform's key codes (keys:: values). System keys - Alt and F10 combinations -
 		// get the platform's default handling only when this answers false.
-		virtual bool key_down(int key, key_state keys, bool system) { return false; }
-		virtual bool key_up(int key, key_state keys, bool system) { return false; }
+		virtual bool key_down(char32_t /*key*/, key_state /*keys*/, bool /*system*/) { return false; }
+		virtual bool key_up(char32_t /*key*/, key_state /*keys*/, bool /*system*/) { return false; }
 		// Typed text, already assembled from surrogate pairs and the input method.
-		virtual void text(std::string_view utf8) {}
+		virtual void text(std::string_view /*utf8*/) {}
 
-		virtual void focus_changed(bool has_focus) {}
-		virtual void activated(bool active) {}
+		virtual void focus_changed(bool /*has_focus*/) {}
+		virtual void activated(bool /*active*/) {}
 		// Closing is the handler's decision: it calls window::destroy when it agrees.
 		virtual void close_requested() {}
-		virtual void context_menu(core::pointi screen, bool from_keyboard) {}
+		virtual void context_menu(core::pointi /*screen*/, bool /*from_keyboard*/) {}
 		// The pointer capture was taken away.
 		virtual void cancel_mode() {}
-		virtual void timer(uint32_t id) {}
+		virtual void timer(uint32_t /*id*/) {}
 
-		virtual hit_region hit_test(core::pointi loc) { return hit_region::client; }
-		virtual void caption_button(caption_button_action action, core::pointi loc) {}
+		virtual hit_region hit_test(core::pointi /*loc*/) { return hit_region::client; }
+		virtual void caption_button(caption_button_action /*action*/, core::pointi /*loc*/) {}
 
-		virtual drop_effect drag_over(const clipboard_data& data, key_state keys, core::pointi loc)
+		virtual drop_effect drag_over(const clipboard_data& /*data*/, key_state /*keys*/, core::pointi /*loc*/)
 		{
 			return drop_effect::none;
 		}
 
-		virtual drop_effect drag_drop(clipboard_data& data, key_state keys, core::pointi loc)
+		virtual drop_effect drag_drop(clipboard_data& /*data*/, key_state /*keys*/, core::pointi /*loc*/)
 		{
 			return drop_effect::none;
 		}
@@ -166,7 +168,7 @@ namespace platform
 		virtual void drag_leave() {}
 
 		// The application's window only: power, session, theme, display and device changes.
-		virtual void system_event(os_event_type e) {}
+		virtual void system_event(os_event_type /*e*/) {}
 	};
 
 	class window

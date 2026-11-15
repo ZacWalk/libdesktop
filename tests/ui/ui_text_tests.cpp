@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Headless tests for the portable text models, palette, and clipboard seam.
 
@@ -19,6 +18,7 @@
 
 #include <array>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -78,18 +78,20 @@ namespace
 	{
 		ui::test::fake_measure_context measure;
 		assert_equal(8, measure.metrics.char_width, "grid width");
-		assert_equal(32, measure.measure_text("abcd"sv, render::font_face::dialog,
-		                                     render::text_style::single_line, 100).cx,
+		assert_equal(32,
+		             measure.measure_text("abcd"sv, render::font_face::dialog, render::text_style::single_line, 100).cx,
 		             "ASCII grid measurement");
-		assert_equal(24, measure.measure_text("a\xC3\xA9\xE2\x82\xAC"sv, render::font_face::dialog,
-		                                     render::text_style::single_line, 100).cx,
+		assert_equal(24,
+		             measure
+		                 .measure_text("a\xC3\xA9\xE2\x82\xAC"sv, render::font_face::dialog,
+		                               render::text_style::single_line, 100)
+		                 .cx,
 		             "UTF-8 grid measurement");
 
 		ui::test::fake_draw_context draw;
 		draw.draw_rect(core::recti{0, 0, 10, 10}, core::color(core::rgba(1, 2, 3)));
-		draw.draw_text("hello"sv, core::recti{4, 8, 36, 24}, render::font_face::dialog,
-		               render::text_style::single_line, core::color(core::rgba(255, 255, 255)),
-		               core::color(core::rgba(0, 0, 0, 0)));
+		draw.draw_text("hello"sv, core::recti{4, 8, 36, 24}, render::font_face::dialog, render::text_style::single_line,
+		               core::color(core::rgba(255, 255, 255)), core::color(core::rgba(0, 0, 0, 0)));
 		assert_equal(uint32_t{1}, static_cast<uint32_t>(draw.fills.size()), "recorded fill count");
 		assert_equal(uint32_t{1}, static_cast<uint32_t>(draw.texts.size()), "recorded text count");
 		assert_equal_strict("hello", draw.drawn_text(), "recorded text content");
@@ -101,6 +103,59 @@ namespace
 		assert_equal(uint32_t{1}, static_cast<uint32_t>(draw.lines.size()), "recorded line count");
 		assert_equal(uint32_t{1}, static_cast<uint32_t>(draw.polylines.size()), "recorded polyline count");
 		assert_equal(uint32_t{1}, static_cast<uint32_t>(draw.ellipses.size()), "recorded ellipse count");
+	}
+
+	void should_resize_shared_table_columns()
+	{
+		ui::table_layout::columns columns;
+		const std::vector<int> natural{40, 100, 100};
+		columns.layout(natural, 300, 20);
+		assert_equal(160, columns.widths()[2], "last column fills the table");
+		assert_equal(true, columns.resize(1, 150), "divider changes a width");
+		assert_equal(40, columns.widths()[0], "columns before the divider stay put");
+		assert_equal(150, columns.widths()[1], "resized column follows the pointer");
+		assert_equal(110, columns.widths()[2], "last column makes room");
+		columns.resize(1, 10000);
+		assert_equal(240, columns.widths()[1], "following column retains its minimum");
+		assert_equal(20, columns.widths()[2], "last column does not collapse");
+		columns.resize(1, -100);
+		assert_equal(20, columns.widths()[1], "drag respects minimum width");
+		columns.fit(1);
+		assert_equal(100, columns.widths()[1], "fit returns to content width");
+		columns.layout(natural, 600, 40, 2.0);
+		assert_equal(80, columns.widths()[0], "held width follows DPI");
+		assert_equal(200, columns.widths()[1], "user width follows DPI");
+		columns.layout(natural, 7, 40, 2.0);
+		assert_equal(7, std::accumulate(columns.widths().begin(), columns.widths().end(), 0),
+		             "tiny tables never extend beyond their bounds");
+		for (const auto width : columns.widths()) assert_equal(true, width >= 0, "tiny width is nonnegative");
+		columns.reset();
+		columns.layout(std::vector<int>{8, 80, 40}, 200, 32);
+		assert_equal(8, columns.widths()[0],
+		             "an automatic status column keeps its natural width below the drag minimum");
+		columns.resize(1, 100);
+		assert_equal(8, columns.widths()[0], "holding an earlier narrow column never widens it under the pointer");
+	}
+
+	void should_cancel_table_column_capture()
+	{
+		ui::table_layout::columns columns;
+		const std::vector<int> natural{50, 80, 90};
+		columns.layout(natural, 300, 20);
+		const core::recti band{10, 30, 310, 54};
+		assert_equal(0, columns.divider_at({60, 42}, band), "divider hit");
+		assert_equal(-1, columns.divider_at({60, 55}, band), "divider cannot capture a row");
+		assert_equal(-1, columns.divider_at({9, 42}, band), "divider cannot capture outside the table");
+		ui::table_layout::resize_gesture drag;
+		assert_equal(false, drag.begin(columns, 2, 60), "last column has no divider");
+		assert_equal(true, drag.begin(columns, 0, 60), "divider captures");
+		assert_equal(false, drag.update(columns, 60), "a click is not a resize");
+		assert_equal(true, drag.update(columns, 1000), "capture follows outside the table");
+		assert_equal(260, columns.widths()[0], "captured resize remains bounded");
+		assert_equal(true, drag.cancel(columns), "Escape cancels capture");
+		assert_equal(50, columns.widths()[0], "Escape restores the original size");
+		assert_equal(false, drag.update(columns, 1000), "a release after cancellation does nothing");
+		assert_equal(false, drag.active(), "cancel releases the gesture");
 	}
 
 	void should_record_view_host_requests()
@@ -228,7 +283,8 @@ namespace
 			buffer.replace_text(group, buffer.all(), "one\ntwo");
 		}
 		assert_equal(2u, static_cast<uint32_t>(buffer.size()), "replacement line count");
-		assert_equal(true, buffer.selection()._end.y < static_cast<int>(buffer.size()), "replacement selection is inside");
+		assert_equal(true, buffer.selection()._end.y < static_cast<int>(buffer.size()),
+		             "replacement selection is inside");
 		assert_equal(true, buffer.anchor_pos().y < static_cast<int>(buffer.size()), "replacement anchor is inside");
 		assert_equal(true, buffer.cursor_pos().y < static_cast<int>(buffer.size()), "replacement cursor is inside");
 
@@ -452,6 +508,8 @@ void register_ui_text_tests(test_registry& tests)
 {
 	tests.add("Should split table cells"s, should_split_table_cells);
 	tests.add("Should classify and cap table columns"s, should_classify_and_cap_table_columns);
+	tests.add("Should resize shared table columns"s, should_resize_shared_table_columns);
+	tests.add("Should cancel table column capture"s, should_cancel_table_column_capture);
 	tests.add("Should measure and record headless drawing"s, should_measure_and_record_headless_drawing);
 	tests.add("Should record text host requests"s, should_record_view_host_requests);
 	tests.add("Should edit text and undo"s, should_edit_text_and_undo);

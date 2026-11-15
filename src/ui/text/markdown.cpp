@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Markdown parsing and HTML reduction implementation.
 
@@ -44,7 +43,8 @@ namespace ui::md
 			if (s.size() < 3) return false;
 			const char c = s.front();
 			if (c != '-' && c != '*' && c != '_') return false;
-			for (const char ch : s) if (ch != c) return false;
+			for (const char ch : s)
+				if (ch != c) return false;
 			return true;
 		}
 
@@ -127,11 +127,24 @@ namespace ui::md
 				const char* name;
 				const char* value;
 			} named[] = {
-				{"amp", "&"}, {"lt", "<"}, {"gt", ">"}, {"quot", "\""}, {"apos", "'"},
-				{"nbsp", " "}, {"ndash", "\xe2\x80\x93"}, {"mdash", "\xe2\x80\x94"},
-				{"hellip", "\xe2\x80\xa6"}, {"lsquo", "\xe2\x80\x98"}, {"rsquo", "\xe2\x80\x99"},
-				{"ldquo", "\xe2\x80\x9c"}, {"rdquo", "\xe2\x80\x9d"}, {"bull", "\xe2\x80\xa2"},
-				{"middot", "\xc2\xb7"}, {"copy", "\xc2\xa9"}, {"reg", "\xc2\xae"}, {"trade", "\xe2\x84\xa2"},
+				{"amp", "&"},
+				{"lt", "<"},
+				{"gt", ">"},
+				{"quot", "\""},
+				{"apos", "'"},
+				{"nbsp", " "},
+				{"ndash", "\xe2\x80\x93"},
+				{"mdash", "\xe2\x80\x94"},
+				{"hellip", "\xe2\x80\xa6"},
+				{"lsquo", "\xe2\x80\x98"},
+				{"rsquo", "\xe2\x80\x99"},
+				{"ldquo", "\xe2\x80\x9c"},
+				{"rdquo", "\xe2\x80\x9d"},
+				{"bull", "\xe2\x80\xa2"},
+				{"middot", "\xc2\xb7"},
+				{"copy", "\xc2\xa9"},
+				{"reg", "\xc2\xae"},
+				{"trade", "\xe2\x84\xa2"},
 			};
 
 			for (const auto& e : named)
@@ -168,7 +181,9 @@ namespace ui::md
 				const auto right = static_cast<unsigned char>(b[i]);
 				if (left == 0 || right == 0) return left == right;
 				const auto lower = [](const unsigned char c)
-				{ return c >= 'A' && c <= 'Z' ? static_cast<unsigned char>(c + ('a' - 'A')) : c; };
+				{
+					return c >= 'A' && c <= 'Z' ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+				};
 				if (lower(left) != lower(right)) return false;
 			}
 			return true;
@@ -215,7 +230,7 @@ namespace ui::md
 						const auto semi = raw.find(';', k + 1);
 						std::string decoded;
 						if (semi != std::string_view::npos && semi - k <= 10 &&
-							decode_entity(raw.substr(k + 1, semi - k - 1), decoded))
+						    decode_entity(raw.substr(k + 1, semi - k - 1), decoded))
 						{
 							value += decoded;
 							k = semi + 1;
@@ -234,7 +249,8 @@ namespace ui::md
 		{
 			std::string out;
 			out.reserve(s.size());
-			for (const char c : s) if (static_cast<unsigned char>(c) > ' ') out += c;
+			for (const char c : s)
+				if (static_cast<unsigned char>(c) > ' ') out += c;
 			return out;
 		}
 
@@ -247,8 +263,8 @@ namespace ui::md
 
 		constexpr bool is_escapable(const char c)
 		{
-			return c == '*' || c == '`' || c == '[' || c == '\\' ||
-			       c == '#' || c == '>' || c == '-' || c == '+' || c == '_';
+			return c == '*' || c == '`' || c == '[' || c == '\\' || c == '#' || c == '>' || c == '-' || c == '+' ||
+			       c == '_';
 		}
 
 		constexpr size_t nowhere = static_cast<size_t>(-1);
@@ -350,11 +366,8 @@ namespace ui::md
 					if (const auto paren = s.find(')', close + 2); paren != std::string_view::npos)
 					{
 						flush(i);
-						out.push_back(span{
-							s.substr(i + 1, close - i - 1),
-							s.substr(close + 2, paren - close - 2),
-							bold, italic, false
-						});
+						out.push_back(span{s.substr(i + 1, close - i - 1), s.substr(close + 2, paren - close - 2), bold,
+						                   italic, false});
 						i = paren + 1;
 						start = i;
 						continue;
@@ -364,7 +377,7 @@ namespace ui::md
 
 			const bool at_boundary = i == 0 || detail::is_space(s[i - 1]) || s[i - 1] == '(' || s[i - 1] == '<';
 			if (s[i] == 'h' && at_boundary &&
-				(detail::starts_with(s.substr(i), "http://") || detail::starts_with(s.substr(i), "https://")))
+			    (detail::starts_with(s.substr(i), "http://") || detail::starts_with(s.substr(i), "https://")))
 			{
 				const auto end = detail::url_end(s, i);
 				flush(i);
@@ -396,7 +409,10 @@ namespace ui::md
 		if (!text.empty() && text.back() == '\r') text.remove_suffix(1);
 
 		const auto* const base = text.data();
-		const auto offset_of = [base](const std::string_view s) { return static_cast<int>(s.data() - base); };
+		const auto offset_of = [base](const std::string_view s)
+		{
+			return static_cast<int>(s.data() - base);
+		};
 
 		auto body = text;
 		while (!body.empty() && (body.front() == ' ' || body.front() == '\t')) body.remove_prefix(1);
@@ -457,8 +473,7 @@ namespace ui::md
 			out.kind = block::quote;
 			body.remove_prefix(1);
 		}
-		else if (detail::starts_with(body, "- ") || detail::starts_with(body, "* ") ||
-			detail::starts_with(body, "+ "))
+		else if (detail::starts_with(body, "- ") || detail::starts_with(body, "* ") || detail::starts_with(body, "+ "))
 		{
 			out.kind = block::bullet;
 			body.remove_prefix(2);
@@ -493,7 +508,7 @@ namespace ui::md
 
 			parse_source_line(raw, in_fence, parsed);
 
-			if (parsed.fence) continue; // the fence itself is punctuation, not content
+			if (parsed.fence) continue;                              // the fence itself is punctuation, not content
 			if (parsed.kind == block::blank && prev_blank) continue; // one blank separates; more add nothing
 
 			line l;
@@ -523,7 +538,10 @@ namespace ui::md
 		bool space_pending = false;
 		int newlines = 2; // suppresses leading blank lines
 
-		const auto ends_open = [&] { return out.empty() || out.back() == ' ' || out.back() == '\n'; };
+		const auto ends_open = [&]
+		{
+			return out.empty() || out.back() == ' ' || out.back() == '\n';
+		};
 
 		// Everything visible goes through here, so a pending space and the
 		// quote prefix are each applied exactly once per line.
@@ -674,7 +692,10 @@ namespace ui::md
 				while (scan < html.size())
 				{
 					const char t = html[scan];
-					if (quoted) { if (t == quoted) quoted = 0; }
+					if (quoted)
+					{
+						if (t == quoted) quoted = 0;
+					}
 					else if (t == '"' || t == '\'') quoted = t;
 					else if (t == '>') break;
 					++scan;
@@ -694,7 +715,10 @@ namespace ui::md
 				const auto name = tag.substr(0, n);
 				const auto attrs = tag.substr(n);
 
-				const auto is = [&name](const char* t) { return detail::iequals(name, t); };
+				const auto is = [&name](const char* t)
+				{
+					return detail::iequals(name, t);
+				};
 
 				// Script and style bodies are not text; skip to the matching close.
 				if (!closing && (is("script") || is("style") || is("head")))
@@ -702,7 +726,8 @@ namespace ui::md
 					const std::string end_tag = std::string("</") + std::string(name);
 					size_t at = i;
 					while (at + end_tag.size() <= html.size() &&
-						!detail::iequals(html.substr(at, end_tag.size()), end_tag.c_str())) ++at;
+					       !detail::iequals(html.substr(at, end_tag.size()), end_tag.c_str()))
+						++at;
 					if (at + end_tag.size() > html.size()) break;
 					const auto end = html.find('>', at);
 					i = end == std::string_view::npos ? html.size() : end + 1;
@@ -727,7 +752,8 @@ namespace ui::md
 				}
 				else if (is("img"))
 				{
-					if (!closing) for (const char ch : detail::attribute(attrs, "alt")) emit_char(ch);
+					if (!closing)
+						for (const char ch : detail::attribute(attrs, "alt")) emit_char(ch);
 				}
 				else if (is("li"))
 				{
@@ -749,11 +775,14 @@ namespace ui::md
 				else if (is("blockquote"))
 				{
 					newline(2);
-					if (closing) { if (quote_depth > 0) --quote_depth; }
+					if (closing)
+					{
+						if (quote_depth > 0) --quote_depth;
+					}
 					else ++quote_depth;
 				}
-				else if (is("p") || is("div") || is("ul") || is("ol") || is("table") ||
-					is("section") || is("article") || is("body") || is("form"))
+				else if (is("p") || is("div") || is("ul") || is("ol") || is("table") || is("section") ||
+				         is("article") || is("body") || is("form"))
 				{
 					newline(2);
 				}
@@ -779,8 +808,7 @@ namespace ui::md
 						href = detail::clean_url(detail::attribute(attrs, "href"));
 						// A ')' would end the markdown link early; a scheme we
 						// will not open must not look clickable at all.
-						if (detail::is_http_url(href) && href.find(')') == std::string::npos)
-							open_mark(link, "[");
+						if (detail::is_http_url(href) && href.find(')') == std::string::npos) open_mark(link, "[");
 						else href.clear();
 					}
 				}
@@ -792,7 +820,7 @@ namespace ui::md
 				const auto semi = html.find(';', i + 1);
 				std::string decoded;
 				if (semi != std::string_view::npos && semi - i <= 10 &&
-					detail::decode_entity(html.substr(i + 1, semi - i - 1), decoded))
+				    detail::decode_entity(html.substr(i + 1, semi - i - 1), decoded))
 				{
 					for (const char ch : decoded) emit_char(ch);
 					i = semi + 1;

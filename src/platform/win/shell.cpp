@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows shell integration, instance coordination, spelling, and file drag sources.
 
@@ -42,11 +41,10 @@ namespace
 
 		LPWSTR raw = nullptr;
 		const auto length = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-		                                   FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error,
-		                                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		                                       FORMAT_MESSAGE_IGNORE_INSERTS,
+		                                   nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 		                                   reinterpret_cast<LPWSTR>(&raw), 0, nullptr);
-		if (length == 0 || !raw)
-			return std::format("{} failed (error {})", operation, error);
+		if (length == 0 || !raw) return std::format("{} failed (error {})", operation, error);
 
 		auto text = core::utf16_to_utf8(std::wstring_view(raw, length));
 		LocalFree(raw);
@@ -59,8 +57,8 @@ namespace
 		if (name.empty() || name.size() > max_length) return false;
 		return std::all_of(name.begin(), name.end(), [](const char c)
 		{
-			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			       (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+			       c == '-';
 		});
 	}
 
@@ -79,6 +77,112 @@ namespace
 		return {nullptr, false, windows_error(operation, error)};
 	}
 
+	std::wstring instance_user_name(const std::string_view name, const std::wstring_view prefix, std::string& error)
+	{
+		HANDLE token = nullptr;
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		{
+			error = windows_error("OpenProcessToken");
+			return {};
+		}
+		const core::scope_exit close_token([token] { CloseHandle(token); });
+		DWORD bytes = 0;
+		if ((!GetTokenInformation(token, TokenUser, nullptr, 0, &bytes) &&
+		     GetLastError() != ERROR_INSUFFICIENT_BUFFER) ||
+		    bytes < sizeof(TOKEN_USER))
+		{
+			error = windows_error("GetTokenInformation(size)");
+			return {};
+		}
+		std::vector<uint8_t> user(bytes);
+		if (!GetTokenInformation(token, TokenUser, user.data(), bytes, &bytes))
+		{
+			error = windows_error("GetTokenInformation");
+			return {};
+		}
+		PWSTR sid = nullptr;
+		if (!ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid, &sid))
+		{
+			error = windows_error("ConvertSidToStringSid");
+			return {};
+		}
+		const core::scope_exit free_sid([sid] { LocalFree(sid); });
+		return std::wstring(prefix) + sid + L"." + core::utf8_to_utf16(name);
+	}
+
+	constexpr wchar_t instance_request_class[] = L"LibdesktopInstanceRequestWindow";
+	constexpr ULONG_PTR instance_request_version = 0x4c444901;
+	constexpr size_t max_instance_request_bytes = 1024 * 1024;
+	constexpr size_t max_instance_request_files = 256;
+
+	bool valid_instance_file(const core::file_path& file)
+	{
+		const auto text = file.str();
+		return core::is_path(text) && !file.name().is_empty() && text.find('\0') == std::string::npos;
+	}
+
+	class win_instance_receiver final : public platform::instance_receiver
+	{
+	public:
+		platform::instance_lock_ptr lock;
+		HWND window = nullptr;
+		std::function<bool(std::vector<core::file_path>)> handler;
+
+		~win_instance_receiver() override
+		{
+			if (window) DestroyWindow(window);
+		}
+
+		static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+		{
+			if (message == WM_NCCREATE)
+			{
+				const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+			}
+			auto* self = reinterpret_cast<win_instance_receiver*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			if (message == WM_COPYDATA && self)
+			{
+				const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+				if (!data || data->dwData != instance_request_version || !data->lpData ||
+				    data->cbData < sizeof(wchar_t) || data->cbData > max_instance_request_bytes ||
+				    data->cbData % sizeof(wchar_t) != 0)
+				{
+					core::log("instance", "Invalid instance request envelope");
+					return FALSE;
+				}
+				std::vector<wchar_t> copy(data->cbData / sizeof(wchar_t));
+				std::memcpy(copy.data(), data->lpData, data->cbData);
+				if (copy.back() != L'\0')
+				{
+					core::log("instance", "Unterminated instance request");
+					return FALSE;
+				}
+				const std::wstring_view text(copy.data(), copy.size() - 1);
+				std::vector<core::file_path> files;
+				for (size_t offset = 0; offset < text.size();)
+				{
+					const auto end = text.find(L'\0', offset);
+					if (end == std::wstring_view::npos || end == offset || files.size() == max_instance_request_files)
+					{
+						core::log("instance", "Invalid instance request file list");
+						return FALSE;
+					}
+					core::file_path file(core::utf16_to_utf8(text.substr(offset, end - offset)));
+					if (!valid_instance_file(file))
+					{
+						core::log("instance", "Instance request contains a non-absolute file path");
+						return FALSE;
+					}
+					files.emplace_back(file);
+					offset = end + 1;
+				}
+				return self->handler(std::move(files)) ? TRUE : FALSE;
+			}
+			return DefWindowProcW(hwnd, message, wparam, lparam);
+		}
+	};
+
 	std::atomic_bool tray_publication_failure = false;
 	std::mutex instance_signal_mutex;
 	std::unordered_map<UINT, std::function<void()>> instance_signals;
@@ -91,7 +195,7 @@ namespace
 		return RegisterWindowMessageW(wide_name.c_str());
 	}
 
-	LRESULT CALLBACK instance_signal_window_proc(HWND hwnd, UINT message, WPARAM, LPARAM)
+	LRESULT CALLBACK instance_signal_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if (message == WM_NCDESTROY)
 		{
@@ -111,7 +215,7 @@ namespace
 			platform::run_ui(std::move(callback));
 			return 0;
 		}
-		return DefWindowProcW(hwnd, message, 0, 0);
+		return DefWindowProcW(hwnd, message, wparam, lparam);
 	}
 
 	bool ensure_instance_signal_window()
@@ -127,8 +231,8 @@ namespace
 		if (!RegisterClassW(&klass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
 
 		// HWND_BROADCAST reaches invisible top-level windows but not HWND_MESSAGE windows.
-		instance_signal_window_handle = CreateWindowExW(WS_EX_TOOLWINDOW, class_name, L"", WS_POPUP,
-		                                                0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
+		instance_signal_window_handle = CreateWindowExW(WS_EX_TOOLWINDOW, class_name, L"", WS_POPUP, 0, 0, 0, 0,
+		                                                nullptr, nullptr, instance, nullptr);
 		return instance_signal_window_handle != nullptr;
 	}
 
@@ -177,28 +281,26 @@ namespace
 				break;
 			case WM_CONTEXTMENU:
 			case WM_RBUTTONUP:
-			case NIN_KEYSELECT:
-				self->context_menu(static_cast<UINT>(lparam) == NIN_KEYSELECT);
-				break;
+			case NIN_KEYSELECT: self->context_menu(static_cast<UINT>(lparam) == NIN_KEYSELECT); break;
 			case NIN_BALLOONUSERCLICK:
 				if (self->_callbacks.on_balloon_click) self->_callbacks.on_balloon_click();
 				break;
-			default:
-				break;
+			default: break;
 			}
 			return 0;
 		}
 
 		static ATOM register_window_class()
 		{
-			static const ATOM atom = []
+			static const ATOM atom = []() -> ATOM
 			{
 				WNDCLASSW klass = {};
 				klass.lpfnWndProc = &window_proc;
 				klass.hInstance = GetModuleHandleW(nullptr);
 				klass.lpszClassName = L"LibdesktopTrayWindow";
-				const auto atom = RegisterClassW(&klass);
-				return atom != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS ? (atom ? atom : 1) : 0;
+				const auto registered = RegisterClassW(&klass);
+				if (registered) return registered;
+				return GetLastError() == ERROR_CLASS_ALREADY_EXISTS ? ATOM{1} : ATOM{0};
 			}();
 			return atom;
 		}
@@ -213,16 +315,14 @@ namespace
 				identifier.hWnd = _window;
 				identifier.uID = _id;
 				RECT rect = {};
-				if (FAILED(Shell_NotifyIconGetRect(&identifier, &rect)))
-					GetCursorPos(&point);
+				if (FAILED(Shell_NotifyIconGetRect(&identifier, &rect))) GetCursorPos(&point);
 				else
 				{
 					point.x = rect.left;
 					point.y = rect.bottom;
 				}
 			}
-			else
-				GetCursorPos(&point);
+			else GetCursorPos(&point);
 
 			if (_callbacks.on_context_menu) _callbacks.on_context_menu({point.x, point.y}, keyboard_anchor);
 		}
@@ -230,7 +330,7 @@ namespace
 		HICON make_icon(const platform::tray_icon_image image)
 		{
 			if (image.extent.cx <= 0 || image.extent.cy <= 0 || image.extent.cx > 256 || image.extent.cy > 256 ||
-				image.bgra_pixels.size() < static_cast<size_t>(image.extent.cx) * static_cast<size_t>(image.extent.cy))
+			    image.bgra_pixels.size() < static_cast<size_t>(image.extent.cx) * static_cast<size_t>(image.extent.cy))
 			{
 				_diagnostics = "The tray icon dimensions or pixel buffer are invalid.";
 				return nullptr;
@@ -291,10 +391,7 @@ namespace
 			return result;
 		}
 
-		std::string last_shell_error() const
-		{
-			return windows_error("Shell_NotifyIcon", GetLastError());
-		}
+		std::string last_shell_error() const { return windows_error("Shell_NotifyIcon", GetLastError()); }
 
 		bool publish()
 		{
@@ -328,17 +425,22 @@ namespace
 
 	public:
 		win_tray_service(const platform::tray_icon_image image, const std::string_view tooltip,
-		                 platform::tray_callbacks callbacks)
-			: _id([] { static std::atomic_uint32_t next = 1; return next.fetch_add(1); }()),
-			  _taskbar_created(RegisterWindowMessageW(L"TaskbarCreated")), _callbacks(std::move(callbacks))
+		                 platform::tray_callbacks callbacks) :
+			_id(
+				[]
+		{
+			static std::atomic_uint32_t next = 1;
+			return next.fetch_add(1);
+		}()),
+			_taskbar_created(RegisterWindowMessageW(L"TaskbarCreated")), _callbacks(std::move(callbacks))
 		{
 			if (!register_window_class())
 			{
 				_diagnostics = windows_error("RegisterClass(LibdesktopTrayWindow)");
 				return;
 			}
-			_window = CreateWindowExW(0, L"LibdesktopTrayWindow", L"", 0, 0, 0, 0, 0,
-			                          HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), this);
+			_window = CreateWindowExW(0, L"LibdesktopTrayWindow", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+			                          GetModuleHandleW(nullptr), this);
 			if (!_window)
 			{
 				_diagnostics = windows_error("CreateWindow(LibdesktopTrayWindow)");
@@ -408,7 +510,7 @@ namespace
 		}
 
 		bool show_balloon(const std::string_view title, const std::string_view text,
-		                 const platform::tray_balloon_kind kind) override
+		                  const platform::tray_balloon_kind kind) override
 		{
 			if (!_visible) return false;
 			auto data = notification();
@@ -417,9 +519,9 @@ namespace
 			const auto wide_text = core::utf8_to_utf16(text);
 			wcsncpy_s(data.szInfoTitle, wide_title.c_str(), _TRUNCATE);
 			wcsncpy_s(data.szInfo, wide_text.c_str(), _TRUNCATE);
-			data.dwInfoFlags = kind == platform::tray_balloon_kind::warning
-				                   ? NIIF_WARNING
-				                   : kind == platform::tray_balloon_kind::error ? NIIF_ERROR : NIIF_INFO;
+			data.dwInfoFlags = kind == platform::tray_balloon_kind::warning ? NIIF_WARNING
+			                   : kind == platform::tray_balloon_kind::error ? NIIF_ERROR
+			                                                                : NIIF_INFO;
 			if (Shell_NotifyIconW(NIM_MODIFY, &data)) return true;
 			_diagnostics = last_shell_error();
 			return false;
@@ -466,7 +568,11 @@ namespace
 			_index = std::min<ULONG>(_index + count, static_cast<ULONG>(_formats.size()));
 			return _index == _formats.size() ? S_FALSE : S_OK;
 		}
-		HRESULT STDMETHODCALLTYPE Reset() override { _index = 0; return S_OK; }
+		HRESULT STDMETHODCALLTYPE Reset() override
+		{
+			_index = 0;
+			return S_OK;
+		}
 		HRESULT STDMETHODCALLTYPE Clone(IEnumFORMATETC** result) override
 		{
 			if (!result) return E_POINTER;
@@ -492,8 +598,7 @@ namespace
 				chars += path.size() + 1;
 			}
 			if (chars > (std::numeric_limits<size_t>::max() - sizeof(DROPFILES)) / sizeof(wchar_t)) return nullptr;
-			const auto memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
-			                                sizeof(DROPFILES) + chars * sizeof(wchar_t));
+			const auto memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPFILES) + chars * sizeof(wchar_t));
 			if (!memory) return nullptr;
 			auto* drop = static_cast<DROPFILES*>(GlobalLock(memory));
 			if (!drop)
@@ -514,14 +619,11 @@ namespace
 		}
 
 		FORMATETC drop_format() const { return {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
-		FORMATETC effect_format() const
-		{
-			return {_preferred_effect, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-		}
+		FORMATETC effect_format() const { return {_preferred_effect, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
 
 	public:
-		explicit file_drag_data_object(const std::span<const core::file_path> files)
-			: _preferred_effect(static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT)))
+		explicit file_drag_data_object(const std::span<const core::file_path> files) :
+			_preferred_effect(static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT)))
 		{
 			_paths.reserve(files.size());
 			for (const auto& path : files) _paths.push_back(platform::to_file_system_path(path));
@@ -551,8 +653,7 @@ namespace
 			if (format->tymed != TYMED_HGLOBAL || format->dwAspect != DVASPECT_CONTENT) return DV_E_FORMATETC;
 			ZeroMemory(medium, sizeof(*medium));
 			medium->tymed = TYMED_HGLOBAL;
-			if (format->cfFormat == CF_HDROP)
-				medium->hGlobal = make_hdrop();
+			if (format->cfFormat == CF_HDROP) medium->hGlobal = make_hdrop();
 			else if (format->cfFormat == _preferred_effect && _preferred_effect != 0)
 			{
 				medium->hGlobal = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
@@ -571,18 +672,18 @@ namespace
 					}
 				}
 			}
-			else
-				return DV_E_FORMATETC;
+			else return DV_E_FORMATETC;
 			if (!medium->hGlobal) return E_OUTOFMEMORY;
 			return S_OK;
 		}
 		HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return DATA_E_FORMATETC; }
 		HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override
 		{
-			if (!format || format->tymed != TYMED_HGLOBAL || format->dwAspect != DVASPECT_CONTENT) return DV_E_FORMATETC;
+			if (!format || format->tymed != TYMED_HGLOBAL || format->dwAspect != DVASPECT_CONTENT)
+				return DV_E_FORMATETC;
 			return format->cfFormat == CF_HDROP || (format->cfFormat == _preferred_effect && _preferred_effect != 0)
-				       ? S_OK
-				       : DV_E_FORMATETC;
+			           ? S_OK
+			           : DV_E_FORMATETC;
 		}
 		HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* result) override
 		{
@@ -600,7 +701,10 @@ namespace
 			*result = new file_drag_format_enum(std::move(formats));
 			return S_OK;
 		}
-		HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+		HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override
+		{
+			return OLE_E_ADVISENOTSUPPORTED;
+		}
 		HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
 		HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
 	};
@@ -663,7 +767,7 @@ namespace
 		{
 			ISpellCheckerFactory* factory = nullptr;
 			const auto factory_hr = CoCreateInstance(__uuidof(SpellCheckerFactory), nullptr, CLSCTX_INPROC_SERVER,
-			                                        IID_PPV_ARGS(&factory));
+			                                         IID_PPV_ARGS(&factory));
 			if (FAILED(factory_hr) || !factory)
 			{
 				_diagnostics = std::format("CoCreateInstance(SpellCheckerFactory) failed with HRESULT 0x{:08X}.",
@@ -720,7 +824,8 @@ namespace
 			const auto dictionary_folder = platform::known_path(platform::known_folder::app_data);
 			if (!dictionary_folder.is_empty()) _custom_dictionary = dictionary_folder.combine_file("spell.dic");
 			load_dictionary();
-			if (_diagnostics.empty()) _diagnostics = std::format("Spell checker created for {}.", core::utf16_to_utf8(language));
+			if (_diagnostics.empty())
+				_diagnostics = std::format("Spell checker created for {}.", core::utf16_to_utf8(language));
 		}
 
 	public:
@@ -779,8 +884,8 @@ namespace
 }
 
 platform::tray_service_ptr platform::create_tray_service(const platform::tray_icon_image image,
-                                                          const std::string_view tooltip,
-                                                          platform::tray_callbacks callbacks)
+                                                         const std::string_view tooltip,
+                                                         platform::tray_callbacks callbacks)
 {
 	auto result = std::make_shared<win_tray_service>(image, tooltip, std::move(callbacks));
 	result->show();
@@ -796,25 +901,10 @@ platform::instance_lock_result platform::try_lock_instance(const std::string_vie
 {
 	if (!valid_instance_name(name, 128)) return lock_error("Instance lock name validation", ERROR_INVALID_NAME);
 
-	HANDLE token_handle = nullptr;
-	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token_handle))
-		return lock_error("OpenProcessToken", GetLastError());
-	const core::scope_exit close_token([token_handle] { CloseHandle(token_handle); });
-
-	DWORD bytes = 0;
-	if (!GetTokenInformation(token_handle, TokenUser, nullptr, 0, &bytes) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-		return lock_error("GetTokenInformation(size)", GetLastError());
-	if (bytes < sizeof(TOKEN_USER)) return lock_error("GetTokenInformation(size)", ERROR_INVALID_DATA);
-	std::vector<uint8_t> user(bytes);
-	if (!GetTokenInformation(token_handle, TokenUser, user.data(), bytes, &bytes))
-		return lock_error("GetTokenInformation", GetLastError());
-
-	PWSTR raw_sid = nullptr;
-	if (!ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid, &raw_sid))
-		return lock_error("ConvertSidToStringSid", GetLastError());
-	const core::scope_exit free_sid([raw_sid] { LocalFree(raw_sid); });
 	// The prefix the applications' earlier releases locked, so a new release still finds an old one running.
-	const auto qualified_name = std::wstring(L"Global\\pf.instance.") + raw_sid + L"." + core::utf8_to_utf16(name);
+	std::string detail;
+	const auto qualified_name = instance_user_name(name, L"Global\\pf.instance.", detail);
+	if (qualified_name.empty()) return {nullptr, false, std::move(detail)};
 
 	auto lock = std::make_unique<win_instance_lock>();
 	SetLastError(ERROR_SUCCESS);
@@ -852,6 +942,95 @@ bool platform::signal_existing_instance(const std::string_view name)
 {
 	const auto message = instance_signal_message(name);
 	return message != 0 && PostMessageW(HWND_BROADCAST, message, 0, 0) != FALSE;
+}
+
+bool platform::can_receive_instance_requests()
+{
+	return true;
+}
+
+platform::instance_receiver_result platform::receive_instance_requests(
+	const std::string_view name, std::function<bool(std::vector<core::file_path>)> handler)
+{
+	if (!valid_instance_name(name, 128) || !handler || !is_ui_thread())
+		return {nullptr, false, "Invalid instance receiver name, handler or thread"};
+
+	std::string error;
+	const auto qualified = instance_user_name(name, L"Local\\libdesktop.request.", error);
+	if (qualified.empty()) return {nullptr, false, std::move(error)};
+	auto locked = try_lock_named_instance(core::utf16_to_utf8(qualified));
+	if (!locked.lock) return {nullptr, locked.already_running, std::move(locked.error)};
+
+	auto receiver = std::make_unique<win_instance_receiver>();
+	receiver->lock = std::move(locked.lock);
+	receiver->handler = std::move(handler);
+	WNDCLASSW klass{};
+	klass.lpfnWndProc = win_instance_receiver::window_proc;
+	klass.hInstance = GetModuleHandleW(nullptr);
+	klass.lpszClassName = instance_request_class;
+	if (!RegisterClassW(&klass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+		return {nullptr, false, windows_error("RegisterClass(instance)")};
+	receiver->window = CreateWindowExW(WS_EX_TOOLWINDOW, instance_request_class, qualified.c_str(), WS_POPUP, 0, 0, 0,
+	                                   0, nullptr, nullptr, klass.hInstance, receiver.get());
+	if (!receiver->window) return {nullptr, false, windows_error("CreateWindow(instance)")};
+	return {std::move(receiver), false, {}};
+}
+
+platform::instance_request_result platform::send_instance_request(const std::string_view name,
+                                                                  const std::span<const core::file_path> files,
+                                                                  const uint32_t timeout_ms)
+{
+	if (!valid_instance_name(name, 128) || files.size() > max_instance_request_files)
+		return {instance_request_status::failed, "Invalid instance request name or file count"};
+
+	std::wstring payload;
+	for (const auto& file : files)
+	{
+		if (!valid_instance_file(file))
+			return {instance_request_status::failed, "Instance requests require absolute file paths"};
+		payload += core::utf8_to_utf16(file.str());
+		payload += L'\0';
+		if (payload.size() >= max_instance_request_bytes / sizeof(wchar_t))
+			return {instance_request_status::failed, "Instance request is too large"};
+	}
+	payload += L'\0';
+
+	std::string error;
+	const auto qualified = instance_user_name(name, L"Local\\libdesktop.request.", error);
+	if (qualified.empty()) return {instance_request_status::failed, std::move(error)};
+	const auto deadline = GetTickCount64() + timeout_ms;
+	HWND receiver = nullptr;
+	do
+	{
+		receiver = FindWindowW(instance_request_class, qualified.c_str());
+		const auto now = GetTickCount64();
+		if (receiver || now >= deadline) break;
+		Sleep(static_cast<DWORD>(std::min<ULONGLONG>(10, deadline - now)));
+	} while (true);
+	if (!receiver) return {instance_request_status::not_running, "No instance receiver became available"};
+
+	DWORD pid = 0;
+	if (!GetWindowThreadProcessId(receiver, &pid))
+		return {instance_request_status::failed, windows_error("GetWindowThreadProcessId(instance)")};
+	if (!AllowSetForegroundWindow(pid)) core::log("instance", windows_error("AllowSetForegroundWindow"));
+
+	COPYDATASTRUCT data{};
+	data.dwData = instance_request_version;
+	data.cbData = static_cast<DWORD>(payload.size() * sizeof(wchar_t));
+	data.lpData = payload.data();
+	DWORD_PTR reply = 0;
+	SetLastError(ERROR_SUCCESS);
+	const auto now = GetTickCount64();
+	const auto remaining = deadline > now ? deadline - now : 1;
+	if (!SendMessageTimeoutW(receiver, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
+	                         SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, static_cast<UINT>(remaining), &reply))
+	{
+		const auto code = GetLastError();
+		return {code == ERROR_TIMEOUT || code == ERROR_SUCCESS ? instance_request_status::timed_out
+		                                                       : instance_request_status::failed,
+		        windows_error("SendMessageTimeout(instance)", code)};
+	}
+	return {reply ? instance_request_status::accepted : instance_request_status::declined, {}};
 }
 
 bool platform::begin_file_drag(platform::window*, const std::span<const core::file_path> files)

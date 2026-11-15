@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows movie writing through the Media Foundation sink writer -- H.264 video and AAC
 // audio in MP4, using whatever hardware encoder the machine has, which is the system's to supply: no
@@ -38,16 +37,17 @@ namespace
 	{
 		LPWSTR text = nullptr;
 
-		const auto length = ::FormatMessageW(
-			FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-			nullptr, static_cast<DWORD>(hr), 0, reinterpret_cast<LPWSTR>(&text), 0, nullptr);
+		const auto length = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+		                                         FORMAT_MESSAGE_IGNORE_INSERTS,
+		                                     nullptr, static_cast<DWORD>(hr), 0, reinterpret_cast<LPWSTR>(&text), 0,
+		                                     nullptr);
 
-		auto message = length > 0 && text ? core::trim(core::utf16_to_utf8(std::wstring_view(text, length))) : std::string{};
+		auto message = length > 0 && text ? core::trim(core::utf16_to_utf8(std::wstring_view(text, length)))
+		                                  : std::string{};
 		if (text) ::LocalFree(text);
 
-		return message.empty()
-			       ? std::format("{} failed (0x{:08x})", what, static_cast<uint32_t>(hr))
-			       : std::format("{} failed (0x{:08x}): {}", what, static_cast<uint32_t>(hr), message);
+		return message.empty() ? std::format("{} failed (0x{:08x})", what, static_cast<uint32_t>(hr))
+		                       : std::format("{} failed (0x{:08x}): {}", what, static_cast<uint32_t>(hr), message);
 	}
 
 	// MFStartup and MFShutdown are refcounted by hand because a render and a capability probe can
@@ -95,14 +95,9 @@ namespace
 	class win_movie_writer final : public platform::movie_writer
 	{
 	public:
-		explicit win_movie_writer(const platform::movie_writer_request& request) : _request(request)
-		{
-		}
+		explicit win_movie_writer(const platform::movie_writer_request& request) : _request(request) {}
 
-		~win_movie_writer() override
-		{
-			abandon();
-		}
+		~win_movie_writer() override { abandon(); }
 
 		bool open()
 		{
@@ -197,8 +192,7 @@ namespace
 			if (!check(buffer->SetCurrentLength(total), "IMFMediaBuffer::SetCurrentLength")) return false;
 
 			const auto frames = sample_count / std::max(1, _request.channels);
-			const auto duration = static_cast<int64_t>(frames) * hns_per_second /
-				std::max(1, _request.sample_rate);
+			const auto duration = static_cast<int64_t>(frames) * hns_per_second / std::max(1, _request.sample_rate);
 
 			return write_sample(_audio_stream, buffer.Get(), to_hns(time), duration);
 		}
@@ -262,8 +256,7 @@ namespace
 			MFSetAttributeRatio(in.Get(), MF_MT_FRAME_RATE, _request.frame_rate, 1);
 			MFSetAttributeRatio(in.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
-			return check(_writer->SetInputMediaType(_video_stream, in.Get(), nullptr),
-			             "SetInputMediaType(video)");
+			return check(_writer->SetInputMediaType(_video_stream, in.Get(), nullptr), "SetInputMediaType(video)");
 		}
 
 		bool open_audio()
@@ -296,8 +289,7 @@ namespace
 			in->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, rate * channels * 2);
 			in->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
 
-			return check(_writer->SetInputMediaType(_audio_stream, in.Get(), nullptr),
-			             "SetInputMediaType(audio)");
+			return check(_writer->SetInputMediaType(_audio_stream, in.Get(), nullptr), "SetInputMediaType(audio)");
 		}
 
 		bool begin()
@@ -307,8 +299,7 @@ namespace
 			return true;
 		}
 
-		bool write_sample(const DWORD stream, IMFMediaBuffer* buffer, const int64_t time,
-		                  const int64_t duration)
+		bool write_sample(const DWORD stream, IMFMediaBuffer* buffer, const int64_t time, const int64_t duration)
 		{
 			ComPtr<IMFSample> sample;
 			if (!check(MFCreateSample(&sample), "MFCreateSample")) return false;
@@ -367,7 +358,7 @@ bool platform::can_write_movies()
 	// Probed rather than assumed: the H.264 and AAC encoders are Windows components that an N
 	// edition or a stripped image can be missing, and the answer belongs to the machine, not the
 	// build. Enumeration avoids opening a destination file on the UI thread.
-	static const auto answer = []
+	static const auto answer = [function = __FUNCTION__]
 	{
 		if (!mf_session::acquire()) return false;
 
@@ -377,9 +368,10 @@ bool platform::can_write_movies()
 			UINT32 count = 0;
 			MFT_REGISTER_TYPE_INFO output{major, subtype};
 			const auto found = SUCCEEDED(MFTEnumEx(category,
-				MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT |
-				MFT_ENUM_FLAG_SORTANDFILTER,
-				nullptr, &output, &activates, &count)) && count > 0;
+			                                       MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SYNCMFT |
+			                                           MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+			                                       nullptr, &output, &activates, &count)) &&
+			                   count > 0;
 
 			for (UINT32 i = 0; i < count; ++i) activates[i]->Release();
 			CoTaskMemFree(activates);
@@ -393,8 +385,8 @@ bool platform::can_write_movies()
 
 		if (!has_h264 || !has_aac)
 		{
-			core::log(__FUNCTION__, std::format("required movie encoders unavailable (H.264: {}, AAC: {})",
-			                                    has_h264, has_aac));
+			core::log(function,
+			          std::format("required movie encoders unavailable (H.264: {}, AAC: {})", has_h264, has_aac));
 		}
 		return has_h264 && has_aac;
 	}();

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // text_types.h — the coordinate and style vocabulary the text layer shares.
 //
@@ -31,9 +30,7 @@ namespace ui
 		int x = 0;
 		int y = 0;
 
-		constexpr text_location(const int xx = 0, const int yy = 0) : x(xx), y(yy)
-		{
-		}
+		constexpr text_location(const int xx = 0, const int yy = 0) : x(xx), y(yy) {}
 
 		bool operator==(const text_location& other) const = default;
 
@@ -54,29 +51,17 @@ namespace ui
 
 		text_selection() = default;
 
-		text_selection(const text_location& start, const text_location& end) : _start(start), _end(end)
-		{
-		}
+		text_selection(const text_location& start, const text_location& end) : _start(start), _end(end) {}
 
-		text_selection(const text_location& loc) : _start(loc), _end(loc)
-		{
-		}
+		text_selection(const text_location& loc) : _start(loc), _end(loc) {}
 
-		text_selection(const int x1, const int y1, const int x2, const int y2) : _start(x1, y1), _end(x2, y2)
-		{
-		}
+		text_selection(const int x1, const int y1, const int x2, const int y2) : _start(x1, y1), _end(x2, y2) {}
 
 		bool operator==(const text_selection& other) const = default;
 
-		[[nodiscard]] bool empty() const
-		{
-			return _start == _end;
-		}
+		[[nodiscard]] bool empty() const { return _start == _end; }
 
-		[[nodiscard]] bool is_valid() const
-		{
-			return _start.x >= 0 && _start.y >= 0 && _end.x >= 0 && _end.y >= 0;
-		}
+		[[nodiscard]] bool is_valid() const { return _start.x >= 0 && _start.y >= 0 && _end.x >= 0 && _end.y >= 0; }
 
 		[[nodiscard]] text_selection normalize() const
 		{
@@ -147,6 +132,6 @@ namespace ui
 	//
 	// The span is the bound: a highlighter never writes more runs than it is given
 	// room for, and an empty span asks for the cookie alone.
-	using highlight_fn = std::function<uint32_t(uint32_t cookie, std::string_view line_view,
-	                                            std::span<text_block> buf, int& count)>;
+	using highlight_fn =
+		std::function<uint32_t(uint32_t cookie, std::string_view line_view, std::span<text_block> buf, int& count)>;
 }

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Linux file system implementation of the platform file interface: opening, attributes,
 // enumeration, copy/move/delete, temporary files and memory mapping. The Windows counterpart is
@@ -33,8 +32,6 @@ namespace
 	constexpr uint64_t ft_ticks_per_second = 10'000'000ull;
 	constexpr uint64_t ft_epoch_to_unix_seconds = 11'644'473'600ull;
 
-
-
 	platform::linux_copy_file_test_failures copy_file_failures;
 	int copy_write_call_count = 0;
 	bool copy_interrupted = false;
@@ -42,7 +39,7 @@ namespace
 	uint64_t to_ticks(const timespec& ts)
 	{
 		return (static_cast<uint64_t>(ts.tv_sec) + ft_epoch_to_unix_seconds) * ft_ticks_per_second +
-			static_cast<uint64_t>(ts.tv_nsec) / 100u;
+		       static_cast<uint64_t>(ts.tv_nsec) / 100u;
 	}
 
 	platform::file_attributes_t attributes_from_stat(const std::string& path)
@@ -67,8 +64,8 @@ namespace
 			}
 			else
 			{
-				result.presence = (errno == ENOENT || errno == ENOTDIR)
-					                  ? platform::file_presence::not_found : platform::file_presence::unknown;
+				result.presence = (errno == ENOENT || errno == ENOTDIR) ? platform::file_presence::not_found
+				                                                        : platform::file_presence::unknown;
 				return result;
 			}
 		}
@@ -76,9 +73,8 @@ namespace
 		{
 			// Only an unambiguous "it is not there" counts as absence; anything else stays unknown,
 			// so a caller that would overwrite on "not found" cannot act on a denied or offline path.
-			result.presence = (errno == ENOENT || errno == ENOTDIR)
-				                  ? platform::file_presence::not_found
-				                  : platform::file_presence::unknown;
+			result.presence = (errno == ENOENT || errno == ENOTDIR) ? platform::file_presence::not_found
+			                                                        : platform::file_presence::unknown;
 			return result;
 		}
 
@@ -126,7 +122,7 @@ namespace
 		}
 
 		if (copy_file_failures.fail_write_after_calls >= 0 &&
-			copy_write_call_count >= copy_file_failures.fail_write_after_calls)
+		    copy_write_call_count >= copy_file_failures.fail_write_after_calls)
 		{
 			errno = EIO;
 			return -1;
@@ -134,8 +130,8 @@ namespace
 
 		++copy_write_call_count;
 		const auto limited = copy_file_failures.max_write_bytes == 0
-			                     ? size
-			                     : std::min(size, copy_file_failures.max_write_bytes);
+		                         ? size
+		                         : std::min(size, copy_file_failures.max_write_bytes);
 		return ::write(fd, data, limited);
 	}
 
@@ -202,9 +198,7 @@ namespace
 	class posix_file final : public platform::file
 	{
 	public:
-		posix_file(const int fd, const core::file_path path) : _fd(fd), _path(path)
-		{
-		}
+		posix_file(const int fd, const core::file_path path) : _fd(fd), _path(path) {}
 
 		~posix_file() override
 		{
@@ -260,8 +254,7 @@ namespace
 			uint64_t total = 0;
 			while (total < buf_size)
 			{
-				const auto n = ::pread(_fd, buf + total, buf_size - total,
-				                       static_cast<off_t>(offset + total));
+				const auto n = ::pread(_fd, buf + total, buf_size - total, static_cast<off_t>(offset + total));
 				if (n < 0)
 				{
 					if (errno == EINTR) continue;
@@ -278,8 +271,7 @@ namespace
 			uint64_t total = 0;
 			while (total < size)
 			{
-				const auto n = ::pwrite(_fd, data + total, size - total,
-				                        static_cast<off_t>(offset + total));
+				const auto n = ::pwrite(_fd, data + total, size - total, static_cast<off_t>(offset + total));
 				if (n < 0)
 				{
 					if (errno == EINTR) continue;
@@ -291,10 +283,7 @@ namespace
 			return total;
 		}
 
-		bool flush() const override
-		{
-			return ::fsync(_fd) == 0;
-		}
+		bool flush() const override { return ::fsync(_fd) == 0; }
 
 		uint64_t seek(const uint64_t pos, const whence w) const override
 		{
@@ -309,15 +298,9 @@ namespace
 			return result < 0 ? static_cast<uint64_t>(-1) : static_cast<uint64_t>(result);
 		}
 
-		bool trunc(const uint64_t pos) const override
-		{
-			return ::ftruncate(_fd, static_cast<off_t>(pos)) == 0;
-		}
+		bool trunc(const uint64_t pos) const override { return ::ftruncate(_fd, static_cast<off_t>(pos)) == 0; }
 
-		core::file_path path() const override
-		{
-			return _path;
-		}
+		core::file_path path() const override { return _path; }
 
 	private:
 		int _fd = -1;
@@ -327,9 +310,7 @@ namespace
 	class posix_mapped_file final : public platform::mapped_file
 	{
 	public:
-		posix_mapped_file(const int fd, const uint64_t size) : _fd(fd), _size(size)
-		{
-		}
+		posix_mapped_file(const int fd, const uint64_t size) : _fd(fd), _size(size) {}
 
 		~posix_mapped_file() override
 		{
@@ -337,20 +318,11 @@ namespace
 			if (_fd >= 0) ::close(_fd);
 		}
 
-		bool map_whole()
-		{
-			return !set_window(0, _size).empty();
-		}
+		bool map_whole() { return !set_window(0, _size).empty(); }
 
-		uint64_t file_size() const override
-		{
-			return _size;
-		}
+		uint64_t file_size() const override { return _size; }
 
-		core::cspan data() const override
-		{
-			return {_view, _view_len};
-		}
+		core::cspan data() const override { return {_view, _view_len}; }
 
 		core::cspan set_window(const uint64_t offset, const uint64_t len) override
 		{
@@ -452,17 +424,16 @@ std::string platform::normalize_nfc(const std::string_view text)
 			const auto previous = composed.back();
 
 			// A leading jamo followed by a vowel becomes the syllable that holds both.
-			if (previous >= l_base && previous < l_base + l_count &&
-				code_point >= v_base && code_point < v_base + v_count)
+			if (previous >= l_base && previous < l_base + l_count && code_point >= v_base &&
+			    code_point < v_base + v_count)
 			{
 				composed.back() = s_base + ((previous - l_base) * v_count + (code_point - v_base)) * t_count;
 				continue;
 			}
 
 			// A syllable with no trailing consonant absorbs one that follows it.
-			if (previous >= s_base && previous < s_base + l_count * n_count &&
-				(previous - s_base) % t_count == 0 &&
-				code_point > t_base && code_point < t_base + t_count)
+			if (previous >= s_base && previous < s_base + l_count * n_count && (previous - s_base) % t_count == 0 &&
+			    code_point > t_base && code_point < t_base + t_count)
 			{
 				composed.back() = previous + (code_point - t_base);
 				continue;
@@ -493,24 +464,12 @@ platform::file_ptr platform::open_file(const core::file_path path, const file_op
 	{
 	case file_open_mode::read:
 	case file_open_mode::read_shared:
-	case file_open_mode::sequential_scan:
-		flags = O_RDONLY;
-		break;
-	case file_open_mode::write:
-		flags = O_WRONLY | O_CREAT;
-		break;
-	case file_open_mode::create:
-		flags = O_RDWR | O_CREAT | O_TRUNC;
-		break;
-	case file_open_mode::create_exclusive:
-		flags = O_RDWR | O_CREAT | O_TRUNC;
-		break;
-	case file_open_mode::create_new:
-		flags = O_RDWR | O_CREAT | O_EXCL;
-		break;
-	case file_open_mode::read_write:
-		flags = O_RDWR;
-		break;
+	case file_open_mode::sequential_scan: flags = O_RDONLY; break;
+	case file_open_mode::write: flags = O_WRONLY | O_CREAT; break;
+	case file_open_mode::create: flags = O_RDWR | O_CREAT | O_TRUNC; break;
+	case file_open_mode::create_exclusive: flags = O_RDWR | O_CREAT | O_TRUNC; break;
+	case file_open_mode::create_new: flags = O_RDWR | O_CREAT | O_EXCL; break;
+	case file_open_mode::read_write: flags = O_RDWR; break;
 	}
 
 	const auto fd = ::open(path.str().c_str(), flags, 0644);
@@ -555,13 +514,15 @@ platform::file_ptr platform::open_file_lock(const core::file_path path, const fi
 platform::file_op_result platform::move_file(const platform::file_ptr&, const core::file_path, const bool)
 {
 	return {file_op_result_code::FAILED,
-	        "Identity-pinned rename is unavailable on this backend; pathname rename was not attempted.", {}};
+	        "Identity-pinned rename is unavailable on this backend; pathname rename was not attempted.",
+	        {}};
 }
 
 platform::file_op_result platform::delete_file(const platform::file_ptr&)
 {
 	return {file_op_result_code::FAILED,
-	        "Identity-pinned delete is unavailable on this backend; pathname delete was not attempted.", {}};
+	        "Identity-pinned delete is unavailable on this backend; pathname delete was not attempted.",
+	        {}};
 }
 
 platform::mapped_file_ptr platform::map_file(const core::file_path path, const map_mode mode)
@@ -628,12 +589,11 @@ platform::file_op_result platform::make_file_writable(const core::file_path path
 }
 
 platform::file_op_result platform::set_file_attributes(const core::file_path path,
-                                                        const std::optional<uint64_t> modified,
-                                                        const std::optional<bool> readonly)
+                                                       const std::optional<uint64_t> modified,
+                                                       const std::optional<bool> readonly)
 {
 	struct stat st = {};
-	if (::stat(path.str().c_str(), &st) != 0)
-		return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+	if (::stat(path.str().c_str(), &st) != 0) return {file_op_result_code::FAILED, std::string(::strerror(errno))};
 
 	if (modified)
 	{
@@ -643,8 +603,7 @@ platform::file_op_result platform::set_file_attributes(const core::file_path pat
 		const auto unix_ticks = *modified - unix_epoch_in_filetime;
 		const timespec times[2] = {
 			{st.st_atim.tv_sec, st.st_atim.tv_nsec},
-			{static_cast<time_t>(unix_ticks / 10'000'000ull),
-			 static_cast<long>((unix_ticks % 10'000'000ull) * 100)}
+			{static_cast<time_t>(unix_ticks / 10'000'000ull), static_cast<long>((unix_ticks % 10'000'000ull) * 100)},
 		};
 		if (::utimensat(AT_FDCWD, path.str().c_str(), times, 0) != 0)
 			return {file_op_result_code::FAILED, std::string(::strerror(errno))};
@@ -691,8 +650,7 @@ platform::file_op_result platform::create_folder(const core::folder_path path)
 
 				if (::mkdir(partial.c_str(), 0755) != 0)
 				{
-					if (errno != EEXIST)
-						return {file_op_result_code::FAILED, std::string(::strerror(errno))};
+					if (errno != EEXIST) return {file_op_result_code::FAILED, std::string(::strerror(errno))};
 					struct stat existing = {};
 					if (::stat(partial.c_str(), &existing) != 0)
 						return {file_op_result_code::FAILED, std::string(::strerror(errno))};
@@ -855,9 +813,8 @@ platform::file_op_result platform::replace_file(const core::file_path destinatio
 	}
 
 	// A failed query is not proof of absence, so a backup that was asked for is never skipped on one.
-	const auto destination_presence = test_replace_destination_presence
-		                                  ? test_replace_destination_presence(destination)
-		                                  : file_attributes(destination).presence;
+	const auto destination_presence = test_replace_destination_presence ? test_replace_destination_presence(destination)
+	                                                                    : file_attributes(destination).presence;
 
 	if (create_originals && destination_presence == file_presence::unknown)
 	{
@@ -882,10 +839,7 @@ platform::file_op_result platform::replace_file(const core::file_path destinatio
 
 		if (backup.is_empty())
 		{
-			return {
-				file_op_result_code::FAILED,
-				std::format("Could not create a backup of {}", destination.str())
-			};
+			return {file_op_result_code::FAILED, std::format("Could not create a backup of {}", destination.str())};
 		}
 
 		if (const auto backup_result = copy_file(destination, backup, true, false); backup_result.failed())
@@ -898,12 +852,10 @@ platform::file_op_result platform::replace_file(const core::file_path destinatio
 	{
 		const auto current = file_attributes(destination);
 		if (!current.exists() || current.modified != expected_destination->modified ||
-			current.size != expected_destination->size)
+		    current.size != expected_destination->size)
 		{
-			return {
-				file_op_result_code::ALREADY_EXISTS,
-				std::format("Destination changed since review: {}", destination.str())
-			};
+			return {file_op_result_code::ALREADY_EXISTS,
+			        std::format("Destination changed since review: {}", destination.str())};
 		}
 	}
 
@@ -1081,7 +1033,7 @@ std::string platform::file_op_result::format_error(const std::string_view text, 
 	if (result.empty() && failed())
 	{
 		result = code == file_op_result_code::ALREADY_EXISTS ? std::string(::strerror(EEXIST))
-		                                                   : std::string(platform::text().error_unknown.sv());
+		                                                     : std::string(platform::text().error_unknown.sv());
 	}
 
 	return result;
@@ -1155,13 +1107,13 @@ platform::get_cached_file_properties_response platform::read_shell_properties(co
 }
 
 platform::get_cached_file_properties_response platform::get_shell_thumbnail(core::file_path, core::sizei, bool,
-	bgra_pixels&)
+                                                                            bgra_pixels&)
 {
 	return get_cached_file_properties_response::fail;
 }
 
 core::count_and_size platform::calc_folder_summary(const core::folder_path folder, const bool show_hidden,
-                                                 const core::cancel_token& token)
+                                                   const core::cancel_token& token)
 {
 	core::count_and_size result;
 
@@ -1326,9 +1278,6 @@ platform::setting_file_ptr platform::settings()
 {
 	static platform::setting_file_ptr store;
 	static std::once_flag store_once;
-	std::call_once(store_once, []
-	{
-		store = create_ini_file_settings(known_path(known_folder::app_data));
-	});
+	std::call_once(store_once, [] { store = create_ini_file_settings(known_path(known_folder::app_data)); });
 	return store;
 }

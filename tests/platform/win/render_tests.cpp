@@ -11,7 +11,6 @@ platform::audio_output_format wasapi_mix_format(const WAVEFORMATEX* format);
 
 using namespace std::literals;
 
-
 // Undocking or unplugging a second display leaves a saved rect that intersects no monitor at all.
 static void should_restore_a_window_onto_a_display()
 {
@@ -56,8 +55,8 @@ static void should_use_screen_coordinates_for_saved_window_placement()
 	assert_equal(800, top_taskbar.width(), "conversion does not resize the window");
 	const auto left_taskbar = platform::placement_to_screen(placement, {0, 0, 1920, 1080}, {48, 0, 1920, 1080});
 	assert_equal(148, left_taskbar.left, "workspace origin is beside a left taskbar");
-	const auto secondary = platform::placement_to_screen({-1800, 100, -1000, 700},
-	                                                    {-1920, 0, 0, 1080}, {-1920, 40, 0, 1080});
+	const auto secondary = platform::placement_to_screen({-1800, 100, -1000, 700}, {-1920, 0, 0, 1080},
+	                                                     {-1920, 40, 0, 1080});
 	assert_equal(-1800, secondary.left, "secondary-monitor screen origin is retained");
 	assert_equal(140, secondary.top, "secondary-monitor work offset is applied once");
 
@@ -144,9 +143,7 @@ static void should_suppress_gpu_for_recovery_session()
 	platform::suppress_crash_guard(platform::crash_guard::gpu_render, true);
 	// Suppression is process-global; a failing assertion below must not leave it on.
 	const core::scope_exit restore_guard([]
-	{
-		platform::suppress_crash_guard(platform::crash_guard::gpu_render, false);
-	});
+	{ platform::suppress_crash_guard(platform::crash_guard::gpu_render, false); });
 	assert_equal(true, platform::crash_guard_suppressed(platform::crash_guard::gpu_render),
 	             "GPU suppressed during recovery");
 	assert_equal(false, platform::crash_guard_suppressed(platform::crash_guard::hw_video_decode),
@@ -166,7 +163,6 @@ static void should_preserve_clipboard_format_contracts()
 	assert_equal(true, result.rejects_wrong_medium, "query and retrieval reject incompatible media consistently");
 }
 
-
 static void should_refuse_an_impossible_movie()
 {
 	// The probe is the whole of whether Render is offered, so an unstable answer would make the
@@ -175,7 +171,7 @@ static void should_refuse_an_impossible_movie()
 	assert_equal(answer, platform::can_write_movies(), "the encoder probe answers the same way twice");
 
 	platform::movie_writer_request request;
-	request.path = _temps.next_path(".mp4");
+	request.path = temps.next_path(".mp4");
 	request.extent = {0, 0};
 	request.frame_rate = 30;
 	request.video_bitrate = 6000000;
@@ -194,7 +190,8 @@ static void should_refuse_an_impossible_movie()
 void register_platform_render_win_tests(test_registry& tests)
 {
 	tests.add("Should restore a window onto a display that still exists"s, should_restore_a_window_onto_a_display);
-	tests.add("Should use screen coordinates for saved window placement"s, should_use_screen_coordinates_for_saved_window_placement);
+	tests.add("Should use screen coordinates for saved window placement"s,
+	          should_use_screen_coordinates_for_saved_window_placement);
 	tests.add("Should not treat pointer wheel IDs as modifiers"s, should_not_treat_pointer_wheel_ids_as_modifiers);
 	tests.add("Should describe a WASAPI mix format"s, should_describe_a_wasapi_mix_format);
 	tests.add("Should suppress GPU for one recovery session"s, should_suppress_gpu_for_recovery_session);

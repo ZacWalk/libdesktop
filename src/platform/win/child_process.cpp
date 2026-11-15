@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Windows child processes and their independently drained standard streams.
 
@@ -72,9 +71,10 @@ namespace
 		for (const auto& override_value : overrides)
 		{
 			const auto equal = override_value.find('=');
-			if (equal == std::string::npos || equal == 0 || override_value.find('\0') != std::string::npos) return false;
-			values[core::utf8_to_utf16(override_value.substr(0, equal))] =
-				core::utf8_to_utf16(override_value.substr(equal + 1));
+			if (equal == std::string::npos || equal == 0 || override_value.find('\0') != std::string::npos)
+				return false;
+			values[core::utf8_to_utf16(override_value.substr(0, equal))] = core::utf8_to_utf16(
+				override_value.substr(equal + 1));
 		}
 		for (const auto& [key, value] : values)
 		{
@@ -164,7 +164,7 @@ namespace platform
 		{
 			std::wstring result(MAX_PATH * 2, L'\0');
 			const auto length = SearchPathW(search_path.c_str(), candidate.c_str(), nullptr,
-			                               static_cast<DWORD>(result.size()), result.data(), nullptr);
+			                                static_cast<DWORD>(result.size()), result.data(), nullptr);
 			if (!length || length >= result.size()) return {};
 			result.resize(length);
 			return core::file_path(core::utf16_to_utf8(result));
@@ -189,13 +189,14 @@ namespace platform
 
 	process_ptr process_spawn(const process_options& options)
 	{
-		if (options.exe.empty() || options.exe.find('\0') != std::string::npos || options.cwd.find('\0') != std::string::npos ||
-			std::any_of(options.args.begin(), options.args.end(), [](const auto& arg) { return arg.find('\0') != std::string::npos; }))
+		if (options.exe.empty() || options.exe.find('\0') != std::string::npos ||
+		    options.cwd.find('\0') != std::string::npos ||
+		    std::any_of(options.args.begin(), options.args.end(),
+		                [](const auto& arg) { return arg.find('\0') != std::string::npos; }))
 			return {};
 
 		auto executable = options.exe;
-		if (executable.find_first_of("\\/") == std::string::npos)
-			executable = find_executable(executable).str();
+		if (executable.find_first_of("\\/") == std::string::npos) executable = find_executable(executable).str();
 		if (executable.empty()) return {};
 
 		const auto extension = core::to_lower(core::file_path(executable).extension());
@@ -205,7 +206,8 @@ namespace platform
 		if (batch)
 		{
 			if (has_shell_metacharacter(executable) ||
-				std::any_of(options.args.begin(), options.args.end(), [](const auto& arg) { return has_shell_metacharacter(arg); }))
+			    std::any_of(options.args.begin(), options.args.end(),
+			                [](const auto& arg) { return has_shell_metacharacter(arg); }))
 				return {};
 			application = environment_value(L"ComSpec");
 			if (application.empty())
@@ -215,7 +217,8 @@ namespace platform
 				if (!length || length >= MAX_PATH) return {};
 				application = std::wstring(system, length) + L"\\cmd.exe";
 			}
-			command = quote_command_arg(core::utf16_to_utf8(application)) + " /d /s /v:off /c \"" + process_batch_quote(executable);
+			command = quote_command_arg(core::utf16_to_utf8(application)) + " /d /s /v:off /c \"" +
+			          process_batch_quote(executable);
 			for (const auto& arg : options.args) command += " " + process_batch_quote(arg);
 			command += '"';
 		}
@@ -235,10 +238,10 @@ namespace platform
 		HANDLE parent_output = nullptr;
 		HANDLE parent_error = nullptr;
 		if (!create_pipe(parent_input, child_input, true) || !create_pipe(parent_output, child_output, false) ||
-			!create_pipe(parent_error, child_error, false))
+		    !create_pipe(parent_error, child_error, false))
 		{
 			for (auto* handle :
-				{&child_input, &child_output, &child_error, &parent_input, &parent_output, &parent_error})
+			     {&child_input, &child_output, &child_error, &parent_input, &parent_output, &parent_error})
 				close_handle(*handle);
 			return {};
 		}
@@ -277,8 +280,9 @@ namespace platform
 			result->job = CreateJobObjectW(nullptr, nullptr);
 			JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
 			limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-			if (!result->job || !SetInformationJobObject(result->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
-				!AssignProcessToJobObject(result->job, result->child))
+			if (!result->job ||
+			    !SetInformationJobObject(result->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+			    !AssignProcessToJobObject(result->job, result->child))
 			{
 				TerminateProcess(result->child, 1);
 				WaitForSingleObject(result->child, INFINITE);
@@ -294,7 +298,9 @@ namespace platform
 		std::lock_guard lock(owner->output.mutex);
 		if (owner->output.eof || !owner->output.handle || owner->cancelled) return 0;
 		DWORD read = 0;
-		if (!ReadFile(owner->output.handle, buffer, static_cast<DWORD>(std::min<size_t>(bytes, UINT32_MAX)), &read, nullptr) || !read)
+		if (!ReadFile(owner->output.handle, buffer, static_cast<DWORD>(std::min<size_t>(bytes, UINT32_MAX)), &read,
+		              nullptr) ||
+		    !read)
 		{
 			owner->output.eof = true;
 			return 0;
@@ -308,7 +314,9 @@ namespace platform
 		std::lock_guard lock(owner->error.mutex);
 		if (owner->error.eof || !owner->error.handle || owner->cancelled) return 0;
 		DWORD read = 0;
-		if (!ReadFile(owner->error.handle, buffer, static_cast<DWORD>(std::min<size_t>(bytes, UINT32_MAX)), &read, nullptr) || !read)
+		if (!ReadFile(owner->error.handle, buffer, static_cast<DWORD>(std::min<size_t>(bytes, UINT32_MAX)), &read,
+		              nullptr) ||
+		    !read)
 		{
 			owner->error.eof = true;
 			return 0;
@@ -326,8 +334,8 @@ namespace platform
 		{
 			DWORD written = 0;
 			if (!WriteFile(owner->input, text.data() + offset,
-					static_cast<DWORD>(std::min<size_t>(text.size() - offset, UINT32_MAX)), &written, nullptr) ||
-				!written)
+			               static_cast<DWORD>(std::min<size_t>(text.size() - offset, UINT32_MAX)), &written, nullptr) ||
+			    !written)
 				return false;
 			offset += written;
 		}
@@ -388,25 +396,29 @@ namespace platform
 			splitter.flush(emit);
 			if (!error_stream)
 			{
-				while (process_alive(_process) && !_cancelled->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				while (process_alive(_process) && !_cancelled->load())
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				const auto state = _cancelled;
 				const auto callback = _callbacks.on_exit;
 				if (callback)
 				{
-					const auto exit_code = _process->child ? [] (HANDLE child)
+					const auto exit_code = _process->child ? [](HANDLE child)
 					{
 						DWORD code = 1;
 						GetExitCodeProcess(child, &code);
 						return static_cast<int>(code);
 					}(_process->child) : 1;
-					run_ui([state, callback, exit_code] { if (!state->load()) callback(exit_code); });
+					run_ui([state, callback, exit_code]
+					{
+						if (!state->load()) callback(exit_code);
+					});
 				}
 			}
 		}
 
 	public:
-		win_child_process(process_ptr process, child_process_callbacks callbacks)
-			: _process(std::move(process)), _callbacks(std::move(callbacks))
+		win_child_process(process_ptr process, child_process_callbacks callbacks) :
+			_process(std::move(process)), _callbacks(std::move(callbacks))
 		{
 			_stdout = std::thread([this] { read_lines(false); });
 			_stderr = std::thread([this] { read_lines(true); });

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Direct3D 11 rendering backend. Chooses the device and decides whether the GPU is worth
 // drawing with, and implements GPU-accelerated texture rendering and texture recycling, shader
@@ -15,18 +14,22 @@
 #include "libdesktop/platform/win32.h"
 #include "libdesktop/render/win32.h"
 #include "libdesktop/core/geometry.h"
+#include "../polygon.h"
 
 #include <versionhelpers.h>
 
-
 using namespace std::literals;
 
+extern const unsigned char libdesktop_shader_audio_vis_ps[];
+extern const std::size_t libdesktop_shader_audio_vis_ps_size;
 extern const unsigned char libdesktop_shader_circle_ps[];
 extern const std::size_t libdesktop_shader_circle_ps_size;
 extern const unsigned char libdesktop_shader_font_ps[];
 extern const std::size_t libdesktop_shader_font_ps_size;
 extern const unsigned char libdesktop_shader_pano_ps[];
 extern const std::size_t libdesktop_shader_pano_ps_size;
+extern const unsigned char libdesktop_shader_polygon_ps[];
+extern const std::size_t libdesktop_shader_polygon_ps_size;
 extern const unsigned char libdesktop_shader_rgb_bicubic_ps[];
 extern const std::size_t libdesktop_shader_rgb_bicubic_ps_size;
 extern const unsigned char libdesktop_shader_rgb_ps[];
@@ -43,8 +46,6 @@ extern const unsigned char libdesktop_shader_yuv_hdr_bicubic_ps[];
 extern const std::size_t libdesktop_shader_yuv_hdr_bicubic_ps_size;
 extern const unsigned char libdesktop_shader_yuv_hdr_ps[];
 extern const std::size_t libdesktop_shader_yuv_hdr_ps_size;
-extern const unsigned char libdesktop_shadow_png[];
-extern const std::size_t libdesktop_shadow_png_size;
 
 namespace
 {
@@ -62,7 +63,6 @@ namespace
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 
 static bool should_animate()
 {
@@ -107,8 +107,7 @@ static constexpr std::string_view to_string(const D3D_FEATURE_LEVEL fl)
 	case D3D_FEATURE_LEVEL_11_1: return "11.1";
 	case D3D_FEATURE_LEVEL_12_0: return "12.0";
 	case D3D_FEATURE_LEVEL_12_1: return "12.1";
-	default:
-		break;
+	default: break;
 	}
 
 	return "?";
@@ -149,8 +148,8 @@ static bool is_unified_memory(IDXGIAdapter* const adapter)
 	DXGI_QUERY_VIDEO_MEMORY_INFO non_local = {};
 
 	return adapter && SUCCEEDED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3))) &&
-		SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local)) &&
-		non_local.Budget == 0;
+	       SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local)) &&
+	       non_local.Budget == 0;
 }
 
 // Packed so a decode worker can read it without a lock. No adapter is given the zero LUID, so zero
@@ -220,9 +219,10 @@ static void publish_image_budgets(const D3D_FEATURE_LEVEL fl, const uint64_t gpu
 	render::max_texture_bytes = calc_texture_budget(gpu_bytes, total_phys);
 	render::max_decode_bytes = std::max(image_budget_floor_bytes, decode_bytes);
 
-	core::log(__FUNCTION__, std::format("image budget: {} px edge, texture {}, decode {}",
-	                                  render::max_texture_dimension, platform::format_size(core::file_size(render::max_texture_bytes)),
-	                                  platform::format_size(core::file_size(render::max_decode_bytes))));
+	core::log(__FUNCTION__,
+	          std::format("image budget: {} px edge, texture {}, decode {}", render::max_texture_dimension,
+	                      platform::format_size(core::file_size(render::max_texture_bytes)),
+	                      platform::format_size(core::file_size(render::max_decode_bytes))));
 }
 
 void factories::reset_fonts()
@@ -271,22 +271,21 @@ bool factories::init(const bool use_gpu)
 			// No DXGI means no swap chain, so the Direct3D path is unreachable anyway; the CPU
 			// backend presents through GDI and never touches it.
 			core::log(__FUNCTION__, std::format("Failed to create IDXGIFactory {:x} - using CPU software rendering",
-			                                  static_cast<uint32_t>(dxgi_hr)));
+			                                    static_cast<uint32_t>(dxgi_hr)));
 			dxgi.Reset();
 		}
 	}
 
 	{
 		const auto wic_hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-		                                     __uuidof(IWICImagingFactory),
-		                                     std::bit_cast<void**>(wic.GetAddressOf()));
+		                                     __uuidof(IWICImagingFactory), std::bit_cast<void**>(wic.GetAddressOf()));
 
 		if (FAILED(wic_hr))
 		{
-			// WIC decodes shell thumbnails, clipboard bitmaps and the shadow art. Losing it costs
-			// those, not the window, so callers test factories::wic instead of the app refusing to run.
+			// WIC decodes shell thumbnails and clipboard bitmaps. Losing it costs those, not the window, so
+			// callers test factories::wic instead of the app refusing to run.
 			core::log(__FUNCTION__, std::format("Failed to create IWICImagingFactory {:x} - image decoding degraded",
-			                                  static_cast<uint32_t>(wic_hr)));
+			                                    static_cast<uint32_t>(wic_hr)));
 			wic.Reset();
 		}
 	}
@@ -310,17 +309,14 @@ bool factories::init(const bool use_gpu)
 		create_device_flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-
-		constexpr D3D_FEATURE_LEVEL feature_levels_11_1[] =
-		{
+		constexpr D3D_FEATURE_LEVEL feature_levels_11_1[] = {
 			D3D_FEATURE_LEVEL_11_1,
 			D3D_FEATURE_LEVEL_11_0,
 			D3D_FEATURE_LEVEL_10_1,
 			D3D_FEATURE_LEVEL_10_0,
 		};
 
-		constexpr D3D_FEATURE_LEVEL feature_levels_11[] =
-		{
+		constexpr D3D_FEATURE_LEVEL feature_levels_11[] = {
 			D3D_FEATURE_LEVEL_11_0,
 			D3D_FEATURE_LEVEL_10_1,
 			D3D_FEATURE_LEVEL_10_0,
@@ -352,15 +348,15 @@ bool factories::init(const bool use_gpu)
 			// Use the default adapter (nullptr) with D3D_DRIVER_TYPE_HARDWARE for the broadest
 			// compatibility - the runtime selects the primary hardware device.
 			hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11_1,
-			                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device,
-			                       &feature_level, &context);
+			                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device, &feature_level,
+			                       &context);
 
 			if (hr == E_INVALIDARG)
 			{
 				core::log(__FUNCTION__, "D3D11CreateDevice failed with 11_1 - trying 11");
-				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags,
-				                       feature_levels_11, std::size(feature_levels_11),
-				                       D3D11_SDK_VERSION, &device, &feature_level, &context);
+				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11,
+				                       std::size(feature_levels_11), D3D11_SDK_VERSION, &device, &feature_level,
+				                       &context);
 			}
 
 			if (FAILED(hr) && (create_device_flags & D3D11_CREATE_DEVICE_DEBUG) != 0)
@@ -371,14 +367,14 @@ bool factories::init(const bool use_gpu)
 				create_device_flags &= ~static_cast<uint32_t>(D3D11_CREATE_DEVICE_DEBUG);
 
 				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11_1,
-				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device,
-				                       &feature_level, &context);
+				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device, &feature_level,
+				                       &context);
 
 				if (hr == E_INVALIDARG)
 				{
-					hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags,
-					                       feature_levels_11, std::size(feature_levels_11),
-					                       D3D11_SDK_VERSION, &device, &feature_level, &context);
+					hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11,
+					                       std::size(feature_levels_11), D3D11_SDK_VERSION, &device, &feature_level,
+					                       &context);
 				}
 			}
 
@@ -388,14 +384,14 @@ bool factories::init(const bool use_gpu)
 				create_device_flags &= ~static_cast<uint32_t>(D3D11_CREATE_DEVICE_VIDEO_SUPPORT);
 
 				hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11_1,
-				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device,
-				                       &feature_level, &context);
+				                       std::size(feature_levels_11_1), D3D11_SDK_VERSION, &device, &feature_level,
+				                       &context);
 
 				if (hr == E_INVALIDARG)
 				{
-					hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags,
-					                       feature_levels_11, std::size(feature_levels_11),
-					                       D3D11_SDK_VERSION, &device, &feature_level, &context);
+					hr = D3D11CreateDevice(nullptr, driver_type, nullptr, create_device_flags, feature_levels_11,
+					                       std::size(feature_levels_11), D3D11_SDK_VERSION, &device, &feature_level,
+					                       &context);
 				}
 			}
 		}
@@ -455,7 +451,7 @@ bool factories::init(const bool use_gpu)
 			// without a GPU, a fresh install. Drawing through it redraws the whole window on the CPU every
 			// frame, where the CPU backend redraws only what changed and does not pay for fades.
 			core::log(__FUNCTION__, std::format("{} is not a GPU - using CPU software rendering",
-			                                  core::utf16_to_utf8(adapter_desc.Description)));
+			                                    core::utf16_to_utf8(adapter_desc.Description)));
 			platform::set_crash_guard(platform::crash_guard::gpu_render, false);
 			software_mode = true;
 			set_can_animate(false);
@@ -537,17 +533,16 @@ bool factories::init(const bool use_gpu)
 			publish_render_adapter(adapter_desc.AdapterLuid);
 
 			const auto unified = is_unified_memory(adapter.Get());
-			gpu_bytes = gpu_texture_memory(adapter_desc.DedicatedVideoMemory, adapter_desc.SharedSystemMemory,
-			                               unified);
+			gpu_bytes = gpu_texture_memory(adapter_desc.DedicatedVideoMemory, adapter_desc.SharedSystemMemory, unified);
 
 			core::log(__FUNCTION__, "     "s + description);
 			core::log(__FUNCTION__, "     "s + gpu_id);
-			core::log(__FUNCTION__,
-			        "     DedicatedVideoMemory "s + platform::format_size(core::file_size(adapter_desc.DedicatedVideoMemory)));
-			core::log(__FUNCTION__,
-			        "     DedicatedSystemMemory "s + platform::format_size(core::file_size(adapter_desc.DedicatedSystemMemory)));
-			core::log(__FUNCTION__,
-			        "     SharedSystemMemory "s + platform::format_size(core::file_size(adapter_desc.SharedSystemMemory)));
+			core::log(__FUNCTION__, "     DedicatedVideoMemory "s +
+			                            platform::format_size(core::file_size(adapter_desc.DedicatedVideoMemory)));
+			core::log(__FUNCTION__, "     DedicatedSystemMemory "s +
+			                            platform::format_size(core::file_size(adapter_desc.DedicatedSystemMemory)));
+			core::log(__FUNCTION__, "     SharedSystemMemory "s +
+			                            platform::format_size(core::file_size(adapter_desc.SharedSystemMemory)));
 			core::log(__FUNCTION__, unified ? "     unified memory" : "     memory of its own");
 		}
 
@@ -610,7 +605,6 @@ void factories::downgrade_to_software()
 	publish_image_budgets(D3D_FEATURE_LEVEL_11_0, 0);
 }
 
-
 void factories::destroy()
 {
 	render::scope_rendering_func rf(__FUNCTION__);
@@ -645,6 +639,8 @@ struct vertex_2d
 	DirectX::XMFLOAT2 tex;
 	DirectX::XMFLOAT4 clr;
 	DirectX::XMFLOAT2 tex_size;
+	// A gradient's end colour, for the polygon shader; zero for everything else.
+	DirectX::XMFLOAT4 clr2;
 
 	vertex_2d() = default;
 
@@ -656,6 +652,7 @@ struct vertex_2d
 		pos.w = 0.0f;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 		clr.x = c.r;
 		clr.y = c.g;
 		clr.z = c.b;
@@ -670,6 +667,7 @@ struct vertex_2d
 		pos.w = 0.0f;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 		clr.x = c.r;
 		clr.y = c.g;
 		clr.z = c.b;
@@ -690,6 +688,7 @@ struct vertex_2d
 		clr.z = 1.0f;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 	}
 
 	vertex_2d(const core::pointd xy, const core::pointd uv, const core::color c)
@@ -706,6 +705,7 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 	}
 
 	vertex_2d(const core::pointd xy, const core::pointd uv, const core::color c, const core::sizei tex_dims)
@@ -722,6 +722,7 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = static_cast<float>(tex_dims.cx);
 		tex_size.y = static_cast<float>(tex_dims.cy);
+		clr2 = {};
 	}
 
 	vertex_2d(const float x, const float y, const float u, const float v, const core::color c)
@@ -738,9 +739,11 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 	}
 
-	vertex_2d(const float x, const float y, const float u, const float v, const core::color c, const core::sizei tex_dims)
+	vertex_2d(const float x, const float y, const float u, const float v, const core::color c,
+	          const core::sizei tex_dims)
 	{
 		pos.x = x;
 		pos.y = y;
@@ -754,6 +757,7 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = static_cast<float>(tex_dims.cx);
 		tex_size.y = static_cast<float>(tex_dims.cy);
+		clr2 = {};
 	}
 
 	void set(const float x, const float y, const float u, const float v, const core::color c)
@@ -770,6 +774,7 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
+		clr2 = {};
 	}
 
 	void set(const core::pointd xy, const core::pointd uv, const core::color c)
@@ -786,22 +791,7 @@ struct vertex_2d
 		clr.w = c.a;
 		tex_size.x = 0.0f;
 		tex_size.y = 0.0f;
-	}
-
-	void set(const core::pointd xy, const core::pointd uv, const float a)
-	{
-		pos.x = static_cast<float>(xy.X);
-		pos.y = static_cast<float>(xy.Y);
-		pos.z = 0.0f;
-		pos.w = 0.0f;
-		tex.x = static_cast<float>(uv.X);
-		tex.y = static_cast<float>(uv.Y);
-		clr.w = a;
-		clr.x = 1.0f;
-		clr.y = 1.0f;
-		clr.z = 1.0f;
-		tex_size.x = 0.0f;
-		tex_size.y = 0.0f;
+		clr2 = {};
 	}
 };
 
@@ -845,8 +835,7 @@ struct texture_binding
 };
 
 // Answers an empty binding on failure, which leaves the caller to retry.
-static texture_binding make_texture_binding(ID3D11Device* device, ID3D11Texture2D* t,
-                                            const core::texture_format fmt)
+static texture_binding make_texture_binding(ID3D11Device* device, ID3D11Texture2D* t, const core::texture_format fmt)
 {
 	if (!device || !t) return {};
 
@@ -900,11 +889,12 @@ size_t d3d11_texture_pool::texture_bytes(const core::sizei dims, const core::tex
 	{
 	case core::texture_format::RGB:
 	case core::texture_format::ARGB: return pixels * 4;
+	case core::texture_format::RGBX16:
+	case core::texture_format::RGBA16: return pixels * 8;
 	case core::texture_format::NV12: return pixels * 3 / 2;
 	case core::texture_format::P010: return pixels * 3;
 	case core::texture_format::None:
-	default:
-		break;
+	default: break;
 	}
 
 	return 0;
@@ -952,7 +942,6 @@ void d3d11_texture_pool::clear()
 	_entries.clear();
 	_bytes = 0;
 }
-
 
 class d3d11_text_renderer final : core::no_copy, public IDWriteTextRenderer
 {
@@ -1010,15 +999,12 @@ public:
 	d3d11_text_renderer() = default;
 	~d3d11_text_renderer() override = default;
 
-	void reset(const std::shared_ptr<d3d11_draw_context_impl>& c, const factories_ptr& f,
-	           render::font_face font_type, int base_font_size, font_renderer_ptr fr);
+	void reset(const std::shared_ptr<d3d11_draw_context_impl>& c, const factories_ptr& f, render::font_face font_type,
+	           int base_font_size, font_renderer_ptr fr);
 	void reset();
 	bool ensure_font();
 
-	[[nodiscard]] font_renderer_ptr font() const
-	{
-		return _font;
-	}
+	[[nodiscard]] font_renderer_ptr font() const { return _font; }
 
 	void draw_text(std::string_view text, core::recti bounds, render::text_style style, core::color c, core::color bg);
 
@@ -1037,17 +1023,14 @@ public:
 	int line_height() const { return _line_height; }
 	int base_line_height() const { return _base_line_height; }
 
-
 	// ----- IUnknown -----
 
-	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
-	                                         void** ppvObject) override
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override
 	{
 		// IDWriteTextRenderer derives from IDWritePixelSnapping derives from IUnknown, so a single
 		// static_cast yields a valid pointer for all three IIDs.
-		if (riid == __uuidof(IUnknown) ||
-			riid == __uuidof(IDWritePixelSnapping) ||
-			riid == __uuidof(IDWriteTextRenderer))
+		if (riid == __uuidof(IUnknown) || riid == __uuidof(IDWritePixelSnapping) ||
+		    riid == __uuidof(IDWriteTextRenderer))
 		{
 			*ppvObject = static_cast<IDWriteTextRenderer*>(this);
 		}
@@ -1061,23 +1044,17 @@ public:
 		return S_OK;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override
-	{
-		return static_cast<ULONG>(++_ref_count);
-	}
+	ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(++_ref_count); }
 
-	ULONG STDMETHODCALLTYPE Release() override
-	{
-		return static_cast<ULONG>(--_ref_count);
-	}
+	ULONG STDMETHODCALLTYPE Release() override { return static_cast<ULONG>(--_ref_count); }
 
-	HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void* clientDrawingContext, BOOL* isDisabled) override
+	HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void* /*clientDrawingContext*/, BOOL* isDisabled) override
 	{
 		*isDisabled = FALSE;
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetCurrentTransform(void* clientDrawingContext, DWRITE_MATRIX* transform) override
+	HRESULT STDMETHODCALLTYPE GetCurrentTransform(void* /*clientDrawingContext*/, DWRITE_MATRIX* transform) override
 	{
 		*transform = {1, 0, 0, 1, 0, 0};
 		return S_OK;
@@ -1090,22 +1067,24 @@ public:
 	                                       const DWRITE_GLYPH_RUN_DESCRIPTION* glyphRunDescription,
 	                                       IUnknown* clientDrawingEffect) override;
 
-	HRESULT STDMETHODCALLTYPE DrawUnderline(void* clientDrawingContext, FLOAT baselineOriginX, FLOAT baselineOriginY,
-	                                        const DWRITE_UNDERLINE* underline, IUnknown* clientDrawingEffect) override
+	HRESULT STDMETHODCALLTYPE DrawUnderline(void* /*clientDrawingContext*/, FLOAT /*baselineOriginX*/,
+	                                        FLOAT /*baselineOriginY*/, const DWRITE_UNDERLINE* /*underline*/,
+	                                        IUnknown* /*clientDrawingEffect*/) override
 	{
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawStrikethrough(void* clientDrawingContext, FLOAT baselineOriginX,
-	                                            FLOAT baselineOriginY, const DWRITE_STRIKETHROUGH* strikethrough,
-	                                            IUnknown* clientDrawingEffect) override
+	HRESULT STDMETHODCALLTYPE DrawStrikethrough(void* /*clientDrawingContext*/, FLOAT /*baselineOriginX*/,
+	                                            FLOAT /*baselineOriginY*/,
+	                                            const DWRITE_STRIKETHROUGH* /*strikethrough*/,
+	                                            IUnknown* /*clientDrawingEffect*/) override
 	{
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawInlineObject(void* clientDrawingContext, FLOAT originX, FLOAT originY,
-	                                           IDWriteInlineObject* inlineObject, BOOL isSideways, BOOL isRightToLeft,
-	                                           IUnknown* clientDrawingEffect) override
+	HRESULT STDMETHODCALLTYPE DrawInlineObject(void* /*clientDrawingContext*/, FLOAT /*originX*/, FLOAT /*originY*/,
+	                                           IDWriteInlineObject* /*inlineObject*/, BOOL /*isSideways*/,
+	                                           BOOL /*isRightToLeft*/, IUnknown* /*clientDrawingEffect*/) override
 	{
 		return S_OK;
 	}
@@ -1123,11 +1102,11 @@ public:
 	// texture. The shared texture, its render-device view, and both keyed mutexes are
 	// created once (per dimension/format) and reused every frame - opening a shared handle
 	// per frame is a heavyweight kernel operation and must not sit in the render loop.
-	ComPtr<ID3D11Texture2D> _shared_texture; // producer copy, on the video device
+	ComPtr<ID3D11Texture2D> _shared_texture;        // producer copy, on the video device
 	ComPtr<ID3D11Texture2D> _shared_texture_render; // same resource opened on the render device
 	ComPtr<IDXGIKeyedMutex> _shared_producer_mutex; // keyed mutex viewed from the video device
 	ComPtr<IDXGIKeyedMutex> _shared_consumer_mutex; // keyed mutex viewed from the render device
-	ComPtr<ID3D11Device> _shared_texture_device; // decode device the producer copy belongs to
+	ComPtr<ID3D11Device> _shared_texture_device;    // decode device the producer copy belongs to
 	core::sizei _shared_texture_dimensions;
 	core::texture_format _shared_texture_format = core::texture_format::None;
 	// A driver that refuses the cross-device bridge refuses it for as long as the device, extent and
@@ -1137,14 +1116,9 @@ public:
 	core::sizei _shared_texture_refused_dimensions;
 	core::texture_format _shared_texture_refused_format = core::texture_format::None;
 
-	void free_scaler()
-	{
-		_scaler.reset();
-	}
+	void free_scaler() { _scaler.reset(); }
 
-	explicit d3d11_texture(const factories_ptr& f) : _f(f)
-	{
-	}
+	explicit d3d11_texture(const factories_ptr& f) : _f(f) {}
 
 	~d3d11_texture() override
 	{
@@ -1160,9 +1134,8 @@ public:
 	{
 		if (_texture && _poolable && _f && _f->texture_pool && platform::is_ui_thread())
 		{
-			auto views = _binding_source == _texture.Get() && _binding_format == _format
-				             ? _binding.views
-				             : texture_views_ptr{};
+			auto views = _binding_source == _texture.Get() && _binding_format == _format ? _binding.views
+			                                                                             : texture_views_ptr{};
 
 			// Dropped first: a reference kept here would read as a scene still drawing the texture.
 			_binding = {};
@@ -1188,11 +1161,7 @@ public:
 		_shared_texture_format = core::texture_format::None;
 	}
 
-
-	bool is_valid() const override
-	{
-		return _texture != nullptr;
-	}
+	bool is_valid() const override { return _texture != nullptr; }
 
 	// Built on demand and rebuilt when the texture behind it is replaced. The binding holds the
 	// texture it was built from, so that texture cannot be released while this comparison is
@@ -1220,7 +1189,7 @@ public:
 	render::texture_update_result update(const core::const_surface_ptr& surface) override;
 	render::texture_update_result update_mipped(const core::const_surface_ptr& surface) override;
 	render::texture_update_result update(core::sizei dims, core::texture_format format, core::orientation orientation,
-	                                 const uint8_t* pixels, size_t stride, size_t buffer_size) override;
+	                                     const uint8_t* pixels, size_t stride, size_t buffer_size) override;
 
 	friend class av_video_frames;
 
@@ -1254,6 +1223,7 @@ struct scene_atom
 	std::shared_ptr<d3d11_vertices> verts;
 
 	core::color_space cs = core::color_space::rec601_limited;
+	core::chroma_siting chroma = core::chroma_siting::center;
 	std::shared_ptr<const render::texture_transform> transform;
 	// Set only by the panorama draw, which binds its own shader, constant buffer and sampler. A fresh
 	// one per draw, so the constants are re-uploaded each frame - thirty-two bytes, against a frame
@@ -1265,7 +1235,6 @@ struct scene_atom
 	// with blending off, so the GPU does not read the target beneath a whole video frame, every frame.
 	bool opaque = false;
 };
-
 
 df_assert_movable(scene_atom);
 
@@ -1288,20 +1257,19 @@ public:
 	std::vector<vertex_2d> _rect_vertices;
 	std::vector<WORD> _rect_indexes;
 
-	explicit d3d11_vertices(std::shared_ptr<d3d11_draw_context_impl> c) : _canvas(std::move(c))
-	{
-	}
+	explicit d3d11_vertices(std::shared_ptr<d3d11_draw_context_impl> c) : _canvas(std::move(c)) {}
 
 	void update_bars(std::span<const render::vertex_rect> bars) override;
 	void update_rects(std::span<const render::vertex_rect> rects) override;
+	void update_polygons(std::span<const render::vertex_polygon> polygons) override;
 
 private:
 	bool upload(const vertex_2d* vertices, uint32_t vertex_count, const WORD* indexes, uint32_t index_count);
 };
 
-
-class d3d11_draw_context_impl final : public render::draw_context_device,
-                                      public std::enable_shared_from_this<d3d11_draw_context_impl>
+class d3d11_draw_context_impl final :
+	public render::draw_context_device,
+	public std::enable_shared_from_this<d3d11_draw_context_impl>
 {
 public:
 	core::recti _clip_bounds;
@@ -1319,11 +1287,13 @@ public:
 	ComPtr<ID3D11PixelShader> _pixel_shader_rgb_bicubic;
 	ComPtr<ID3D11PixelShader> _pixel_shader_font;
 	ComPtr<ID3D11PixelShader> _pixel_shader_circle;
+	ComPtr<ID3D11PixelShader> _pixel_shader_audio_vis;
 	ComPtr<ID3D11PixelShader> _pixel_shader_yuv;
 	ComPtr<ID3D11PixelShader> _pixel_shader_yuv_bicubic;
 	ComPtr<ID3D11PixelShader> _pixel_shader_yuv_hdr;
 	ComPtr<ID3D11PixelShader> _pixel_shader_yuv_hdr_bicubic;
 	ComPtr<ID3D11PixelShader> _pixel_shader_pano;
+	ComPtr<ID3D11PixelShader> _pixel_shader_polygon;
 	ComPtr<ID3D11Buffer> _yuv_cbuffer;
 	ComPtr<ID3D11Buffer> _texture_transform_cbuffer;
 	ComPtr<ID3D11Buffer> _pano_cbuffer;
@@ -1356,8 +1326,6 @@ public:
 	bool _is_valid = false;
 	int _base_font_size = 0;
 
-	texture_d3d11_ptr _shadow;
-
 	std::map<render::font_face, d3d11_text_renderer> _font;
 
 	std::vector<vertex_2d> _vertex_buffer_staging;
@@ -1368,10 +1336,7 @@ public:
 
 	d3d11_draw_context_impl() = default;
 
-	~d3d11_draw_context_impl() override
-	{
-		destroy();
-	}
+	~d3d11_draw_context_impl() override { destroy(); }
 
 	void create(const factories_ptr& f, const ComPtr<IDXGISwapChain>& swap_chain, int base_font_size);
 
@@ -1382,32 +1347,26 @@ public:
 	void sample_video_memory();
 	HRESULT draw_scene(const ComPtr<ID3D11DeviceContext>& context);
 
-
 	core::sizei measure_string(std::string_view text, core::sizei size_avail, render::font_face, render::text_style);
 	int line_height(render::font_face);
 
-	bool is_valid() const override
-	{
-		return _is_valid && _f->d3d_device && _f->d3d_context;
-	}
+	bool is_valid() const override { return _is_valid && _f->d3d_device && _f->d3d_context; }
 
-	core::sizei client_extent() const
-	{
-		return _client_extent;
-	}
+	core::sizei client_extent() const { return _client_extent; }
 
 	ID3D11PixelShader* calc_shader(bool is_bicubic, core::texture_format tex_fmt, bool tone_mapped = false) const;
 
-	void add_scene_atom(const texture_binding& tex, const ComPtr<ID3D11PixelShader>& ss,
-	                    core::texture_format tex_fmt, render::texture_sampler sampler, const vertex_2d* vertices,
-	                    size_t vertex_count, const WORD* indexes, size_t index_count,
+	void add_scene_atom(const texture_binding& tex, const ComPtr<ID3D11PixelShader>& ss, core::texture_format tex_fmt,
+	                    render::texture_sampler sampler, const vertex_2d* vertices, size_t vertex_count,
+	                    const WORD* indexes, size_t index_count,
 	                    core::color_space cs = core::color_space::rec601_limited,
+	                    core::chroma_siting chroma = core::chroma_siting::center,
 	                    std::shared_ptr<const render::texture_transform> transform = nullptr,
 	                    std::shared_ptr<const render::panorama_params> pano = nullptr, bool opaque = false);
 	void draw_texture(const texture_d3d11_ptr& t, const core::quadd& dst, core::recti src, core::color c,
 	                  render::texture_sampler sampler);
-	void draw_texture(const texture_d3d11_ptr& t, core::recti dst, core::recti src, core::color c, render::texture_sampler sampler,
-	                  float radius);
+	void draw_texture(const texture_d3d11_ptr& t, core::recti dst, core::recti src, core::color c,
+	                  render::texture_sampler sampler, float radius);
 
 	void destroy() override;
 	void begin_draw(core::sizei client_extent, int base_font_size, core::recti damage = {}) override;
@@ -1416,8 +1375,9 @@ public:
 
 	void clear(core::color c) override;
 	void draw_rounded_rect(core::recti bounds, core::color c, int radius) override;
-	void fill_polygon(std::span<const core::pointd> points, core::color c) override;
-	void draw_shadow(core::recti bounds, int width, float alpha) override;
+	void draw_polygon(std::span<const core::pointd> outline, const render::polygon_style& style) override;
+	// Stages a polygon's mesh - its fill and its border - as the atoms that draw it.
+	void add_polygon_mesh(const render::polygon::mesh& mesh, const render::polygon_style& style);
 	void draw_rect(core::recti bounds, core::color c) override;
 	void draw_line(core::pointd a, core::pointd b, core::color c, double width = 1.0) override;
 	void draw_polyline(std::span<const core::pointd> points, core::color c, double width = 1.0) override;
@@ -1429,14 +1389,16 @@ public:
 	               render::font_face font, render::text_style style, core::color clr, core::color bg) override;
 	void draw_text(const render::text_layout_ptr& tl, core::recti bounds, core::color clr, core::color bg) override;
 	void draw_border(core::recti inside, core::recti outside, core::color c_inside, core::color c_outside) override;
-	void draw_texture(const render::texture_ptr& t, core::recti dst, float alpha, render::texture_sampler sampler) override;
-	void draw_texture(const render::texture_ptr& t, core::recti dst, core::recti src, float alpha, render::texture_sampler sampler,
-	                  float radius) override;
+	void draw_texture(const render::texture_ptr& t, core::recti dst, float alpha,
+	                  render::texture_sampler sampler) override;
+	void draw_texture(const render::texture_ptr& t, core::recti dst, core::recti src, float alpha,
+	                  render::texture_sampler sampler, float radius) override;
 	void draw_texture(const render::texture_ptr& t, const core::quadd& dst, core::recti src, float alpha,
 	                  render::texture_sampler sampler) override;
 	void draw_texture(const render::texture_ptr& t, const core::quadd& dst, core::recti src, float alpha,
 	                  render::texture_sampler sampler, const render::texture_transform& transform) override;
-	bool draw_panorama(const render::texture_ptr& t, core::recti dst, const render::panorama_params& params, float alpha) override;
+	bool draw_panorama(const render::texture_ptr& t, core::recti dst, const render::panorama_params& params,
+	                   float alpha) override;
 	void draw_vertices(const render::vertices_ptr& v) override;
 
 	render::texture_ptr create_texture() override;
@@ -1446,7 +1408,7 @@ public:
 	render::text_layout_ptr create_text_layout(render::font_face font) override;
 
 	core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style, int width,
-	                   int height) override;
+	                         int height) override;
 	int text_line_height(render::font_face type) override;
 	int text_baseline(render::font_face type) override;
 
@@ -1465,10 +1427,12 @@ static constexpr DXGI_FORMAT to_format(const core::texture_format format)
 	case core::texture_format::ARGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
 	case core::texture_format::NV12: return DXGI_FORMAT_NV12;
 	case core::texture_format::P010: return DXGI_FORMAT_P010;
+	// Red first in memory, as the wide formats are; an opaque one's fourth channel is 65535 by contract.
+	case core::texture_format::RGBX16:
+	case core::texture_format::RGBA16: return DXGI_FORMAT_R16G16B16A16_UNORM;
 	case core::texture_format::None:
 	case core::texture_format::RGB:
-	default:
-		break;
+	default: break;
 	}
 
 	return DXGI_FORMAT_B8G8R8X8_UNORM;
@@ -1483,7 +1447,6 @@ void d3d11_draw_context_impl::destroy()
 	// keeps presenting through it instead of recreating one.
 	_is_valid = false;
 
-	_shadow.reset();
 	_scene_atoms.clear();
 	_last_transform.reset();
 	_font.clear();
@@ -1500,6 +1463,7 @@ void d3d11_draw_context_impl::destroy()
 	_pixel_shader_rgb_bicubic.Reset();
 	_pixel_shader_font.Reset();
 	_pixel_shader_circle.Reset();
+	_pixel_shader_audio_vis.Reset();
 	_pixel_shader_yuv.Reset();
 	_pixel_shader_yuv_bicubic.Reset();
 	_pixel_shader_yuv_hdr.Reset();
@@ -1531,36 +1495,20 @@ void d3d11_draw_context_impl::update_font_size(const int base_font_size)
 		_base_font_size = base_font_size;
 
 		const auto c = shared_from_this();
-		_font[render::font_face::code].reset(
-			c, _f, render::font_face::code, base_font_size,
-			_f->font_face(render::font_face::code, base_font_size));
-		_font[render::font_face::dialog].reset(
-			c, _f, render::font_face::dialog, base_font_size,
-			_f->font_face(render::font_face::dialog, base_font_size));
-		_font[render::font_face::title].reset(
-			c, _f, render::font_face::title, base_font_size,
-			_f->font_face(render::font_face::title, base_font_size));
-		_font[render::font_face::mega].reset(
-			c, _f, render::font_face::mega, base_font_size,
-			_f->font_face(render::font_face::mega, base_font_size));
-		_font[render::font_face::icons].reset(
-			c, _f, render::font_face::icons, base_font_size,
-			_f->font_face(render::font_face::icons, base_font_size));
-		_font[render::font_face::small_icons].reset(
-			c, _f, render::font_face::small_icons, base_font_size,
-			_f->font_face(render::font_face::small_icons, base_font_size));
+		_font[render::font_face::code].reset(c, _f, render::font_face::code, base_font_size,
+		                                     _f->font_face(render::font_face::code, base_font_size));
+		_font[render::font_face::dialog].reset(c, _f, render::font_face::dialog, base_font_size,
+		                                       _f->font_face(render::font_face::dialog, base_font_size));
+		_font[render::font_face::title].reset(c, _f, render::font_face::title, base_font_size,
+		                                      _f->font_face(render::font_face::title, base_font_size));
+		_font[render::font_face::mega].reset(c, _f, render::font_face::mega, base_font_size,
+		                                     _f->font_face(render::font_face::mega, base_font_size));
+		_font[render::font_face::icons].reset(c, _f, render::font_face::icons, base_font_size,
+		                                      _f->font_face(render::font_face::icons, base_font_size));
+		_font[render::font_face::small_icons].reset(c, _f, render::font_face::small_icons, base_font_size,
+		                                            _f->font_face(render::font_face::small_icons, base_font_size));
 	}
 }
-
-static texture_d3d11_ptr create_texture_from_embedded(const factories_ptr& f, const core::cspan data)
-{
-	render::scope_rendering_func rf(__FUNCTION__);
-	core::assert_true(platform::is_ui_thread());
-	auto result = std::make_shared<d3d11_texture>(f);
-	result->update(render::decode_embedded(data));
-	return result;
-}
-
 
 void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGISwapChain>& swap_chain,
                                      const int base_font_size)
@@ -1571,20 +1519,21 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 	_back_buffer_rtv.Reset();
 	_swap_chain = swap_chain;
 
-	auto hr = swap_chain && f && f->d3d_device ? S_OK : E_FAIL;
+	// Without a swap chain the context draws into an offscreen target its owner binds - what a test reads back.
+	auto hr = f && f->d3d_device ? S_OK : E_FAIL;
 
 	if (SUCCEEDED(hr))
 	{
-		core::log(__FUNCTION__, std::format("draw context created - feature level {}", to_string(_f->d3d_feature_level)));
+		core::log(__FUNCTION__,
+		          std::format("draw context created - feature level {}", to_string(_f->d3d_feature_level)));
 
 		if (SUCCEEDED(hr))
 		{
-			// The ID3D11Device must have multithread protection 
+			// The ID3D11Device must have multithread protection
 			ComPtr<ID3D10Multithread> multithread;
 
-			if (SUCCEEDED(
-				_f->d3d_device->QueryInterface(__uuidof(ID3D10Multithread), std::bit_cast<void**>(multithread.
-					GetAddressOf()))))
+			if (SUCCEEDED(_f->d3d_device->QueryInterface(__uuidof(ID3D10Multithread),
+			                                             std::bit_cast<void**>(multithread.GetAddressOf()))))
 			{
 				// SetMultithreadProtected returns the PREVIOUS protection state (a BOOL), not a
 				// success/failure HRESULT, so its result must not be treated as an error indicator.
@@ -1599,19 +1548,17 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 
 		if (SUCCEEDED(hr))
 		{
-			_shadow = create_texture_from_embedded(_f, {libdesktop_shadow_png, libdesktop_shadow_png_size});
-
 			const auto shader = embedded_shader{libdesktop_shader_vs, libdesktop_shader_vs_size};
 			hr = _f->d3d_device->CreateVertexShader(shader.data(), shader.size(), nullptr, &_vertex_shader);
 
 			if (SUCCEEDED(hr))
 			{
-				D3D11_INPUT_ELEMENT_DESC layout[] =
-				{
+				D3D11_INPUT_ELEMENT_DESC layout[] = {
 					{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
 					{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
 					{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
 					{"EXTENT", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0},
+					{"COLOR", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D11_INPUT_PER_VERTEX_DATA, 0},
 				};
 
 				constexpr uint32_t num_elements = ARRAYSIZE(layout);
@@ -1634,7 +1581,8 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 
 		if (SUCCEEDED(hr))
 		{
-			const auto shader = embedded_shader{libdesktop_shader_rgb_bicubic_ps, libdesktop_shader_rgb_bicubic_ps_size};
+			const auto shader = embedded_shader{libdesktop_shader_rgb_bicubic_ps,
+			                                    libdesktop_shader_rgb_bicubic_ps_size};
 			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_rgb_bicubic);
 		}
 
@@ -1652,13 +1600,20 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 
 		if (SUCCEEDED(hr))
 		{
+			const auto shader = embedded_shader{libdesktop_shader_audio_vis_ps, libdesktop_shader_audio_vis_ps_size};
+			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_audio_vis);
+		}
+
+		if (SUCCEEDED(hr))
+		{
 			const auto shader = embedded_shader{libdesktop_shader_yuv_ps, libdesktop_shader_yuv_ps_size};
 			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_yuv);
 		}
 
 		if (SUCCEEDED(hr))
 		{
-			const auto shader = embedded_shader{libdesktop_shader_yuv_bicubic_ps, libdesktop_shader_yuv_bicubic_ps_size};
+			const auto shader = embedded_shader{libdesktop_shader_yuv_bicubic_ps,
+			                                    libdesktop_shader_yuv_bicubic_ps_size};
 			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_yuv_bicubic);
 		}
 
@@ -1670,7 +1625,8 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 
 		if (SUCCEEDED(hr))
 		{
-			const auto shader = embedded_shader{libdesktop_shader_yuv_hdr_bicubic_ps, libdesktop_shader_yuv_hdr_bicubic_ps_size};
+			const auto shader = embedded_shader{libdesktop_shader_yuv_hdr_bicubic_ps,
+			                                    libdesktop_shader_yuv_hdr_bicubic_ps_size};
 			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr,
 			                                       &_pixel_shader_yuv_hdr_bicubic);
 		}
@@ -1679,6 +1635,12 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 		{
 			const auto shader = embedded_shader{libdesktop_shader_pano_ps, libdesktop_shader_pano_ps_size};
 			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_pano);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			const auto shader = embedded_shader{libdesktop_shader_polygon_ps, libdesktop_shader_polygon_ps_size};
+			hr = _f->d3d_device->CreatePixelShader(shader.data(), shader.size(), nullptr, &_pixel_shader_polygon);
 		}
 
 		if (SUCCEEDED(hr))
@@ -1759,7 +1721,7 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				core::log(__FUNCTION__,
-				        std::format("CreateSamplerState bilinear failed {:x}", static_cast<uint32_t>(hr)));
+				          std::format("CreateSamplerState bilinear failed {:x}", static_cast<uint32_t>(hr)));
 			}
 		}
 
@@ -1791,15 +1753,16 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				core::log(__FUNCTION__,
-				        std::format("CreateSamplerState panorama failed {:x}", static_cast<uint32_t>(hr)));
+				          std::format("CreateSamplerState panorama failed {:x}", static_cast<uint32_t>(hr)));
 			}
 		}
 
 		if (SUCCEEDED(hr))
 		{
-			// Constant buffer holding the YUV->RGB affine matrix (row_major float3x4 = 48 bytes).
+			// Constant buffer holding the YUV->RGB affine matrix (row_major float3x4 = 48 bytes) and the
+			// chroma siting's shift (float4).
 			D3D11_BUFFER_DESC bd = {};
-			bd.ByteWidth = sizeof(float) * 12;
+			bd.ByteWidth = sizeof(float) * 16;
 			bd.Usage = D3D11_USAGE_DYNAMIC;
 			bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 			bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1809,7 +1772,7 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				core::log(__FUNCTION__,
-				        std::format("CreateBuffer for yuv params failed {:x}", static_cast<uint32_t>(hr)));
+				          std::format("CreateBuffer for yuv params failed {:x}", static_cast<uint32_t>(hr)));
 			}
 		}
 
@@ -1828,7 +1791,7 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				core::log(__FUNCTION__,
-				        std::format("CreateBuffer for panorama params failed {:x}", static_cast<uint32_t>(hr)));
+				          std::format("CreateBuffer for panorama params failed {:x}", static_cast<uint32_t>(hr)));
 			}
 		}
 
@@ -1844,7 +1807,7 @@ void d3d11_draw_context_impl::create(const factories_ptr& f, const ComPtr<IDXGIS
 			if (FAILED(hr))
 			{
 				core::log(__FUNCTION__,
-				        std::format("CreateBuffer for texture transform failed {:x}", static_cast<uint32_t>(hr)));
+				          std::format("CreateBuffer for texture transform failed {:x}", static_cast<uint32_t>(hr)));
 			}
 		}
 
@@ -1879,7 +1842,8 @@ void d3d11_draw_context_impl::resize(const core::sizei extent)
 // The damage rect is ignored: FLIP_SEQUENTIAL rotates back buffers, so the untouched region of the
 // buffer we are about to draw into holds two-frames-ago content rather than the last frame.
 // Redrawing the whole client is what keeps that correct, and is cheap on the GPU.
-void d3d11_draw_context_impl::begin_draw(const core::sizei client_extent, int base_font_size, core::recti /*damage*/)
+void d3d11_draw_context_impl::begin_draw(const core::sizei client_extent, int /*base_font_size*/,
+                                         core::recti /*damage*/)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -1941,8 +1905,8 @@ void d3d11_draw_context_impl::build_index_and_vertex_buffers()
 		return;
 	}
 
-	const auto upload = [this](ComPtr<ID3D11Buffer>& buffer, uint32_t& capacity, const UINT bind_flag,
-	                           const void* data, const uint32_t bytes)
+	const auto upload = [this, function = __FUNCTION__](ComPtr<ID3D11Buffer>& buffer, uint32_t& capacity,
+	                                                    const UINT bind_flag, const void* data, const uint32_t bytes)
 	{
 		if (!buffer || capacity < bytes)
 		{
@@ -1959,7 +1923,7 @@ void d3d11_draw_context_impl::build_index_and_vertex_buffers()
 
 			if (FAILED(hr))
 			{
-				core::log(__FUNCTION__, std::format("CreateBuffer failed: {:x}", static_cast<uint32_t>(hr)));
+				core::log(function, std::format("CreateBuffer failed: {:x}", static_cast<uint32_t>(hr)));
 				buffer.Reset();
 				return false;
 			}
@@ -1973,7 +1937,7 @@ void d3d11_draw_context_impl::build_index_and_vertex_buffers()
 
 		if (FAILED(hr))
 		{
-			core::log(__FUNCTION__, std::format("Map failed: {:x}", static_cast<uint32_t>(hr)));
+			core::log(function, std::format("Map failed: {:x}", static_cast<uint32_t>(hr)));
 			return false;
 		}
 
@@ -1985,8 +1949,8 @@ void d3d11_draw_context_impl::build_index_and_vertex_buffers()
 
 	const auto uploaded = upload(_vertex_buffer, _vertex_buffer_capacity, D3D11_BIND_VERTEX_BUFFER,
 	                             _vertex_buffer_staging.data(), static_cast<uint32_t>(vertex_bytes)) &&
-		upload(_index_buffer, _index_buffer_capacity, D3D11_BIND_INDEX_BUFFER,
-		       _index_buffer_staging.data(), static_cast<uint32_t>(index_bytes));
+	                      upload(_index_buffer, _index_buffer_capacity, D3D11_BIND_INDEX_BUFFER,
+	                             _index_buffer_staging.data(), static_cast<uint32_t>(index_bytes));
 
 	_vertex_buffer_staging.clear();
 	_index_buffer_staging.clear();
@@ -2016,6 +1980,7 @@ struct context_state final
 	ID3D11SamplerState* lut_sampler = nullptr;
 	bool lut_sampler_bound = false;
 	core::color_space uploaded_cs = core::color_space::rec601_limited;
+	core::chroma_siting uploaded_chroma = core::chroma_siting::center;
 	core::texture_format uploaded_yuv_format = core::texture_format::None;
 	bool cs_uploaded = false;
 	const render::texture_transform* uploaded_transform = nullptr;
@@ -2053,10 +2018,8 @@ struct context_state final
 
 		if (clip_from.has_clip)
 		{
-			const D3D11_RECT clip = {
-				clip_from.clip_bounds.left, clip_from.clip_bounds.top,
-				clip_from.clip_bounds.right, clip_from.clip_bounds.bottom
-			};
+			const D3D11_RECT clip = {clip_from.clip_bounds.left, clip_from.clip_bounds.top, clip_from.clip_bounds.right,
+			                         clip_from.clip_bounds.bottom};
 			context->RSSetScissorRects(1, &clip);
 		}
 		else
@@ -2066,13 +2029,11 @@ struct context_state final
 		auto* const s = a.shader;
 		auto* const view = a.tex.id();
 		const auto tx_fmt = a.tex_format;
-		auto* const required_cbuffer = a.pano
-			                               ? pano_cbuffer
-			                               : tx_fmt == core::texture_format::NV12 || tx_fmt == core::texture_format::P010
-			                               ? yuv_cbuffer
-			                               : tx_fmt != core::texture_format::None
-			                               ? texture_transform_cbuffer
-			                               : nullptr;
+		auto* const required_cbuffer = a.pano ? pano_cbuffer
+		                               : tx_fmt == core::texture_format::NV12 || tx_fmt == core::texture_format::P010
+		                                   ? yuv_cbuffer
+		                               : tx_fmt != core::texture_format::None ? texture_transform_cbuffer
+		                                                                      : nullptr;
 		if (required_cbuffer != pixel_cbuffer)
 		{
 			pixel_cbuffer = required_cbuffer;
@@ -2087,22 +2048,33 @@ struct context_state final
 			core::bump(render::gpu_perf.shader_binds);
 		}
 
-		// For YUV shaders, upload the colour-space/range conversion matrix when it changes.
-		// The matrix also depends on the pixel format (P010 needs a level correction), so a
+		// For YUV shaders, upload the colour-space/range conversion matrix and the chroma siting when they
+		// change. The matrix also depends on the pixel format (P010 needs a level correction), so a
 		// format switch at the same colour space must still re-upload.
 		if ((tx_fmt == core::texture_format::NV12 || tx_fmt == core::texture_format::P010) && yuv_cbuffer &&
-			(!cs_uploaded || a.cs != uploaded_cs || tx_fmt != uploaded_yuv_format))
+		    (!cs_uploaded || a.cs != uploaded_cs || a.chroma != uploaded_chroma || tx_fmt != uploaded_yuv_format))
 		{
 			uploaded_cs = a.cs;
+			uploaded_chroma = a.chroma;
 			uploaded_yuv_format = tx_fmt;
 			cs_uploaded = true;
 
-			const auto ym = core::compute_yuv_matrix(a.cs, tx_fmt == core::texture_format::P010);
+			// Packed as yuv_params in yuv_common.hlsli: the matrix's three rows, then the chroma shift.
+			struct alignas(16) shader_yuv_params
+			{
+				core::yuv_rgb_matrix matrix;
+				float chroma_shift[4];
+			};
+
+			static_assert(sizeof(shader_yuv_params) == 64);
+			const shader_yuv_params params{core::compute_yuv_matrix(a.cs, tx_fmt == core::texture_format::P010),
+			                               {core::chroma_shift_x(a.chroma), core::chroma_shift_y(a.chroma), 0.0f,
+			                                0.0f}};
 			D3D11_MAPPED_SUBRESOURCE mapped;
 
 			if (SUCCEEDED(context->Map(yuv_cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			{
-				memcpy(mapped.pData, ym.m, sizeof(ym.m));
+				memcpy(mapped.pData, &params, sizeof(params));
 				context->Unmap(yuv_cbuffer, 0);
 				core::bump(render::gpu_perf.cbuffer_uploads);
 			}
@@ -2117,10 +2089,9 @@ struct context_state final
 			};
 
 			static_assert(sizeof(shader_panorama_params) == 32);
-			const shader_panorama_params params{
-				{a.pano->yaw, a.pano->pitch, a.pano->tan_half_fov, a.pano->aspect},
-				{a.pano->longitude_left, a.pano->u_scale, a.pano->latitude_top, a.pano->v_scale}
-			};
+			const shader_panorama_params params{{a.pano->yaw, a.pano->pitch, a.pano->tan_half_fov, a.pano->aspect},
+			                                    {a.pano->longitude_left, a.pano->u_scale, a.pano->latitude_top,
+			                                     a.pano->v_scale}};
 
 			D3D11_MAPPED_SUBRESOURCE mapped;
 
@@ -2135,8 +2106,8 @@ struct context_state final
 		}
 
 		if (tx_fmt != core::texture_format::None && tx_fmt != core::texture_format::NV12 &&
-			tx_fmt != core::texture_format::P010 && !a.pano && texture_transform_cbuffer &&
-			(a.transform.get() != uploaded_transform || (!a.transform && !identity_transform_uploaded)))
+		    tx_fmt != core::texture_format::P010 && !a.pano && texture_transform_cbuffer &&
+		    (a.transform.get() != uploaded_transform || (!a.transform && !identity_transform_uploaded)))
 		{
 			struct alignas(16) shader_transform_params
 			{
@@ -2238,7 +2209,7 @@ void d3d11_draw_context_impl::sample_video_memory()
 		ComPtr<IDXGIAdapter> adapter;
 
 		if (!_f || !_f->dxgi_device || FAILED(_f->dxgi_device->GetAdapter(&adapter)) ||
-			FAILED(adapter.As(&_vram_adapter)))
+		    FAILED(adapter.As(&_vram_adapter)))
 		{
 			return;
 		}
@@ -2257,7 +2228,8 @@ void d3d11_draw_context_impl::sample_video_memory()
 HRESULT d3d11_draw_context_impl::draw_scene(const ComPtr<ID3D11DeviceContext>& context)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
-	core::perf_timer timer(render::gpu_perf.submit_us, &render::gpu_perf.submit_max_us, &render::gpu_perf.submit_latency);
+	core::perf_timer timer(render::gpu_perf.submit_us, &render::gpu_perf.submit_max_us,
+	                       &render::gpu_perf.submit_latency);
 	core::bump(render::gpu_perf.frames);
 	sample_video_memory();
 
@@ -2291,9 +2263,8 @@ HRESULT d3d11_draw_context_impl::draw_scene(const ComPtr<ID3D11DeviceContext>& c
 		ID3D11RenderTargetView* views[] = {_back_buffer_rtv.Get()};
 		context->OMSetRenderTargets(1, views, nullptr);
 
-		const D3D11_VIEWPORT viewport = {
-			0.0f, 0.0f, static_cast<float>(_client_extent.cx), static_cast<float>(_client_extent.cy), 0.0f, 1.0f
-		};
+		const D3D11_VIEWPORT viewport =
+			{0.0f, 0.0f, static_cast<float>(_client_extent.cx), static_cast<float>(_client_extent.cy), 0.0f, 1.0f};
 		context->RSSetViewports(1, &viewport);
 		const D3D11_RECT client_clip = {0, 0, _client_extent.cx, _client_extent.cy};
 		context->RSSetScissorRects(1, &client_clip);
@@ -2321,8 +2292,7 @@ HRESULT d3d11_draw_context_impl::draw_scene(const ComPtr<ID3D11DeviceContext>& c
 		}
 
 		constexpr DirectX::XMVECTORF32 bg_color = {
-			{render::scene_clear_shade, render::scene_clear_shade, render::scene_clear_shade, 1.0f}
-		};
+			{render::scene_clear_shade, render::scene_clear_shade, render::scene_clear_shade, 1.0f}};
 		context->ClearRenderTargetView(_back_buffer_rtv.Get(), bg_color);
 
 		// Starts with every cached binding null, so the first atom that needs one sets it. That is
@@ -2354,11 +2324,9 @@ HRESULT d3d11_draw_context_impl::draw_scene(const ComPtr<ID3D11DeviceContext>& c
 			}
 			else if (_vertex_buffer && _index_buffer)
 			{
-				const auto ss = a.pano
-					                ? (a.pano->wraps ? _sampler_pano_wrap : _sampler_pano_clamp)
-					                : a.sampler == render::texture_sampler::point
-					                ? _sampler_point
-					                : _sampler_bilinear;
+				const auto ss = a.pano ? (a.pano->wraps ? _sampler_pano_wrap : _sampler_pano_clamp)
+				                : a.sampler == render::texture_sampler::point ? _sampler_point
+				                                                              : _sampler_bilinear;
 				state.draw_atom(a, _vertex_buffer.Get(), _index_buffer.Get(), ss.Get());
 			}
 		}
@@ -2396,7 +2364,7 @@ render::present_result d3d11_draw_context_impl::render()
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
 
-	if (!_is_valid || !_swap_chain)
+	if (!_is_valid || (!_swap_chain && !_back_buffer_rtv))
 	{
 		return {};
 	}
@@ -2409,16 +2377,15 @@ render::present_result d3d11_draw_context_impl::render()
 	return {FAILED(hr), hr};
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
-                                             const ComPtr<ID3D11PixelShader>& shader, const core::texture_format tex_fmt,
-                                             const render::texture_sampler sampler, const vertex_2d* vertices,
-                                             const size_t vertex_count, const WORD* indexes, const size_t index_count,
-                                             const core::color_space cs,
+void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex, const ComPtr<ID3D11PixelShader>& shader,
+                                             const core::texture_format tex_fmt, const render::texture_sampler sampler,
+                                             const vertex_2d* vertices, const size_t vertex_count, const WORD* indexes,
+                                             const size_t index_count, const core::color_space cs,
+                                             const core::chroma_siting chroma,
                                              std::shared_ptr<const render::texture_transform> transform,
                                              std::shared_ptr<const render::panorama_params> pano, const bool opaque)
 {
@@ -2428,16 +2395,18 @@ void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
 	if (!_scene_atoms.empty())
 	{
 		// Optimise by extending the existing atom. Everything that is bound per atom must
-		// match - shader, texture, sampler, pixel format, colour space, transform, clip and
+		// match - shader, texture, sampler, pixel format, colour space and chroma siting, transform, clip and
 		// blending - otherwise the merged atom would silently render with the first atom's state.
 		// Indices are 16-bit and relative to the atom's base vertex, so a merged atom must
 		// also stay within the 16-bit range.
 		auto&& back = _scene_atoms.back();
 		combine_with_last_atom = back.tex.id() == tex.id() && back.shader == shader.Get() &&
-			back.tex_format == tex_fmt && back.sampler == sampler && back.cs == cs && back.opaque == opaque &&
-			!back.transform && !transform && !back.pano && !pano && back.has_clip == !_clip_stack.empty() &&
-			(!back.has_clip || back.clip_bounds == _clip_bounds) &&
-			(static_cast<size_t>(back.vertex_count) + vertex_count) <= std::numeric_limits<WORD>::max();
+		                         back.tex_format == tex_fmt && back.sampler == sampler && back.cs == cs &&
+		                         back.chroma == chroma && back.opaque == opaque && !back.transform && !transform &&
+		                         !back.pano && !pano && back.has_clip == !_clip_stack.empty() &&
+		                         (!back.has_clip || back.clip_bounds == _clip_bounds) &&
+		                         (static_cast<size_t>(back.vertex_count) + vertex_count) <=
+		                             std::numeric_limits<WORD>::max();
 	}
 
 	const auto vertex_pos = _vertex_buffer_staging.size();
@@ -2461,15 +2430,17 @@ void d3d11_draw_context_impl::add_scene_atom(const texture_binding& tex,
 	}
 	else
 	{
-		scene_atom sa = {
-			tex, shader.Get(), tex_fmt, sampler,
-			static_cast<uint32_t>(vertex_pos),
-			static_cast<uint32_t>(vertex_count),
-			static_cast<uint32_t>(index_pos),
-			static_cast<uint32_t>(index_count)
-		};
+		scene_atom sa = {tex,
+		                 shader.Get(),
+		                 tex_fmt,
+		                 sampler,
+		                 static_cast<uint32_t>(vertex_pos),
+		                 static_cast<uint32_t>(vertex_count),
+		                 static_cast<uint32_t>(index_pos),
+		                 static_cast<uint32_t>(index_count)};
 
 		sa.cs = cs;
+		sa.chroma = chroma;
 		sa.transform = std::move(transform);
 		sa.pano = std::move(pano);
 		sa.clip_bounds = _clip_bounds;
@@ -2486,14 +2457,8 @@ ID3D11PixelShader* d3d11_draw_context_impl::calc_shader(const bool is_bicubic, c
 	ID3D11PixelShader* shader = is_bicubic ? _pixel_shader_rgb_bicubic.Get() : _pixel_shader_rgb.Get();
 	if (tex_fmt == core::texture_format::NV12 || tex_fmt == core::texture_format::P010)
 	{
-		if (tone_mapped)
-			shader = is_bicubic
-				         ? _pixel_shader_yuv_hdr_bicubic.Get()
-				         : _pixel_shader_yuv_hdr.Get();
-		else
-			shader = is_bicubic
-				         ? _pixel_shader_yuv_bicubic.Get()
-				         : _pixel_shader_yuv.Get();
+		if (tone_mapped) shader = is_bicubic ? _pixel_shader_yuv_hdr_bicubic.Get() : _pixel_shader_yuv_hdr.Get();
+		else shader = is_bicubic ? _pixel_shader_yuv_bicubic.Get() : _pixel_shader_yuv.Get();
 	}
 	return shader;
 }
@@ -2523,8 +2488,7 @@ bool d3d11_draw_context_impl::draw_panorama(const render::texture_ptr& t, const 
 
 	const core::color c(1.0f, 1.0f, 1.0f, alpha);
 
-	const vertex_2d vertices[] =
-	{
+	const vertex_2d vertices[] = {
 		vertex_2d(dl, dt, 0.0f, 0.0f, c, tt->dimensions()),
 		vertex_2d(dr, dt, 1.0f, 0.0f, c, tt->dimensions()),
 		vertex_2d(dr, db, 1.0f, 1.0f, c, tt->dimensions()),
@@ -2534,7 +2498,7 @@ bool d3d11_draw_context_impl::draw_panorama(const render::texture_ptr& t, const 
 	const WORD indexes[] = {0, 1, 2, 3, 0, 2};
 
 	add_scene_atom(binding, _pixel_shader_pano, tt->_format, render::texture_sampler::bilinear, vertices,
-	               std::size(vertices), indexes, std::size(indexes), tt->_cs, nullptr,
+	               std::size(vertices), indexes, std::size(indexes), tt->_cs, tt->_chroma, nullptr,
 	               std::make_shared<const render::panorama_params>(params));
 
 	return true;
@@ -2547,7 +2511,7 @@ static bool covers_beneath(const core::texture_format fmt, const float alpha)
 }
 
 void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const core::recti dst, const core::recti src,
-                                           const core::color c, const render::texture_sampler sampler, float radius)
+                                           const core::color c, const render::texture_sampler sampler, float /*radius*/)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -2572,8 +2536,7 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const cor
 			const float w = static_cast<float>(dimensions.cx);
 			const float h = static_cast<float>(dimensions.cy);
 
-			const vertex_2d vertices[] =
-			{
+			const vertex_2d vertices[] = {
 				vertex_2d(dl, dt, src.left / w, src.top / h, c, t->dimensions()),
 				vertex_2d(dr, dt, src.right / w, src.top / h, c, t->dimensions()),
 				vertex_2d(dr, db, src.right / w, src.bottom / h, c, t->dimensions()),
@@ -2582,8 +2545,7 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const cor
 
 			const WORD indexes[] = {
 
-				0, 1, 2,
-				3, 0, 2,
+				0, 1, 2, 3, 0, 2,
 			};
 
 			const auto tex_fmt = t->_format;
@@ -2593,9 +2555,10 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const cor
 			// show whatever the previous atom left bound.
 			if (!binding) return;
 
-			const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tex_fmt, binding.tone_map != nullptr);
+			const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tex_fmt,
+			                                binding.tone_map != nullptr);
 			add_scene_atom(binding, shader, tex_fmt, sampler, vertices, std::size(vertices), indexes,
-			               std::size(indexes), t->_cs, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
+			               std::size(indexes), t->_cs, t->_chroma, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
 		}
 	}
 }
@@ -2620,8 +2583,7 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const cor
 			const float w = static_cast<float>(dimensions.cx);
 			const float h = static_cast<float>(dimensions.cy);
 
-			const vertex_2d vertices[] =
-			{
+			const vertex_2d vertices[] = {
 				vertex_2d(d[0], {src.left / w, src.top / h}, c, t->dimensions()),
 				vertex_2d(d[1], {src.right / w, src.top / h}, c, t->dimensions()),
 				vertex_2d(d[2], {src.right / w, src.bottom / h}, c, t->dimensions()),
@@ -2630,119 +2592,36 @@ void d3d11_draw_context_impl::draw_texture(const texture_d3d11_ptr& t, const cor
 
 			const WORD indexes[] = {
 
-				0, 1, 2,
-				3, 0, 2,
+				0, 1, 2, 3, 0, 2,
 			};
 
 			const auto tex_fmt = t->_format;
 			const auto& binding = t->binding();
 			if (!binding) return;
 
-			const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tex_fmt, binding.tone_map != nullptr);
+			const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tex_fmt,
+			                                binding.tone_map != nullptr);
 			add_scene_atom(binding, shader, tex_fmt, sampler, vertices, std::size(vertices), indexes,
-			               std::size(indexes), t->_cs, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
+			               std::size(indexes), t->_cs, t->_chroma, nullptr, nullptr, covers_beneath(tex_fmt, alpha));
 		}
 	}
 }
 
-
-static core::rectd make_rectd(double x1, double y1, const double x2, const double y2)
-{
-	return {x1, y1, x2 - x1, y2 - y1};
-}
-
-
-static void add_rect(vertex_2d*& vv, WORD*& ii, const core::rectd& dst, const core::rectd& src, const float a,
-                     const int vert_offset)
-{
-	vv->set(dst.top_left(), src.top_left(), a);
-	vv++;
-	vv->set(dst.top_right(), src.top_right(), a);
-	vv++;
-	vv->set(dst.bottom_right(), src.bottom_right(), a);
-	vv++;
-	vv->set(dst.bottom_left(), src.bottom_left(), a);
-	vv++;
-
-	*ii++ = vert_offset + 0;
-	*ii++ = vert_offset + 1;
-	*ii++ = vert_offset + 2;
-
-	*ii++ = vert_offset + 0;
-	*ii++ = vert_offset + 2;
-	*ii++ = vert_offset + 3;
-}
-
-static void build_shadow_vertices(vertex_2d* vertices, WORD* indexes, const texture_d3d11_ptr& texture, const core::recti dst,
-                                  const core::sizei client_extent, const int sxy, const float a)
-{
-	const auto tex_dims = texture->dimensions();
-	const core::sized norm(tex_dims.cx * 2, tex_dims.cy * 2);
-
-	const auto ex = static_cast<float>(client_extent.cx);
-	const auto ey = static_cast<float>(client_extent.cy);
-	const auto xx = sxy / ex; // Core::Min(xy, (int)(size.Width / 2));
-	const auto yy = sxy / ey; //Core::Min(xy, (int)(size.Height / 2));
-
-	const auto r = core::rectd(dst).scale(client_extent);
-
-	const auto tl = r.top_left();
-	const auto tr = r.top_right();
-	const auto br = r.bottom_right();
-	const auto bl = r.bottom_left();
-
-	auto* v = vertices;
-	auto* i = indexes;
-
-	// corners
-	add_rect(v, i, make_rectd(tl.X - xx, tl.Y - yy, tl.X, tl.Y), core::rectd(0, 0, tex_dims.cx, tex_dims.cy).scale(norm), a,
-	         static_cast<uint32_t>(v - vertices));
-	add_rect(v, i, make_rectd(bl.X - xx, bl.Y, bl.X, bl.Y + yy),
-	         core::rectd(0, tex_dims.cy, tex_dims.cx, tex_dims.cy).scale(norm), a, static_cast<uint32_t>(v - vertices));
-	add_rect(v, i, make_rectd(tr.X, tr.Y - yy, tr.X + xx, tr.Y),
-	         core::rectd(tex_dims.cx, 0, tex_dims.cx, tex_dims.cy).scale(norm), a, static_cast<uint32_t>(v - vertices));
-	add_rect(v, i, make_rectd(br.X, br.Y, br.X + xx, br.Y + yy),
-	         core::rectd(tex_dims.cx, tex_dims.cy, tex_dims.cx, tex_dims.cy).scale(norm), a,
-	         static_cast<uint32_t>(v - vertices));
-
-	auto rt = r;
-	rt.Y = r.top() - yy;
-	rt.Height = yy;
-
-	auto rb = r;
-	rb.Y = r.bottom();
-	rb.Height = yy;
-
-	auto rl = r;
-	rl.X = r.left() - xx;
-	rl.Width = xx;
-
-	auto rr = r;
-	rr.X = r.right();
-	rr.Width = xx;
-
-	// horizontals
-	add_rect(v, i, rt, core::rectd(tex_dims.cx - 1, 0, 2, tex_dims.cy).scale(norm), a, static_cast<uint32_t>(v - vertices));
-	add_rect(v, i, rb, core::rectd(tex_dims.cx - 1, tex_dims.cy, 2, tex_dims.cy).scale(norm), a,
-	         static_cast<uint32_t>(v - vertices));
-
-	// verticals
-	add_rect(v, i, rl, core::rectd(0, tex_dims.cy - 1, tex_dims.cx, 2).scale(norm), a, static_cast<uint32_t>(v - vertices));
-	add_rect(v, i, rr, core::rectd(tex_dims.cx, tex_dims.cy - 1, tex_dims.cx, 2).scale(norm), a,
-	         static_cast<uint32_t>(v - vertices));
-}
-
+// Each bar is a grid of four by four vertices round it: the middle cell is the bar over its own shadow, and the
+// eight round it the shadow it casts past itself, all drawn by audio_vis_ps.hlsl. uv is a vertex's place from the
+// bar's centre and tex_size the bar's half size, both in pixels.
 void d3d11_vertices::update_bars(const std::span<const render::vertex_rect> bars)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
 
-	constexpr auto shadow_vertex_count = 4 * 8;
-	constexpr auto shadow_index_count = 6 * 8;
-	constexpr auto rect_verex_count = 5;
-	constexpr auto rect_index_count = 12;
+	// How far past a bar its shadow reaches: audio_vis_ps.hlsl's offset and fade.
+	constexpr int shadow_reach = 11;
+	constexpr size_t grid_vertex_count = 16;
+	// A cell's two triangles, from the grid vertex at its top left.
+	constexpr WORD cell[] = {0, 1, 5, 5, 4, 0};
 
-	// The indexes are 16-bit: 1,024 bars take 37,888 vertices.
+	// The indexes are 16-bit: 1,024 bars take 16,384 vertices.
 	constexpr size_t max_bars = 1024;
 	const auto num_bars = std::min(bars.size(), max_bars);
 
@@ -2750,109 +2629,76 @@ void d3d11_vertices::update_bars(const std::span<const render::vertex_rect> bars
 	// that cannot be built.
 	_scene_atoms.clear();
 
-	// The canvas is released by destroy(), and the shadow texture is only loaded once the device is ready.
-	// The device is checked explicitly because the buffer builds below dereference it directly, and after a
-	// downgrade to software the canvas can still be present with no device behind it.
-	if (num_bars == 0 || !_canvas || !_canvas->_shadow || !_canvas->_shadow->is_valid() || !_canvas->_f ||
-		!_canvas->_f->d3d_device || !_canvas->_f->d3d_context)
+	// The canvas is released by destroy(). The device is checked explicitly because the buffer builds below
+	// dereference it directly, and after a downgrade to software the canvas can still be present with no
+	// device behind it.
+	if (num_bars == 0 || !_canvas || !_canvas->_pixel_shader_audio_vis || !_canvas->_f || !_canvas->_f->d3d_device ||
+	    !_canvas->_f->d3d_context)
 		return;
 
-	// The shadows sample this; without a view they would sample whatever was bound before them.
-	const auto& shadow_binding = _canvas->_shadow->binding();
-	if (!shadow_binding) return;
-
+	const auto extent = core::sized(_canvas->_client_extent);
 	auto& vertices = _rect_vertices;
 	auto& indexes = _rect_indexes;
-	vertices.resize((shadow_vertex_count + rect_verex_count) * num_bars);
-	indexes.resize((shadow_index_count + rect_index_count) * num_bars);
-	auto vertex_count = 0;
-	auto index_count = 0;
+	vertices.clear();
+	indexes.clear();
 
 	for (size_t i = 0; i < num_bars; i++)
 	{
-		const auto r = bars[i].bounds;
-		const auto a = r.height() > 1 ? bars[i].fill.a / 2.0f : 0.0f;
+		const auto& bar = bars[i];
+		if (bar.bounds.is_empty() || bar.fill.a < 0.01f) continue;
 
-		build_shadow_vertices(vertices.data() + vertex_count, indexes.data() + index_count, _canvas->_shadow, r,
-		                      _canvas->_client_extent, 8, a);
+		const auto b = bar.bounds;
+		const auto outer = b.inflate(shadow_reach);
+		const int xs[] = {outer.left, b.left, b.right, outer.right};
+		const int ys[] = {outer.top, b.top, b.bottom, outer.bottom};
+		const auto cx = (b.left + b.right) / 2.0;
+		const auto cy = (b.top + b.bottom) / 2.0;
+		const DirectX::XMFLOAT2 half(b.width() / 2.0f, b.height() / 2.0f);
+		const auto first = static_cast<WORD>(vertices.size());
 
-		for (int j = 0; j < shadow_index_count; j++)
+		for (const auto y : ys)
 		{
-			indexes[index_count + j] += static_cast<WORD>(vertex_count);
+			for (const auto x : xs)
+			{
+				auto& v = vertices.emplace_back(static_cast<float>(x / extent.Width),
+				                                static_cast<float>(y / extent.Height), static_cast<float>(x - cx),
+				                                static_cast<float>(y - cy), bar.fill);
+				v.tex_size = half;
+			}
 		}
 
-		vertex_count += shadow_vertex_count;
-		index_count += shadow_index_count;
+		// A flat bar casts no shadow.
+		if (b.height() < 2) continue;
+
+		for (WORD row = 0; row < 3; row++)
+		{
+			for (WORD col = 0; col < 3; col++)
+			{
+				if (row == 1 && col == 1) continue;
+				for (const auto c : cell) indexes.push_back(static_cast<WORD>(first + row * 4 + col + c));
+			}
+		}
 	}
 
-	const auto bar_vert_start = vertex_count;
-	const auto bar_ind_start = index_count;
-
-	for (size_t i = 0; i < num_bars; i++)
+	// Every bar's middle after every shadow, so each bar stands over its neighbours' shadows as well as its own:
+	// triangles are drawn in the order they are listed.
+	for (size_t first = 0; first < vertices.size(); first += grid_vertex_count)
 	{
-		const core::rectd dst = bars[i].bounds;
-		const auto clr2 = bars[i].fill;
-		const auto clr1 = clr2.emphasize();
-
-		const auto r = core::rectd(dst).scale(_canvas->_client_extent);
-
-		const auto center = r.center();
-		const auto dl = static_cast<float>(r.X);
-		const auto dt = static_cast<float>(r.Y);
-		const auto dr = static_cast<float>(r.right());
-		const auto db = static_cast<float>(r.bottom());
-		const auto cx = static_cast<float>(center.X);
-		const auto cy = static_cast<float>(center.Y);
-
-		const auto vi = static_cast<WORD>(vertex_count - bar_vert_start);
-
-		vertices[vertex_count + 0] = vertex_2d(dl, dt, clr2);
-		vertices[vertex_count + 1] = vertex_2d(dr, dt, clr2);
-		vertices[vertex_count + 2] = vertex_2d(cx, cy, clr1);
-		vertices[vertex_count + 3] = vertex_2d(dr, db, clr2);
-		vertices[vertex_count + 4] = vertex_2d(dl, db, clr2);
-
-		// Four triangles fan from the centre, one along each edge.
-		constexpr WORD fan[] = {0, 1, 2, 1, 3, 2, 3, 4, 2, 4, 0, 2};
-		for (const auto f : fan) indexes[index_count++] = static_cast<WORD>(vi + f);
-
-		vertex_count += rect_verex_count;
+		for (const auto c : cell) indexes.push_back(static_cast<WORD>(first + 5 + c));
 	}
 
-	if (!upload(vertices.data(), static_cast<uint32_t>(vertex_count), indexes.data(),
-	            static_cast<uint32_t>(index_count)))
+	if (indexes.empty() || !upload(vertices.data(), static_cast<uint32_t>(vertices.size()), indexes.data(),
+	                               static_cast<uint32_t>(indexes.size())))
 	{
 		return;
 	}
 
-	scene_atom shadow_atom = {
-		shadow_binding,
-		_canvas->_pixel_shader_rgb.Get(),
-		core::texture_format::RGB,
-		render::texture_sampler::point,
-		0,
-		static_cast<uint32_t>(bar_vert_start),
-		0,
-		static_cast<uint32_t>(bar_ind_start)
-	};
-
-
-	scene_atom bar_atom = {
-		{},
-		_canvas->_pixel_shader_solid.Get(),
-		core::texture_format::None,
-		render::texture_sampler::point,
-		static_cast<uint32_t>(bar_vert_start),
-		static_cast<uint32_t>(vertex_count - bar_vert_start),
-		static_cast<uint32_t>(bar_ind_start),
-		static_cast<uint32_t>(index_count - bar_ind_start)
-	};
-
-	_scene_atoms.clear();
-	_scene_atoms.emplace_back(std::move(shadow_atom));
-	_scene_atoms.emplace_back(std::move(bar_atom));
+	scene_atom atom;
+	atom.shader = _canvas->_pixel_shader_audio_vis.Get();
+	atom.vertex_count = static_cast<uint32_t>(vertices.size());
+	atom.index_count = static_cast<uint32_t>(indexes.size());
+	_scene_atoms.emplace_back(std::move(atom));
 }
-
 void d3d11_vertices::update_rects(const std::span<const render::vertex_rect> rects)
 {
 	core::assert_true(platform::is_ui_thread());
@@ -2909,7 +2755,7 @@ void d3d11_vertices::update_rects(const std::span<const render::vertex_rect> rec
 		0,
 		vertex_count,
 		0,
-		index_count
+		index_count,
 	};
 
 	_scene_atoms.emplace_back(std::move(rect_atom));
@@ -2951,10 +2797,9 @@ bool d3d11_vertices::upload(const vertex_2d* vertices, const uint32_t vertex_cou
 	};
 
 	return fill(_vertex_buffer, _vertex_capacity, vertices, vertex_count * vertex_stride, D3D11_BIND_VERTEX_BUFFER) &&
-		fill(_index_buffer, _index_capacity, indexes, index_count * static_cast<uint32_t>(sizeof(WORD)),
-		     D3D11_BIND_INDEX_BUFFER);
+	       fill(_index_buffer, _index_capacity, indexes, index_count * static_cast<uint32_t>(sizeof(WORD)),
+	            D3D11_BIND_INDEX_BUFFER);
 }
-
 
 // Looked up afresh rather than held: the decode device is made when the first video opens, and by then
 // the adapters may have changed - a dock, an external GPU, a driver update.
@@ -2974,7 +2819,7 @@ ComPtr<IDXGIAdapter1> find_adapter_by_luid(const LUID luid)
 		DXGI_ADAPTER_DESC1 desc = {};
 
 		if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.AdapterLuid.LowPart == luid.LowPart &&
-			desc.AdapterLuid.HighPart == luid.HighPart)
+		    desc.AdapterLuid.HighPart == luid.HighPart)
 		{
 			return adapter;
 		}
@@ -2996,10 +2841,7 @@ public:
 		_picture->lock(_picture->lock_context);
 	}
 
-	~scoped_decode_lock() override
-	{
-		unlock();
-	}
+	~scoped_decode_lock() override { unlock(); }
 
 	void unlock()
 	{
@@ -3023,7 +2865,7 @@ static bool same_com_object(IUnknown* const a, IUnknown* const b)
 	ComPtr<IUnknown> identity_a;
 	ComPtr<IUnknown> identity_b;
 	return SUCCEEDED(a->QueryInterface(IID_PPV_ARGS(&identity_a))) &&
-		SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&identity_b))) && identity_a == identity_b;
+	       SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&identity_b))) && identity_a == identity_b;
 }
 
 render::texture_update_result d3d11_texture::update(const render::video_frame_ptr& frame_in)
@@ -3039,6 +2881,7 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 	auto result = render::texture_update_result::failed;
 	const auto info = frame_in->picture();
 	_cs = info.color_space;
+	_chroma = info.chroma_siting;
 
 	if (info.texture)
 	{
@@ -3086,9 +2929,8 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 
 		core::sizei texture_extent = {static_cast<int>(tex_desc_src.Width), static_cast<int>(tex_desc_src.Height)};
 
-		auto video_tex_format = tex_desc_src.Format == DXGI_FORMAT_P010
-			                        ? core::texture_format::P010
-			                        : core::texture_format::NV12;
+		auto video_tex_format = tex_desc_src.Format == DXGI_FORMAT_P010 ? core::texture_format::P010
+		                                                                : core::texture_format::NV12;
 
 		// The shader samples NV12 and P010 and nothing else. Every other decoder layout was being
 		// claimed as NV12 and drawn with the wrong planes - and where a compatible shared texture
@@ -3096,28 +2938,26 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 		// on screen. Refusing the bridge sends the frame down the CPU path, which converts whatever
 		// the decoder actually produced.
 		const auto format_supported = tex_desc_src.Format == DXGI_FORMAT_P010 ||
-			tex_desc_src.Format == DXGI_FORMAT_NV12;
+		                              tex_desc_src.Format == DXGI_FORMAT_NV12;
 
 		// The same refusal where this device cannot sample the planes, or its driver has already
 		// faulted on them: those close the YUV gates, and a hardware picture then has to arrive
 		// packed like every other one. Sharing it anyway built a texture that drew nothing.
-		const auto format_sampled = video_tex_format == core::texture_format::P010
-			                            ? render::p010_textures_enabled
-			                            : render::yuv_textures_enabled;
+		const auto format_sampled = video_tex_format == core::texture_format::P010 ? render::p010_textures_enabled
+		                                                                           : render::yuv_textures_enabled;
 		const auto format_bridged = format_supported && format_sampled;
 
 		if (!format_bridged)
 		{
 			// Noted against the same key the build refusal uses, so it is said once per stream
 			// rather than once per frame.
-			if (_shared_texture_refused_device != video_device ||
-				_shared_texture_refused_dimensions != texture_extent)
+			if (_shared_texture_refused_device != video_device || _shared_texture_refused_dimensions != texture_extent)
 			{
 				core::log(__FUNCTION__, format_supported
-					                      ? std::format("{} video textures are not sampled here - scaling on the CPU",
-					                                    to_string(video_tex_format))
-					                      : std::format("Unsupported video texture format {} - scaling on the CPU",
-					                                    static_cast<uint32_t>(tex_desc_src.Format)));
+				                            ? std::format("{} video textures are not sampled here - scaling on the CPU",
+				                                          to_string(video_tex_format))
+				                            : std::format("Unsupported video texture format {} - scaling on the CPU",
+				                                          static_cast<uint32_t>(tex_desc_src.Format)));
 			}
 
 			_shared_texture_refused_device = video_device;
@@ -3129,7 +2969,7 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 		if (video_texture_index >= tex_desc_src.ArraySize)
 		{
 			core::log(__FUNCTION__, std::format("Video texture index {} exceeds array size {}", video_texture_index,
-			                                  tex_desc_src.ArraySize));
+			                                    tex_desc_src.ArraySize));
 			return render::texture_update_result::failed;
 		}
 
@@ -3179,11 +3019,12 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 			else
 			{
 				if (_shared_texture_refused_device != video_device ||
-					_shared_texture_refused_dimensions != texture_extent ||
-					_shared_texture_refused_format != video_tex_format)
+				    _shared_texture_refused_dimensions != texture_extent ||
+				    _shared_texture_refused_format != video_tex_format)
 				{
-					core::log(__FUNCTION__, std::format("{} video texture refused by the render device - scaling on the CPU",
-					                                  to_string(video_tex_format)));
+					core::log(__FUNCTION__,
+					          std::format("{} video texture refused by the render device - scaling on the CPU",
+					                      to_string(video_tex_format)));
 				}
 
 				_shared_texture_refused_device = video_device;
@@ -3202,14 +3043,13 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 			// and reusing a producer copy owned by the previous device makes CopySubresourceRegion a
 			// cross-device call that the runtime rejects, leaving stale frames on screen.
 			const auto build_already_refused = !format_bridged ||
-				(_shared_texture_refused_device == video_device &&
-					_shared_texture_refused_dimensions == texture_extent &&
-					_shared_texture_refused_format == video_tex_format);
+			                                   (_shared_texture_refused_device == video_device &&
+			                                    _shared_texture_refused_dimensions == texture_extent &&
+			                                    _shared_texture_refused_format == video_tex_format);
 
 			if (!build_already_refused &&
-				(!_shared_texture || !_shared_texture_render || _shared_texture_device != video_device ||
-					_shared_texture_dimensions != texture_extent ||
-					_shared_texture_format != video_tex_format))
+			    (!_shared_texture || !_shared_texture_render || _shared_texture_device != video_device ||
+			     _shared_texture_dimensions != texture_extent || _shared_texture_format != video_tex_format))
 			{
 				_shared_texture.Reset();
 				_shared_texture_render.Reset();
@@ -3235,11 +3075,13 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 
 				if (SUCCEEDED(hr)) hr = shared_texture.As(&shared_resource);
 				if (SUCCEEDED(hr))
-					hr = shared_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &shared_handle);
+					hr = shared_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr,
+					                                         &shared_handle);
 
 				ComPtr<ID3D11Device1> device1;
 				if (SUCCEEDED(hr))
-					hr = device->QueryInterface(__uuidof(ID3D11Device1), std::bit_cast<LPVOID*>(device1.GetAddressOf()));
+					hr = device->QueryInterface(__uuidof(ID3D11Device1),
+					                            std::bit_cast<LPVOID*>(device1.GetAddressOf()));
 
 				ComPtr<ID3D11Texture2D> render_texture;
 				if (SUCCEEDED(hr))
@@ -3270,13 +3112,13 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 					// opens, and it is the largest single allocation playback makes. Reported here
 					// because this is the only point that can see how many surfaces it really has.
 					const int64_t bytes_per_sample = video_tex_format == core::texture_format::P010 ? 2 : 1;
-					const auto surface_bytes = static_cast<int64_t>(tex_desc_src.Width) * tex_desc_src.Height *
-						3 * bytes_per_sample / 2;
+					const auto surface_bytes = static_cast<int64_t>(tex_desc_src.Width) * tex_desc_src.Height * 3 *
+					                           bytes_per_sample / 2;
 
-					core::log(__FUNCTION__,
-					        std::format("Video decode pool {} x {} x {} surfaces = {}", tex_desc_src.Width,
-					                    tex_desc_src.Height, tex_desc_src.ArraySize,
-					                    platform::format_size(core::file_size(surface_bytes * tex_desc_src.ArraySize))));
+					core::log(__FUNCTION__, std::format("Video decode pool {} x {} x {} surfaces = {}",
+					                                    tex_desc_src.Width, tex_desc_src.Height, tex_desc_src.ArraySize,
+					                                    platform::format_size(
+															core::file_size(surface_bytes * tex_desc_src.ArraySize))));
 				}
 				else
 				{
@@ -3290,8 +3132,9 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 					_shared_texture_refused_format = video_tex_format;
 					frame_in->request_cpu_frames();
 
-					core::log(__FUNCTION__, std::format("Video shared texture unavailable (0x{:08x}) - scaling on the CPU",
-					                                  static_cast<uint32_t>(hr)));
+					core::log(__FUNCTION__,
+					          std::format("Video shared texture unavailable (0x{:08x}) - scaling on the CPU",
+					                      static_cast<uint32_t>(hr)));
 				}
 			}
 
@@ -3422,8 +3265,9 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 						// Remembered like a refused build, and the chain dropped with it, so the decode device
 						// stops copying into a texture nothing presents. The decode thread prepares the
 						// pictures from here on.
-						core::log(__FUNCTION__, std::format("{} video texture refused by the render device - scaling on the CPU",
-						                                  to_string(bridge_format)));
+						core::log(__FUNCTION__,
+						          std::format("{} video texture refused by the render device - scaling on the CPU",
+						                      to_string(bridge_format)));
 						_shared_texture_refused_device = bridge_device;
 						_shared_texture_refused_dimensions = bridge_dimensions;
 						_shared_texture_refused_format = bridge_format;
@@ -3467,10 +3311,8 @@ render::texture_update_result d3d11_texture::update(const render::video_frame_pt
 	return result;
 }
 
-
 core::sizei d3d11_draw_context_impl::measure_string(const std::string_view text, const core::sizei s,
-                                              const render::font_face font,
-                                              const render::text_style style)
+                                                    const render::font_face font, const render::text_style style)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -3483,7 +3325,6 @@ int d3d11_draw_context_impl::line_height(const render::font_face font)
 	core::assert_true(platform::is_ui_thread());
 	return text_renderer(font).line_height();
 }
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3516,8 +3357,7 @@ static void disable_yuv_textures()
 }
 
 static HRESULT try_create_tex(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC& desc,
-                              const D3D11_SUBRESOURCE_DATA* p_source,
-                              ID3D11Texture2D** t)
+                              const D3D11_SUBRESOURCE_DATA* p_source, ID3D11Texture2D** t)
 {
 	const auto is_yuv = desc.Format == DXGI_FORMAT_NV12 || desc.Format == DXGI_FORMAT_P010;
 
@@ -3540,9 +3380,9 @@ static HRESULT try_create_tex(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC&
 	return E_FAIL;
 }
 
-static HRESULT try_update_tex(ID3D11DeviceContext* context, ID3D11Texture2D* texture, const core::sizei texture_dimensions,
-                              const core::texture_format fmt, const uint8_t* pixels, const size_t stride,
-                              const size_t buffer_size)
+static HRESULT try_update_tex(ID3D11DeviceContext* context, ID3D11Texture2D* texture,
+                              const core::sizei texture_dimensions, const core::texture_format fmt,
+                              const uint8_t* pixels, const size_t stride, const size_t buffer_size)
 {
 	const auto is_yuv = fmt == core::texture_format::NV12 || fmt == core::texture_format::P010;
 
@@ -3569,8 +3409,8 @@ static HRESULT try_update_tex(ID3D11DeviceContext* context, ID3D11Texture2D* tex
 }
 
 render::texture_update_result d3d11_texture::update(const core::sizei dims, const core::texture_format fmt,
-                                                const core::orientation orientation, const uint8_t* pixels,
-                                                const size_t stride, const size_t buffer_size)
+                                                    const core::orientation orientation, const uint8_t* pixels,
+                                                    const size_t stride, const size_t buffer_size)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	auto result = render::texture_update_result::failed;
@@ -3643,7 +3483,7 @@ render::texture_update_result d3d11_texture::update(const core::sizei dims, cons
 			auto reused = _f->texture_pool->take(dims, fmt);
 
 			if (reused.texture &&
-				SUCCEEDED(try_update_tex(context, reused.texture.Get(), dims, fmt, pixels, stride, buffer_size)))
+			    SUCCEEDED(try_update_tex(context, reused.texture.Get(), dims, fmt, pixels, stride, buffer_size)))
 			{
 				_texture = std::move(reused.texture);
 				_dimensions = dims;
@@ -3683,21 +3523,19 @@ render::texture_update_result d3d11_texture::update(const core::sizei dims, cons
 				if (hr == E_FAIL)
 				{
 					core::log(__FUNCTION__, std::format("CreateTexture2D {} ({} x {}) ****** crashed ******",
-					                                  to_string(fmt), cx, cy));
+					                                    to_string(fmt), cx, cy));
 				}
 				else
 				{
-					core::log(__FUNCTION__,
-					        std::format("CreateTexture2D {} ({} x {}) failed: {:x}", to_string(fmt), cx, cy,
-					                    static_cast<uint32_t>(hr)));
+					core::log(__FUNCTION__, std::format("CreateTexture2D {} ({} x {}) failed: {:x}", to_string(fmt), cx,
+					                                    cy, static_cast<uint32_t>(hr)));
 				}
 			}
 		}
 	}
 	else
 	{
-		const auto hr = try_update_tex(context, _texture.Get(), _dimensions, _format, pixels, stride,
-		                               buffer_size);
+		const auto hr = try_update_tex(context, _texture.Get(), _dimensions, _format, pixels, stride, buffer_size);
 		result = SUCCEEDED(hr) ? render::texture_update_result::tex_updated : render::texture_update_result::failed;
 	}
 
@@ -3718,7 +3556,8 @@ void d3d11_texture::tone_map(const core::tone_map_lut_ptr& lut)
 
 	auto* const device = _f ? _f->d3d_device.Get() : nullptr;
 
-	if (lut && device && lut->size > 1 && lut->rgba.size() >= static_cast<size_t>(lut->size) * lut->size * lut->size * 4)
+	if (lut && device && lut->size > 1 &&
+	    lut->rgba.size() >= static_cast<size_t>(lut->size) * lut->size * lut->size * 4)
 	{
 		const auto n = static_cast<UINT>(lut->size);
 
@@ -3731,7 +3570,7 @@ void d3d11_texture::tone_map(const core::tone_map_lut_ptr& lut)
 		desc.Usage = D3D11_USAGE_IMMUTABLE;
 		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-		const UINT row_pitch = n * 4 * sizeof(uint16_t);
+		const UINT row_pitch = n * 4 * static_cast<UINT>(sizeof(uint16_t));
 		const D3D11_SUBRESOURCE_DATA data = {lut->rgba.data(), row_pitch, row_pitch * n};
 
 		ComPtr<ID3D11Texture3D> cube;
@@ -3758,6 +3597,7 @@ render::texture_update_result d3d11_texture::update(const core::const_surface_pt
 	{
 		const auto fmt = s->format();
 		_cs = s->color_space();
+		_chroma = s->chroma_siting();
 
 		// Surfaces decoded before the gate closed are still cached, so convert them here rather than
 		// ask a driver that has already faulted for another YUV texture.
@@ -3773,8 +3613,8 @@ render::texture_update_result d3d11_texture::update(const core::const_surface_pt
 			}
 
 			tone_map(nullptr);
-			return update(converted->dimensions(), converted->format(), converted->orientation(),
-			              converted->pixels(), converted->stride(), converted->size());
+			return update(converted->dimensions(), converted->format(), converted->orientation(), converted->pixels(),
+			              converted->stride(), converted->size());
 		}
 
 		tone_map(core::is_packed(fmt) ? nullptr : s->tone_map());
@@ -3836,6 +3676,7 @@ render::texture_update_result d3d11_texture::update_mipped(const core::const_sur
 	_dimensions = dims;
 	_orientation = s->orientation();
 	_cs = s->color_space();
+	_chroma = s->chroma_siting();
 	_src_extent = {};
 
 	const auto& b = binding();
@@ -3964,8 +3805,7 @@ d3d11_text_renderer::coords d3d11_text_renderer::find_glyph(const uint16_t c, co
 				do
 				{
 					size = std::min(size * 2u, max_atlas_xy);
-				}
-				while (size < max_atlas_xy && (cx > static_cast<int>(size) || cy > static_cast<int>(size)));
+				} while (size < max_atlas_xy && (cx > static_cast<int>(size) || cy > static_cast<int>(size)));
 
 				if (size == _xy_tex)
 				{
@@ -3978,7 +3818,7 @@ d3d11_text_renderer::coords d3d11_text_renderer::find_glyph(const uint16_t c, co
 			}
 
 			if (!_texture || _next_location.x + cx > static_cast<int>(_xy_tex) ||
-				_next_location.y + cy > static_cast<int>(_xy_tex))
+			    _next_location.y + cy > static_cast<int>(_xy_tex))
 			{
 				return result;
 			}
@@ -3997,11 +3837,7 @@ d3d11_text_renderer::coords d3d11_text_renderer::find_glyph(const uint16_t c, co
 			_f->d3d_context->UpdateSubresource(_texture.Get(), 0, &box, alpha_pixels.pixels.data(), alpha_pixels.cx, 0);
 
 			const coords glyph_bounds = {
-				x,
-				y,
-				x + cx,
-				y + cy,
-				alpha_pixels.x
+				x, y, x + cx, y + cy, alpha_pixels.x,
 			};
 
 			_coords[key] = result = glyph_bounds;
@@ -4090,9 +3926,9 @@ void d3d11_text_renderer::draw_text(const std::string_view text, const core::rec
 	}
 }
 
-void d3d11_text_renderer::draw_text(const std::string_view text, const std::vector<render::text_highlight_t>& highlights,
-                                    const core::recti bounds, const render::text_style style, const core::color clr,
-                                    const core::color bg)
+void d3d11_text_renderer::draw_text(const std::string_view text,
+                                    const std::vector<render::text_highlight_t>& highlights, const core::recti bounds,
+                                    const render::text_style style, const core::color clr, const core::color bg)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	_clr = clr;
@@ -4110,8 +3946,7 @@ void d3d11_text_renderer::draw_text(const std::string_view text, const std::vect
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-HRESULT d3d11_text_renderer::GetPixelsPerDip(void* clientDrawingContext, FLOAT* pixelsPerDip)
+HRESULT d3d11_text_renderer::GetPixelsPerDip(void* /*clientDrawingContext*/, FLOAT* pixelsPerDip)
 {
 	*pixelsPerDip = 1.0f;
 	return S_OK;
@@ -4124,17 +3959,17 @@ bool render::probe_d3d11_pixel_snapping()
 	float scale = 0;
 	BOOL disabled = TRUE;
 	return renderer.GetCurrentTransform(nullptr, &matrix) == S_OK &&
-		renderer.GetPixelsPerDip(nullptr, &scale) == S_OK &&
-		renderer.IsPixelSnappingDisabled(nullptr, &disabled) == S_OK &&
-		matrix.m11 == 1.0f && matrix.m22 == 1.0f && matrix.m12 == 0.0f && matrix.m21 == 0.0f &&
-		matrix.dx == 0.0f && matrix.dy == 0.0f && scale == 1.0f && !disabled;
+	       renderer.GetPixelsPerDip(nullptr, &scale) == S_OK &&
+	       renderer.IsPixelSnappingDisabled(nullptr, &disabled) == S_OK && matrix.m11 == 1.0f && matrix.m22 == 1.0f &&
+	       matrix.m12 == 0.0f && matrix.m21 == 0.0f && matrix.dx == 0.0f && matrix.dy == 0.0f && scale == 1.0f &&
+	       !disabled;
 }
 
-HRESULT d3d11_text_renderer::DrawGlyphRun(void* clientDrawingContext, const FLOAT baselineOriginX,
-                                          const FLOAT baselineOriginY,
-                                          DWRITE_MEASURING_MODE measuringMode, const DWRITE_GLYPH_RUN* glyphRun,
+HRESULT d3d11_text_renderer::DrawGlyphRun(void* /*clientDrawingContext*/, const FLOAT baselineOriginX,
+                                          const FLOAT baselineOriginY, DWRITE_MEASURING_MODE /*measuringMode*/,
+                                          const DWRITE_GLYPH_RUN* glyphRun,
                                           const DWRITE_GLYPH_RUN_DESCRIPTION* glyphRunDescription,
-                                          IUnknown* clientDrawingEffect)
+                                          IUnknown* /*clientDrawingEffect*/)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -4146,16 +3981,16 @@ HRESULT d3d11_text_renderer::DrawGlyphRun(void* clientDrawingContext, const FLOA
 		const auto text_length = glyphRunDescription ? glyphRunDescription->stringLength : glyphRun->glyphCount;
 		const auto* const cluster_map = glyphRunDescription ? glyphRunDescription->clusterMap : nullptr;
 		const auto cluster_spans = _highlights.empty()
-			                           ? std::vector<render::text_cluster_span>{}
-			                           : render::text_cluster_spans_for_glyph_run(
-				                           glyphRun->glyphCount, cluster_map, text_length, text_position);
+		                               ? std::vector<render::text_cluster_span>{}
+		                               : render::text_cluster_spans_for_glyph_run(glyphRun->glyphCount, cluster_map,
+		                                                                          text_length, text_position);
 
 		const core::pointd screen_scale(client_extent.cx, client_extent.cy);
 		// find_glyph can grow the atlas, which replaces the texture and invalidates the scale used for
 		// every vertex staged so far, so this is tracked and flushed before the change is observed.
 		auto tex_scale = core::pointd(_xy_tex, _xy_tex);
 
-		// ~102KB of the UI thread's 1MB stack (vertex_2d is 48 bytes). Safe while this stays a leaf
+		// ~136KB of the UI thread's 1MB stack (vertex_2d is 64 bytes). Safe while this stays a leaf
 		// call; move to a member buffer if a deeper call chain ever lands underneath it.
 		vertex_2d vertices[max_vert_count];
 		WORD indexes[max_index_count];
@@ -4205,7 +4040,7 @@ HRESULT d3d11_text_renderer::DrawGlyphRun(void* clientDrawingContext, const FLOA
 			{
 				sx += glyphRun->glyphOffsets[i].advanceOffset;
 				sy = render::glyph_top_from_baseline(static_cast<float>(ty), _base_line_height,
-				                                  glyphRun->glyphOffsets[i].ascenderOffset);
+				                                     glyphRun->glyphOffsets[i].ascenderOffset);
 			}
 
 			if (is_left_to_right)
@@ -4247,12 +4082,12 @@ HRESULT d3d11_text_renderer::DrawGlyphRun(void* clientDrawingContext, const FLOA
 				vertices[vertex_count++].set(br / screen_scale, core::pointd(tx2, ty2) / tex_scale, right_color);
 				vertices[vertex_count++].set(tr / screen_scale, core::pointd(tx2, ty1) / tex_scale, right_color);
 
-				indexes[index_count++] = pos + 0;
-				indexes[index_count++] = pos + 1;
-				indexes[index_count++] = pos + 2;
-				indexes[index_count++] = pos + 3;
-				indexes[index_count++] = pos + 2;
-				indexes[index_count++] = pos + 1;
+				indexes[index_count++] = static_cast<WORD>(pos + 0);
+				indexes[index_count++] = static_cast<WORD>(pos + 1);
+				indexes[index_count++] = static_cast<WORD>(pos + 2);
+				indexes[index_count++] = static_cast<WORD>(pos + 3);
+				indexes[index_count++] = static_cast<WORD>(pos + 2);
+				indexes[index_count++] = static_cast<WORD>(pos + 1);
 
 				if (index_count > index_limit || vertex_count > vert_limit)
 				{
@@ -4276,8 +4111,7 @@ HRESULT d3d11_text_renderer::DrawGlyphRun(void* clientDrawingContext, const FLOA
 		if (tb && index_count > 0)
 		{
 			_canvas->add_scene_atom(tb, _canvas->_pixel_shader_font, core::texture_format::RGB,
-			                        render::texture_sampler::point, vertices, vertex_count, indexes,
-			                        index_count);
+			                        render::texture_sampler::point, vertices, vertex_count, indexes, index_count);
 		}
 	}
 
@@ -4302,10 +4136,9 @@ void d3d11_draw_context_impl::draw_text(const std::string_view textA, const core
 }
 
 void d3d11_draw_context_impl::draw_text(const std::string_view text,
-                                        const std::vector<render::text_highlight_t>& highlights, const core::recti bounds,
-                                        const render::font_face font, const render::text_style style,
-                                        const core::color clr,
-                                        const core::color bg)
+                                        const std::vector<render::text_highlight_t>& highlights,
+                                        const core::recti bounds, const render::font_face font,
+                                        const render::text_style style, const core::color clr, const core::color bg)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -4316,8 +4149,8 @@ void d3d11_draw_context_impl::draw_text(const std::string_view text,
 	}
 }
 
-void d3d11_draw_context_impl::draw_text(const render::text_layout_ptr& tl, const core::recti bounds, const core::color clr,
-                                        const core::color bg)
+void d3d11_draw_context_impl::draw_text(const render::text_layout_ptr& tl, const core::recti bounds,
+                                        const core::color clr, const core::color bg)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -4333,9 +4166,8 @@ void d3d11_draw_context_impl::draw_text(const render::text_layout_ptr& tl, const
 	}
 }
 
-
-void d3d11_draw_context_impl::draw_border(const core::recti inside, const core::recti outside, const core::color c_inside,
-                                          const core::color c_outside)
+void d3d11_draw_context_impl::draw_border(const core::recti inside, const core::recti outside,
+                                          const core::color c_inside, const core::color c_outside)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 	core::assert_true(platform::is_ui_thread());
@@ -4356,26 +4188,14 @@ void d3d11_draw_context_impl::draw_border(const core::recti inside, const core::
 
 		const vertex_2d vertices[] = {
 
-			vertex_2d(ol, ob, c_outside),
-			vertex_2d(ol, ot, c_outside),
-			vertex_2d(il, ib, c_inside),
-			vertex_2d(il, it, c_inside),
-			vertex_2d(or1, ot, c_outside),
-			vertex_2d(ir, it, c_inside),
-			vertex_2d(or1, ob, c_outside),
-			vertex_2d(ir, ib, c_inside),
+			vertex_2d(ol, ob, c_outside),  vertex_2d(ol, ot, c_outside),  vertex_2d(il, ib, c_inside),
+			vertex_2d(il, it, c_inside),   vertex_2d(or1, ot, c_outside), vertex_2d(ir, it, c_inside),
+			vertex_2d(or1, ob, c_outside), vertex_2d(ir, ib, c_inside),
 		};
 
 		const WORD indexes[] = {
 
-			0, 1, 2,
-			2, 1, 3,
-			1, 4, 3,
-			3, 4, 5,
-			4, 6, 5,
-			5, 6, 7,
-			6, 0, 7,
-			7, 0, 2,
+			0, 1, 2, 2, 1, 3, 1, 4, 3, 3, 4, 5, 4, 6, 5, 5, 6, 7, 6, 0, 7, 7, 0, 2,
 		};
 
 		add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point, vertices,
@@ -4434,55 +4254,38 @@ void d3d11_draw_context_impl::draw_rounded_rect(const core::recti bounds_in, con
 
 		const vertex_2d vertices[] = {
 
-			vertex_2d(ol, ot, -1.0f, -1.0f, c_outside),
-			vertex_2d(il, ot, 0.0f, -1.0f, c_inside),
-			vertex_2d(il, it, 0.0f, 0.0f, c_inside),
-			vertex_2d(ol, it, -1.0f, 0.0f, c_inside),
+			vertex_2d(ol, ot, -1.0f, -1.0f, c_outside), vertex_2d(il, ot, 0.0f, -1.0f, c_inside),
+			vertex_2d(il, it, 0.0f, 0.0f, c_inside),    vertex_2d(ol, it, -1.0f, 0.0f, c_inside),
 
-			vertex_2d(ir, ot, 0.0f, -1.0f, c_inside),
-			vertex_2d(or1, ot, 1.0f, -1.0f, c_outside),
-			vertex_2d(or1, it, 1.0f, 0.0f, c_inside),
-			vertex_2d(ir, it, 0.0f, 0.0f, c_inside),
+			vertex_2d(ir, ot, 0.0f, -1.0f, c_inside),   vertex_2d(or1, ot, 1.0f, -1.0f, c_outside),
+			vertex_2d(or1, it, 1.0f, 0.0f, c_inside),   vertex_2d(ir, it, 0.0f, 0.0f, c_inside),
 
-			vertex_2d(ir, ib, 0.0f, 0.0f, c_inside),
-			vertex_2d(or1, ib, 1.0f, 0.0f, c_inside),
-			vertex_2d(or1, ob, 1.0f, 1.0f, c_outside),
-			vertex_2d(ir, ob, 0.0f, 1.0f, c_inside),
+			vertex_2d(ir, ib, 0.0f, 0.0f, c_inside),    vertex_2d(or1, ib, 1.0f, 0.0f, c_inside),
+			vertex_2d(or1, ob, 1.0f, 1.0f, c_outside),  vertex_2d(ir, ob, 0.0f, 1.0f, c_inside),
 
-			vertex_2d(ol, ib, -1.0f, 0.0f, c_inside),
-			vertex_2d(il, ib, 0.0f, 0.0f, c_inside),
-			vertex_2d(il, ob, 0.0f, 1.0f, c_inside),
-			vertex_2d(ol, ob, -1.0f, 1.0f, c_outside),
+			vertex_2d(ol, ib, -1.0f, 0.0f, c_inside),   vertex_2d(il, ib, 0.0f, 0.0f, c_inside),
+			vertex_2d(il, ob, 0.0f, 1.0f, c_inside),    vertex_2d(ol, ob, -1.0f, 1.0f, c_outside),
 		};
 
 		constexpr WORD indexes[] = {
 
-			0, 1, 2,
-			2, 3, 0,
+			0,  1,  2,  2,  3,  0,
 
-			1, 4, 7,
-			7, 2, 1,
+			1,  4,  7,  7,  2,  1,
 
-			4, 5, 6,
-			6, 7, 4,
+			4,  5,  6,  6,  7,  4,
 
-			7, 6, 9,
-			9, 8, 7,
+			7,  6,  9,  9,  8,  7,
 
-			8, 9, 10,
-			10, 11, 8,
+			8,  9,  10, 10, 11, 8,
 
-			13, 8, 11,
-			11, 14, 13,
+			13, 8,  11, 11, 14, 13,
 
-			12, 13, 14,
-			14, 15, 12,
+			12, 13, 14, 14, 15, 12,
 
-			3, 2, 13,
-			13, 12, 3,
+			3,  2,  13, 13, 12, 3,
 
-			2, 7, 8,
-			8, 13, 2,
+			2,  7,  8,  8,  13, 2,
 		};
 
 		add_scene_atom({}, _pixel_shader_circle, core::texture_format::None, render::texture_sampler::point, vertices,
@@ -4509,9 +4312,7 @@ void d3d11_draw_context_impl::draw_rect(const core::recti bounds, const core::co
 
 	constexpr WORD indexes[] = {
 
-		0, 1, 2,
-		2, 3, 0
-	};
+		0, 1, 2, 2, 3, 0};
 
 	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point, vertices,
 	               std::size(vertices), indexes, std::size(indexes));
@@ -4527,63 +4328,169 @@ static core::color d3d_alpha(const core::color c, const float factor)
 	return {c.r, c.g, c.b, c.a * factor};
 }
 
-void d3d11_draw_context_impl::fill_polygon(const std::span<const core::pointd> points, const core::color c)
+// A vertex of a polygon's mesh coloured by its paint: the start colour in clr and the end in clr2, each with
+// the edge's coverage in its alpha, the gradient's coordinates in tex, and in tex_size.x whether they are a
+// radial gradient's. polygon_ps.hlsl mixes them as render::paint::at does.
+static vertex_2d polygon_vertex(const render::polygon::mesh::vertex& v, const render::paint& paint,
+                                const core::sizei extent)
 {
-	render::scope_rendering_func rf(__FUNCTION__);
-	core::assert_true(platform::is_ui_thread());
-	if (points.size() < 3 || c.a < 0.01f || _client_extent.is_empty()) return;
+	vertex_2d result(d3d_normalised_point(v.position, extent), d3d_alpha(paint.color, v.coverage));
+	if (paint.kind == render::paint_kind::solid) return result;
 
-	// WORD indices are relative to one atom, so keep the fan within the shared buffer's index range.
-	const auto count = std::min(points.size(), static_cast<size_t>(std::numeric_limits<WORD>::max()));
-	if (count < 3) return;
+	const auto end = d3d_alpha(paint.end_color, v.coverage);
+	result.clr2 = {end.r, end.g, end.b, end.a};
 
-	std::vector<vertex_2d> vertices;
-	std::vector<WORD> indexes;
-	vertices.reserve(count);
-	indexes.reserve((count - 2) * 3);
-
-	for (size_t i = 0; i < count; ++i)
+	if (paint.kind == render::paint_kind::radial && paint.radius > 1e-6)
 	{
-		vertices.emplace_back(d3d_normalised_point(points[i], _client_extent), c);
+		const auto from_centre = (v.position - paint.start) / paint.radius;
+		result.tex = {static_cast<float>(from_centre.X), static_cast<float>(from_centre.Y)};
+		result.tex_size.x = 1.0f;
+	}
+	else
+	{
+		// Linear, or a gradient with no length, which is its end colour throughout.
+		result.tex = {static_cast<float>(paint.position(v.position)), 0.0f};
 	}
 
-	for (size_t i = 1; i + 1 < count; ++i)
-	{
-		indexes.emplace_back(0);
-		indexes.emplace_back(static_cast<WORD>(i));
-		indexes.emplace_back(static_cast<WORD>(i + 1));
-	}
-
-	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point,
-	               vertices.data(), vertices.size(), indexes.data(), indexes.size());
+	return result;
 }
 
-void d3d11_draw_context_impl::draw_shadow(const core::recti bounds, const int width, const float alpha)
+// Hands one part of a polygon's mesh - its vertices from first_vertex to last_vertex and the triangles over
+// them - to stage as runs of vertices and the 16-bit indexes into them.
+template <typename Stage>
+static void polygon_runs(const render::polygon::mesh& mesh, const size_t first_vertex, const size_t last_vertex,
+                         const size_t first_index, const size_t last_index, const render::paint& paint,
+                         const core::sizei extent, Stage&& stage)
 {
-	render::scope_rendering_func rf(__FUNCTION__);
-	core::assert_true(platform::is_ui_thread());
-	if (bounds.is_empty() || width <= 0 || alpha <= 0.0f || _client_extent.is_empty() || !_shadow ||
-		!_shadow->is_valid())
+	if (last_vertex <= first_vertex || last_index <= first_index) return;
+
+	thread_local std::vector<vertex_2d> vertices;
+	thread_local std::vector<WORD> indexes;
+	vertices.clear();
+	indexes.clear();
+
+	if (last_vertex - first_vertex <= std::numeric_limits<WORD>::max())
 	{
+		for (auto v = first_vertex; v < last_vertex; ++v)
+			vertices.push_back(polygon_vertex(mesh.vertices[v], paint, extent));
+		for (auto i = first_index; i < last_index; ++i)
+			indexes.push_back(static_cast<WORD>(mesh.indices[i] - first_vertex));
+		stage(vertices, indexes);
 		return;
 	}
 
-	const auto& binding = _shadow->binding();
-	if (!binding) return;
+	// Too many vertices for 16-bit indexes: each triangle has its own, in runs that fit.
+	constexpr size_t run_indexes = std::numeric_limits<WORD>::max() / 3 * 3;
 
-	constexpr auto vertex_count = 4 * 8;
-	constexpr auto index_count = 6 * 8;
-	std::array<vertex_2d, vertex_count> vertices;
-	std::array<WORD, index_count> indexes;
-	build_shadow_vertices(vertices.data(), indexes.data(), _shadow, bounds, _client_extent, width, alpha);
+	for (auto start = first_index; start < last_index; start += run_indexes)
+	{
+		vertices.clear();
+		indexes.clear();
 
-	add_scene_atom(binding, _pixel_shader_rgb, core::texture_format::RGB, render::texture_sampler::point,
-	               vertices.data(), vertices.size(), indexes.data(), indexes.size());
+		for (auto i = start; i < std::min(last_index, start + run_indexes); ++i)
+		{
+			indexes.push_back(static_cast<WORD>(vertices.size()));
+			vertices.push_back(polygon_vertex(mesh.vertices[mesh.indices[i]], paint, extent));
+		}
+
+		stage(vertices, indexes);
+	}
 }
 
-static void append_d3d_line_geometry(std::vector<vertex_2d>& vertices, std::vector<WORD>& indexes,
-                                     const core::pointd a, const core::pointd b, const core::color c,
-                                     const double width, const core::sizei extent)
+void d3d11_draw_context_impl::draw_polygon(const std::span<const core::pointd> outline,
+                                           const render::polygon_style& style)
+{
+	render::scope_rendering_func rf(__FUNCTION__);
+	core::assert_true(platform::is_ui_thread());
+	if (_client_extent.is_empty()) return;
+
+	thread_local render::polygon::mesh mesh;
+	render::polygon::build_mesh(outline, style, mesh);
+	add_polygon_mesh(mesh, style);
+}
+
+void d3d11_draw_context_impl::add_polygon_mesh(const render::polygon::mesh& mesh, const render::polygon_style& style)
+{
+	const auto stage = [this](const ComPtr<ID3D11PixelShader>& shader)
+	{
+		return [this, &shader](const std::vector<vertex_2d>& vertices, const std::vector<WORD>& indexes)
+		{
+			add_scene_atom({}, shader, core::texture_format::None, render::texture_sampler::point, vertices.data(),
+			               vertices.size(), indexes.data(), indexes.size());
+		};
+	};
+
+	const auto& fill_shader = style.fill.kind == render::paint_kind::solid ? _pixel_shader_solid
+	                                                                       : _pixel_shader_polygon;
+	polygon_runs(mesh, 0, mesh.border_vertex, 0, mesh.border_index, style.fill, _client_extent, stage(fill_shader));
+	polygon_runs(mesh, mesh.border_vertex, mesh.vertices.size(), mesh.border_index, mesh.indices.size(), style.border,
+	             _client_extent, stage(_pixel_shader_solid));
+}
+
+void d3d11_vertices::update_polygons(const std::span<const render::vertex_polygon> polygons)
+{
+	render::scope_rendering_func rf(__FUNCTION__);
+	core::assert_true(platform::is_ui_thread());
+
+	// The scene goes on drawing these buffers, so whatever the last update left must not survive one
+	// that cannot be uploaded.
+	_scene_atoms.clear();
+
+	if (!_canvas || !_canvas->_f || !_canvas->_f->d3d_device || !_canvas->_f->d3d_context) return;
+
+	_rect_vertices.clear();
+	_rect_indexes.clear();
+
+	// Runs that share a shader join the atom before them while their vertices fit its 16-bit indexes.
+	const auto stage = [this](ID3D11PixelShader* const shader)
+	{
+		return [this, shader](const std::vector<vertex_2d>& vertices, const std::vector<WORD>& indexes)
+		{
+			const auto join = !_scene_atoms.empty() && _scene_atoms.back().shader == shader &&
+			                  _scene_atoms.back().vertex_count + vertices.size() <= std::numeric_limits<WORD>::max();
+
+			if (!join)
+			{
+				scene_atom atom;
+				atom.shader = shader;
+				atom.start_vertex = static_cast<uint32_t>(_rect_vertices.size());
+				atom.start_index = static_cast<uint32_t>(_rect_indexes.size());
+				_scene_atoms.emplace_back(std::move(atom));
+			}
+
+			auto& atom = _scene_atoms.back();
+			const auto base = atom.vertex_count;
+			_rect_vertices.insert(_rect_vertices.end(), vertices.begin(), vertices.end());
+			for (const auto i : indexes) _rect_indexes.push_back(static_cast<WORD>(base + i));
+			atom.vertex_count += static_cast<uint32_t>(vertices.size());
+			atom.index_count += static_cast<uint32_t>(indexes.size());
+		};
+	};
+
+	thread_local render::polygon::mesh mesh;
+	const auto extent = _canvas->_client_extent;
+
+	for (const auto& polygon : polygons)
+	{
+		render::polygon::build_mesh(polygon.outline, polygon.style, mesh);
+		auto* const fill_shader = polygon.style.fill.kind == render::paint_kind::solid
+		                              ? _canvas->_pixel_shader_solid.Get()
+		                              : _canvas->_pixel_shader_polygon.Get();
+		polygon_runs(mesh, 0, mesh.border_vertex, 0, mesh.border_index, polygon.style.fill, extent, stage(fill_shader));
+		polygon_runs(mesh, mesh.border_vertex, mesh.vertices.size(), mesh.border_index, mesh.indices.size(),
+		             polygon.style.border, extent, stage(_canvas->_pixel_shader_solid.Get()));
+	}
+
+	if (_rect_vertices.empty() || !upload(_rect_vertices.data(), static_cast<uint32_t>(_rect_vertices.size()),
+	                                      _rect_indexes.data(), static_cast<uint32_t>(_rect_indexes.size())))
+	{
+		_scene_atoms.clear();
+	}
+}
+
+static void append_d3d_line_geometry(std::vector<vertex_2d>& vertices, std::vector<WORD>& indexes, const core::pointd a,
+                                     const core::pointd b, const core::color c, const double width,
+                                     const core::sizei extent)
 {
 	const auto dx = b.X - a.X;
 	const auto dy = b.Y - a.Y;
@@ -4641,8 +4548,8 @@ void d3d11_draw_context_impl::draw_line(const core::pointd a, const core::pointd
 	std::vector<vertex_2d> vertices;
 	std::vector<WORD> indexes;
 	append_d3d_line_geometry(vertices, indexes, a, b, c, width, _client_extent);
-	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point,
-	               vertices.data(), vertices.size(), indexes.data(), indexes.size());
+	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point, vertices.data(),
+	               vertices.size(), indexes.data(), indexes.size());
 }
 
 void d3d11_draw_context_impl::draw_polyline(const std::span<const core::pointd> points, const core::color c,
@@ -4661,9 +4568,9 @@ static void append_d3d_ellipse_ring(std::vector<vertex_2d>& vertices, const core
 	{
 		constexpr auto pi = 3.14159265358979323846;
 		const auto angle = 2.0 * pi * i / segments;
-		vertices.emplace_back(d3d_normalised_point(
-		                         {center.X + std::cos(angle) * rx, center.Y + std::sin(angle) * ry}, extent),
-		                     c);
+		vertices.emplace_back(d3d_normalised_point({center.X + std::cos(angle) * rx, center.Y + std::sin(angle) * ry},
+		                                           extent),
+		                      c);
 	}
 }
 
@@ -4702,8 +4609,8 @@ void d3d11_draw_context_impl::fill_ellipse(const core::recti bounds, const core:
 		indexes.push_back(static_cast<WORD>(1 + segments + i));
 	}
 
-	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point,
-	               vertices.data(), vertices.size(), indexes.data(), indexes.size());
+	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point, vertices.data(),
+	               vertices.size(), indexes.data(), indexes.size());
 }
 
 void d3d11_draw_context_impl::draw_ellipse(const core::recti bounds, const core::color c, const double width)
@@ -4750,8 +4657,8 @@ void d3d11_draw_context_impl::draw_ellipse(const core::recti bounds, const core:
 		}
 	}
 
-	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point,
-	               vertices.data(), vertices.size(), indexes.data(), indexes.size());
+	add_scene_atom({}, _pixel_shader_solid, core::texture_format::None, render::texture_sampler::point, vertices.data(),
+	               vertices.size(), indexes.data(), indexes.size());
 }
 
 void d3d11_draw_context_impl::draw_texture(const render::texture_ptr& t, const core::recti dst, const float alpha,
@@ -4780,8 +4687,7 @@ void d3d11_draw_context_impl::draw_texture(const render::texture_ptr& t, const c
 	const auto width = static_cast<float>(dimensions.cx);
 	const auto height = static_cast<float>(dimensions.cy);
 	const auto color = core::color::from_a(alpha);
-	const vertex_2d vertices[] =
-	{
+	const vertex_2d vertices[] = {
 		vertex_2d(d[0], {src.left / width, src.top / height}, color, dimensions),
 		vertex_2d(d[1], {src.right / width, src.top / height}, color, dimensions),
 		vertex_2d(d[2], {src.right / width, src.bottom / height}, color, dimensions),
@@ -4791,15 +4697,16 @@ void d3d11_draw_context_impl::draw_texture(const render::texture_ptr& t, const c
 	const auto& binding = tt->binding();
 	if (!binding) return;
 
-	const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tt->_format, binding.tone_map != nullptr);
+	const auto shader = calc_shader(sampler == render::texture_sampler::bicubic, tt->_format,
+	                                binding.tone_map != nullptr);
 
 	if (!_last_transform || *_last_transform != transform)
 	{
 		_last_transform = std::make_shared<render::texture_transform>(transform);
 	}
 
-	add_scene_atom(binding, shader, tt->_format, sampler, vertices, std::size(vertices), indexes,
-	               std::size(indexes), tt->_cs, _last_transform);
+	add_scene_atom(binding, shader, tt->_format, sampler, vertices, std::size(vertices), indexes, std::size(indexes),
+	               tt->_cs, tt->_chroma, _last_transform);
 }
 
 void d3d11_draw_context_impl::draw_texture(const render::texture_ptr& t, const core::recti dst, const core::recti src,
@@ -4832,7 +4739,7 @@ void d3d11_draw_context_impl::draw_vertices(const render::vertices_ptr& v)
 }
 
 core::sizei d3d11_draw_context_impl::measure_text(const std::string_view text, const render::font_face font,
-                                            const render::text_style style, const int width, const int height)
+                                                  const render::text_style style, const int width, const int height)
 {
 	return measure_string(text, {width, height}, font, style);
 }
@@ -4896,9 +4803,8 @@ render::text_layout_ptr d3d11_draw_context_impl::create_text_layout(const render
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 render::draw_context_device_ptr d3d11_create_context(const factories_ptr& f, const ComPtr<IDXGISwapChain>& swap_chain,
-                                             const int base_font_size)
+                                                     const int base_font_size)
 {
 	render::scope_rendering_func rf(__FUNCTION__);
 
@@ -4910,4 +4816,76 @@ render::draw_context_device_ptr d3d11_create_context(const factories_ptr& f, con
 	auto result = std::make_shared<d3d11_draw_context_impl>();
 	result->create(f, swap_chain, base_font_size);
 	return result->is_valid() ? result : nullptr;
+}
+
+core::surface_ptr render::test_draw_d3d11(const core::sizei extent, const std::function<void(draw_context&)>& draw)
+{
+	if (extent.cx < 1 || extent.cy < 1) return {};
+
+	const auto f = std::make_shared<factories>();
+	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(f->dwrite),
+	                               std::bit_cast<IUnknown**>(f->dwrite.GetAddressOf()))) ||
+	    FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+	                             D3D11_SDK_VERSION, &f->d3d_device, &f->d3d_feature_level, &f->d3d_context)))
+	{
+		return {};
+	}
+
+	f->d3d_device.As(&f->dxgi_device);
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = extent.cx;
+	desc.Height = extent.cy;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = back_buffer_format;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+
+	ComPtr<ID3D11Texture2D> target;
+	if (FAILED(f->d3d_device->CreateTexture2D(&desc, nullptr, &target))) return {};
+
+	const auto context = std::make_shared<d3d11_draw_context_impl>();
+	context->create(f, nullptr, render::default_font_size);
+	if (!context->is_valid() ||
+	    FAILED(f->d3d_device->CreateRenderTargetView(target.Get(), nullptr, &context->_back_buffer_rtv)))
+	{
+		return {};
+	}
+
+	context->begin_draw(extent, render::default_font_size, {});
+	draw(*context);
+	const auto presented = context->render();
+	context->destroy();
+	if (presented.failed) return {};
+
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+	ComPtr<ID3D11Texture2D> staging;
+	if (FAILED(f->d3d_device->CreateTexture2D(&desc, nullptr, &staging))) return {};
+	f->d3d_context->CopyResource(staging.Get(), target.Get());
+
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	if (FAILED(f->d3d_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return {};
+
+	auto result = std::make_shared<core::surface>();
+	if (result->alloc(extent, core::texture_format::ARGB, core::orientation::top_left))
+	{
+		for (auto y = 0; y < extent.cy; ++y)
+		{
+			memcpy(result->pixels_line(y),
+			       static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(mapped.RowPitch) * y,
+			       static_cast<size_t>(extent.cx) * 4);
+		}
+	}
+	else
+	{
+		result.reset();
+	}
+
+	f->d3d_context->Unmap(staging.Get(), 0);
+	return result;
 }

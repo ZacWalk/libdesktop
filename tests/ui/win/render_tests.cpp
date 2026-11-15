@@ -81,8 +81,8 @@ static ComPtr<ID3D11Device> create_warp_device(ComPtr<ID3D11DeviceContext>& cont
 {
 	ComPtr<ID3D11Device> device;
 
-	if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr,
-	                             0, D3D11_SDK_VERSION, &device, nullptr, &context)))
+	if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+	                             D3D11_SDK_VERSION, &device, nullptr, &context)))
 	{
 		return {};
 	}
@@ -129,12 +129,81 @@ static bool texture_holds(ID3D11Device* device, ID3D11DeviceContext* context, ID
 	for (UINT y = 0; y < desc.Height && holds; ++y)
 	{
 		const auto* const row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped.pData) +
-			static_cast<size_t>(mapped.RowPitch) * y);
+		                                                          static_cast<size_t>(mapped.RowPitch) * y);
 		holds = std::all_of(row, row + desc.Width, [bgra](const uint32_t px) { return px == bgra; });
 	}
 
 	context->Unmap(staging.Get(), 0);
 	return holds;
+}
+
+// The first texel of a sixteen-bit texture, red first.
+static std::array<uint16_t, 4> first_wide_texel(ID3D11Device* device, ID3D11DeviceContext* context,
+                                                ID3D11Texture2D* texture)
+{
+	D3D11_TEXTURE2D_DESC desc = {};
+	texture->GetDesc(&desc);
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+	ComPtr<ID3D11Texture2D> staging;
+	if (FAILED(device->CreateTexture2D(&desc, nullptr, &staging))) return {};
+
+	context->CopyResource(staging.Get(), texture);
+
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return {};
+
+	std::array<uint16_t, 4> texel{};
+	std::memcpy(texel.data(), mapped.pData, sizeof(texel));
+	context->Unmap(staging.Get(), 0);
+	return texel;
+}
+
+// A wide picture reaches the GPU at its own precision, red first as the wide formats store it, so an edit's
+// colour grade previews from all sixteen bits rather than from a byte a channel.
+static void should_upload_a_wide_picture_as_a_sixteen_bit_texture()
+{
+	ComPtr<ID3D11DeviceContext> context;
+	const auto device = create_warp_device(context);
+	assert_equal(true, device != nullptr, "a WARP device");
+	if (!device) return;
+
+	const auto f = std::make_shared<factories>();
+	f->d3d_device = device;
+	f->d3d_context = context;
+	f->texture_pool = std::make_unique<d3d11_texture_pool>(1024 * 1024);
+
+	constexpr core::sizei dims = {8, 4};
+	constexpr std::array<uint16_t, 4> texel{0x1234, 0xabcd, 0x0101, 0x8000};
+	const auto picture = std::make_shared<core::surface>();
+	assert_equal(true, picture->alloc(dims, core::texture_format::RGBA16) != nullptr, "a wide picture");
+
+	for (auto y = 0; y < dims.cy; ++y)
+	{
+		auto* const row = std::bit_cast<uint16_t*>(picture->pixels_line(y));
+		for (auto x = 0; x < dims.cx; ++x) std::memcpy(row + x * 4, texel.data(), sizeof(texel));
+	}
+
+	{
+		const auto texture = d3d11_create_texture(f);
+		assert_equal(true,
+		             texture->update(core::const_surface_ptr(picture)) == render::texture_update_result::tex_created,
+		             "the wide picture makes a texture");
+		assert_equal(true, texture->format() == core::texture_format::RGBA16, "of its own format");
+		assert_equal(true, texture->has_alpha(), "which carries alpha");
+	}
+
+	const auto kept = f->texture_pool->take(dims, core::texture_format::RGBA16);
+	assert_equal(true, kept.texture != nullptr, "released, the texture is kept");
+	if (!kept.texture) return;
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	kept.texture->GetDesc(&desc);
+	assert_equal(true, desc.Format == DXGI_FORMAT_R16G16B16A16_UNORM, "sixteen bits a channel on the GPU");
+	assert_equal(true, first_wide_texel(device.Get(), context.Get(), kept.texture.Get()) == texel,
+	             "holding every bit of the picture");
 }
 
 // A recycled texture still holds the last picture until it is overwritten, so the reuse is only right if
@@ -164,9 +233,11 @@ static void should_overwrite_a_recycled_texture_with_the_new_picture()
 
 	{
 		const auto first = d3d11_create_texture(f);
-		assert_equal(true, first->update(dims, core::texture_format::ARGB, core::orientation::top_left,
-		                                 reinterpret_cast<const uint8_t*>(first_picture.data()), stride, bytes) ==
-		             render::texture_update_result::tex_created, "the first picture makes a texture");
+		assert_equal(true,
+		             first->update(dims, core::texture_format::ARGB, core::orientation::top_left,
+		                           reinterpret_cast<const uint8_t*>(first_picture.data()), stride,
+		                           bytes) == render::texture_update_result::tex_created,
+		             "the first picture makes a texture");
 	}
 
 	assert_equal(1_z, f->texture_pool->size(), "which is kept when it is released");
@@ -176,9 +247,11 @@ static void should_overwrite_a_recycled_texture_with_the_new_picture()
 
 	{
 		const auto second = d3d11_create_texture(f);
-		assert_equal(true, second->update(dims, core::texture_format::ARGB, core::orientation::top_left,
-		                                  reinterpret_cast<const uint8_t*>(second_picture.data()), stride, bytes) ==
-		             render::texture_update_result::tex_created, "a texture taken from the pool is new to its caller");
+		assert_equal(true,
+		             second->update(dims, core::texture_format::ARGB, core::orientation::top_left,
+		                            reinterpret_cast<const uint8_t*>(second_picture.data()), stride,
+		                            bytes) == render::texture_update_result::tex_created,
+		             "a texture taken from the pool is new to its caller");
 		assert_equal(0_z, f->texture_pool->size(), "the second picture took it");
 	}
 
@@ -220,7 +293,8 @@ public:
 	}
 };
 
-static std::function<std::unique_ptr<render::surface_scaler>()> make_fake_frame_scaler(std::shared_ptr<int> frames)
+static std::function<std::unique_ptr<render::surface_scaler>()> make_fake_frame_scaler(
+	const std::shared_ptr<int>& frames)
 {
 	return [frames]() -> std::unique_ptr<render::surface_scaler>
 	{
@@ -261,7 +335,8 @@ static void should_present_a_video_frame_through_its_interface()
 	render::make_surface_scaler = make_fake_frame_scaler(frames_converted);
 
 	const auto texture = d3d11_create_texture(f);
-	assert_equal(true, texture->update(make_prepared_video_frame({64, 48})) == render::texture_update_result::tex_created,
+	assert_equal(true,
+	             texture->update(make_prepared_video_frame({64, 48})) == render::texture_update_result::tex_created,
 	             "a prepared picture is uploaded");
 	assert_equal(true, texture->dimensions() == core::sizei{64, 48}, "as it was prepared");
 	assert_equal(0, *frames_converted, "with nothing converted");
@@ -298,7 +373,7 @@ static void should_copy_a_picture_decoded_on_the_render_device_into_its_texture(
 
 	UINT support = 0;
 	const auto samples_nv12 = SUCCEEDED(device->CheckFormatSupport(DXGI_FORMAT_NV12, &support)) &&
-		can_sample_texture_format(support);
+	                          can_sample_texture_format(support);
 	assert_equal(true, samples_nv12, "which samples NV12 planes");
 	if (!samples_nv12) return;
 
@@ -333,8 +408,14 @@ static void should_copy_a_picture_decoded_on_the_render_device_into_its_texture(
 	frame->described.index = 1;
 	frame->described.width = extent.cx;
 	frame->described.height = extent.cy;
-	frame->described.lock = [](void* c) { ++*static_cast<int*>(c); };
-	frame->described.unlock = [](void* c) { --*static_cast<int*>(c); };
+	frame->described.lock = [](void* c)
+	{
+		++*static_cast<int*>(c);
+	};
+	frame->described.unlock = [](void* c)
+	{
+		--*static_cast<int*>(c);
+	};
 	frame->described.lock_context = &held;
 
 	const auto f = std::make_shared<factories>();
@@ -366,7 +447,8 @@ static void should_present_a_video_frame_in_software_through_its_interface()
 
 	const auto renderer = create_software_draw_context(nullptr, nullptr, false, render::default_font_size);
 	const auto texture = renderer->create_texture();
-	assert_equal(true, texture->update(make_prepared_video_frame({64, 48})) == render::texture_update_result::tex_created,
+	assert_equal(true,
+	             texture->update(make_prepared_video_frame({64, 48})) == render::texture_update_result::tex_created,
 	             "a prepared picture is copied");
 	assert_equal(true, texture->dimensions() == core::sizei{64, 48}, "as it was prepared");
 	assert_equal(0, *frames_converted, "with nothing converted");
@@ -387,53 +469,25 @@ static void should_present_a_video_frame_in_software_through_its_interface()
 	assert_equal(1, hardware->cpu_requests, "and the decoder is asked for pictures in system memory");
 
 	render::make_surface_scaler = nullptr;
-	assert_equal(true,
-	             renderer->create_texture()->update(unprepared) == render::texture_update_result::failed,
+	assert_equal(true, renderer->create_texture()->update(unprepared) == render::texture_update_result::failed,
 	             "with no scaler a picture in system memory cannot be presented");
-}
-
-// The chrome's embedded PNG - the drop shadow - travels in the render library, and decodes with
-// whatever decoder the application installs before any backend loads one, so both backends draw the
-// same shadow with or without WIC. Diffractor's suite checks that it installs its own.
-static void should_decode_embedded_chrome_images()
-{
-	constexpr std::array<uint8_t, 8> png_signature = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-
-	const auto installed = render::decode_embedded_image;
-	const core::scope_exit restore([installed] { render::decode_embedded_image = installed; });
-	size_t handed = 0;
-	bool is_png = false;
-	render::decode_embedded_image = [&handed, &is_png, &png_signature](const core::cspan data)
-	{
-		handed = data.size;
-		is_png = data.size > png_signature.size() &&
-			std::equal(png_signature.begin(), png_signature.end(), data.data);
-		auto decoded = std::make_shared<core::surface>();
-		decoded->alloc(4, 4, core::texture_format::ARGB);
-		return decoded;
-	};
-
-	const auto shadow = render::load_shadow_art();
-	assert_equal(true, is_png, "the shadow travels as a PNG");
-	assert_equal(true, shadow != nullptr, "the shadow decodes");
-	assert_equal(true, handed > png_signature.size(), "with the application's decoder, handed all of it");
-
-	render::decode_embedded_image = nullptr;
-	assert_equal(true, render::load_shadow_art() == nullptr, "and with none installed nothing decodes it");
 }
 
 void register_ui_render_win_tests(test_registry& tests)
 {
 	tests.add("Should offer the maximize caption button only on a resizable frame"s,
-		should_offer_the_maximize_caption_button_only_on_a_resizable_frame);
+	          should_offer_the_maximize_caption_button_only_on_a_resizable_frame);
 	tests.add("Should answer hit tests on the maximize toolbar button as the caption button"s,
-		should_answer_hit_tests_on_the_maximize_toolbar_button_as_the_caption_button);
+	          should_answer_hit_tests_on_the_maximize_toolbar_button_as_the_caption_button);
 	tests.add("Should gate native bubble alpha steps"s, should_gate_native_bubble_alpha_steps);
-	tests.add("Should overwrite a recycled texture with the new picture"s, should_overwrite_a_recycled_texture_with_the_new_picture);
-	tests.add("Should present a video frame through its interface"s, should_present_a_video_frame_through_its_interface);
+	tests.add("Should overwrite a recycled texture with the new picture"s,
+	          should_overwrite_a_recycled_texture_with_the_new_picture);
+	tests.add("Should upload a wide picture as a sixteen bit texture"s,
+	          should_upload_a_wide_picture_as_a_sixteen_bit_texture);
+	tests.add("Should present a video frame through its interface"s,
+	          should_present_a_video_frame_through_its_interface);
 	tests.add("Should copy a picture decoded on the render device into its texture"s,
-		should_copy_a_picture_decoded_on_the_render_device_into_its_texture);
+	          should_copy_a_picture_decoded_on_the_render_device_into_its_texture);
 	tests.add("Should present a video frame in software through its interface"s,
-		should_present_a_video_frame_in_software_through_its_interface);
-	tests.add("Should decode embedded chrome images"s, should_decode_embedded_chrome_images);
+	          should_present_a_video_frame_in_software_through_its_interface);
 }

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The source-preserving Markdown document control, including links, headings, wrapping and tables.
 
@@ -31,8 +30,7 @@ namespace ui
 
 		markdown_view(view_host& host, const view_theme& th, view_context* context = nullptr,
 		              text_clipboard* clipboard = nullptr);
-		markdown_view(const view_theme& th, view_context* context = nullptr,
-		              text_clipboard* clipboard = nullptr);
+		markdown_view(const view_theme& th, view_context* context = nullptr, text_clipboard* clipboard = nullptr);
 		~markdown_view() override;
 
 		void set_link_handler(link_fn handler);
@@ -65,6 +63,10 @@ namespace ui
 		void on_mouse_down(core::pointi point, platform::key_state keys);
 		void on_mouse_up(core::pointi point, platform::key_state keys);
 		void on_mouse_move(core::pointi point, bool captured);
+		void on_double_click(core::pointi point, platform::key_state keys) override;
+		bool on_key(char32_t key, platform::key_state keys) override;
+		void on_focus(bool focused, bool select_all) override;
+		void on_capture_lost() override;
 		[[nodiscard]] platform::cursor cursor_at(core::pointi point) const;
 		void paint(render::draw_context& draw, bool focused) const override;
 
@@ -106,6 +108,8 @@ namespace ui
 		render::font_face _heading_fonts[heading_levels] = {};
 		std::vector<line_metrics> _lines;
 		std::vector<table_layout::table_block> _tables;
+		table_layout::resize_gesture _column_drag;
+		int _resizing_table = -1;
 		int _total_content_height = 0;
 
 		mutable std::string _line_buf;
@@ -135,11 +139,10 @@ namespace ui
 		static bool spell_check_style(text_style style);
 		void build_style_runs(std::string_view text, const md::source_line& parsed, uint8_t heading) const;
 		void build_text_runs(std::string_view text, text_style style, core::color32 base_color) const;
-		void draw_run(render::draw_context& draw, const core::recti& rect, core::pointi& origin,
-		              std::string_view text, int absolute_start, render::font_face font,
-		              int font_cx, core::color32 color, core::color32 bg_color,
-		              int selection_begin, int selection_end, core::color32 selection_text_color,
-		              core::color32 selection_bg_color) const;
+		void draw_run(render::draw_context& draw, const core::recti& rect, core::pointi& origin, std::string_view text,
+		              int absolute_start, render::font_face font, int font_cx, core::color32 color,
+		              core::color32 bg_color, int selection_begin, int selection_end,
+		              core::color32 selection_text_color, core::color32 selection_bg_color) const;
 		void draw_markdown_line(render::draw_context& draw, int top, int right, int line_index,
 		                        const line_metrics& metrics) const;
 
@@ -150,12 +153,14 @@ namespace ui
 		[[nodiscard]] int table_row_visual_rows(int line_index, const table_layout::table_block& table) const;
 		int draw_table_line(render::draw_context& draw, int y, int right, int line_index,
 		                    const table_layout::table_block& table) const;
+		[[nodiscard]] std::pair<int, int> divider_at(core::pointi point) const;
+		void columns_changed();
+		bool cancel_column_drag();
 
 		static void wrap_line_into(std::vector<int>& breaks, std::string_view text, int columns);
 		static int offset_at_column(std::string_view text, int start, int end, int column);
 		static int column_of(std::string_view text, int start, int offset);
 		[[nodiscard]] std::span<const int> markdown_line_breaks(int line_index) const;
 		[[nodiscard]] int markdown_char_to_sub_row(int line_index, int byte_offset) const;
-
 	};
 }

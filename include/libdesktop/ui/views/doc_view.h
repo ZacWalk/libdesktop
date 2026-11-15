@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The text-buffer document control: wrapping, selection, editing support, spelling and syntax drawing.
 
@@ -50,14 +49,14 @@ namespace ui
 		mutable std::vector<text_block> _block_buf;
 		mutable std::vector<text_block> _spell_blocks;
 		mutable std::string _expand_buf;
-		mutable std::string _render_buf; // line text being drawn / hit-tested
+		mutable std::string _render_buf;    // line text being drawn / hit-tested
 		mutable std::string _highlight_buf; // line text being parsed by the highlighter
 
 		// Word wrap state.
 		bool _word_wrap = true;
 		std::vector<int> _wrap_breaks; // all break points, concatenated across all lines
 		std::vector<int> _wrap_offsets;
-		std::vector<int> _wrap_line_y; // prefix sum: _wrap_line_y[i] = first visual row of doc line i
+		std::vector<int> _wrap_line_y;     // prefix sum: _wrap_line_y[i] = first visual row of doc line i
 		std::vector<int> _line_breaks_buf; // scratch for one line's break points
 
 		// Lines whose text changed since the last layout; -1 means none.
@@ -73,8 +72,7 @@ namespace ui
 	public:
 		doc_view(view_host& host, const view_theme& th, view_context* context = nullptr,
 		         text_clipboard* clipboard = nullptr);
-		doc_view(const view_theme& th, view_context* context = nullptr,
-		         text_clipboard* clipboard = nullptr);
+		doc_view(const view_theme& th, view_context* context = nullptr, text_clipboard* clipboard = nullptr);
 		~doc_view() override;
 
 		// Whether this view accepts edits. The application uses it to choose its menu.
@@ -96,8 +94,7 @@ namespace ui
 		[[nodiscard]] virtual bool allows_drag_selection() const { return true; }
 		[[nodiscard]] virtual bool allows_text_drag() const { return false; }
 
-		[[nodiscard]] static text_location adjust_for_removal(const text_selection& sel,
-		                                                     const text_location& target);
+		[[nodiscard]] static text_location adjust_for_removal(const text_selection& sel, const text_location& target);
 
 		// Show a buffer, and say how to highlight it. The view cannot choose a
 		// highlighter itself because that depends on where the text came from.
@@ -119,19 +116,20 @@ namespace ui
 		void discard_cookies_below(int line_index) const;
 		void set_parse_cookie(int line_index, uint32_t cookie) const;
 		uint32_t highlight_cookie(int line_index) const;
-		uint32_t highlight_line(uint32_t cookie, std::string_view line_text,
-		                       std::span<text_block> buf, int& block_count) const;
+		uint32_t highlight_line(uint32_t cookie, std::string_view line_text, std::span<text_block> buf,
+		                        int& block_count) const;
 
 		// --- The control surface ---
 		void paint(render::draw_context& draw, bool focused) const override;
 		void on_focus(bool focused, bool select_all) override;
-		bool on_key(int key, platform::key_state keys) override;
+		bool on_key(char32_t key, platform::key_state keys) override;
 		bool on_text(std::string_view text) override;
 		void on_mouse_down(core::pointi point, platform::key_state keys) override;
 		void on_mouse_move(core::pointi point, bool captured) override;
 		void on_mouse_up(core::pointi point, platform::key_state keys) override;
 		void on_double_click(core::pointi point, platform::key_state keys) override;
 		void on_mouse_leave() override;
+		void on_capture_lost() override;
 		bool on_wheel(core::pointi point, int delta, platform::key_state keys) override;
 		std::vector<command_ptr> context_commands(core::pointi point) override;
 		platform::cursor cursor_at(core::pointi point) const override;
@@ -178,12 +176,11 @@ namespace ui
 		[[nodiscard]] core::color32 line_bg_color(int line_index) const;
 
 		void draw_line(render::draw_context& draw, core::pointi& origin, const core::recti& clip,
-		               std::string_view chars, int offset, int count,
+		               std::string_view chars, int offset, int count, render::font_face font, core::color32 text_color,
+		               core::color32 bg_color) const;
+		void draw_line(render::draw_context& draw, core::pointi& origin, const core::recti& clip, text_style style,
+		               std::string_view chars, int offset, int count, const text_location& text_pos,
 		               render::font_face font, core::color32 text_color, core::color32 bg_color) const;
-		void draw_line(render::draw_context& draw, core::pointi& origin, const core::recti& clip,
-		               text_style style, std::string_view chars, int offset, int count,
-		               const text_location& text_pos, render::font_face font,
-		               core::color32 text_color, core::color32 bg_color) const;
 		void draw_wrapped_line(render::draw_context& draw, const core::recti& rect, int line_index,
 		                       render::font_face font) const;
 		void draw_line(render::draw_context& draw, const core::recti& rect, int line_index,

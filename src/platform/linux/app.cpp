@@ -1,15 +1,15 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: SDL's Linux application lifetime and event pump. It deliberately knows only the
 // platform::app and platform::window contracts; a UI frame is just a window_events implementation.
 
 #include "window_internal.h"
+#include "../agent.h"
 
 namespace platform::detail
 {
@@ -28,6 +28,7 @@ namespace platform::detail
 #include <cstdio>
 #include <deque>
 #include <condition_variable>
+#include <filesystem>
 #include <future>
 #include <mutex>
 
@@ -70,14 +71,69 @@ namespace
 
 	class folder_watcher final
 	{
+		struct watched
+		{
+			core::folder_path path;
+			bool subfolders = false;
+		};
+
+		static constexpr auto mask = IN_ATTRIB | IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO |
+		                             IN_DELETE_SELF | IN_MOVE_SELF;
+		// inotify watches one directory at a time, and every watch counts against the user's limit, so a tree
+		// as large as a whole disk is only watched as far as this.
+		static constexpr size_t max_watches = 4096;
+
 		int _fd = -1;
 		int _wake = -1;
 		std::thread _thread;
 		std::mutex _mutex;
-		std::map<int, core::folder_path> _watches;
+		std::map<int, watched> _watches;
+		std::vector<core::folder_path> _roots;
 		std::set<std::string> _pending_text;
 		std::vector<core::folder_path> _pending;
 		std::function<void()> _notify;
+
+		// Called with _mutex held.
+		bool add(const core::folder_path& folder, const bool subfolders)
+		{
+			if (_watches.size() >= max_watches) return false;
+			const auto watch = inotify_add_watch(_fd, std::string(folder.text()).c_str(), mask);
+			if (watch < 0) return false;
+			_watches[watch] = {folder, subfolders};
+			return true;
+		}
+
+		// Called with _mutex held. Symbolic links are not followed, so a link back up the tree cannot loop.
+		void add_tree(const core::folder_path& root)
+		{
+			std::vector<core::folder_path> folders{root};
+			while (!folders.empty() && _watches.size() < max_watches)
+			{
+				const auto folder = folders.back();
+				folders.pop_back();
+				if (!add(folder, true)) continue;
+
+				std::error_code error;
+				std::filesystem::directory_iterator entry(std::string(folder.text()),
+				                                          std::filesystem::directory_options::skip_permission_denied,
+				                                          error);
+				for (; !error && entry != std::filesystem::directory_iterator(); entry.increment(error))
+				{
+					std::error_code type_error;
+					if (entry->is_directory(type_error) && !entry->is_symlink(type_error))
+						folders.push_back(folder.combine(entry->path().filename().string()));
+				}
+			}
+		}
+
+		// Called with _mutex held.
+		bool queue(const core::folder_path& folder)
+		{
+			if (!_pending_text.insert(std::string(folder.text())).second) return false;
+			const auto first = _pending.empty();
+			_pending.push_back(folder);
+			return first;
+		}
 
 		void run()
 		{
@@ -103,17 +159,34 @@ namespace
 					for (ssize_t offset = 0; offset < count;)
 					{
 						const auto* const event = reinterpret_cast<const inotify_event*>(buffer.data() + offset);
-						const auto found = _watches.find(event->wd);
-						if (found != _watches.end())
-						{
-							const auto text = std::string(found->second.text());
-							if (_pending_text.insert(text).second)
-							{
-								first = _pending.empty();
-								_pending.push_back(found->second);
-							}
-						}
 						offset += static_cast<ssize_t>(sizeof(inotify_event) + event->len);
+
+						// Events were lost, so where they happened is not known: each watched folder stands for them.
+						if (event->mask & IN_Q_OVERFLOW)
+						{
+							for (const auto& root : _roots) first = queue(root) || first;
+							continue;
+						}
+
+						const auto found = _watches.find(event->wd);
+						if (found == _watches.end()) continue;
+
+						// The folder went, or was moved away: its watch has ended, and its parent reports it.
+						if (event->mask & IN_IGNORED)
+						{
+							_watches.erase(found);
+							continue;
+						}
+
+						const auto changed = found->second;
+						first = queue(changed.path) || first;
+
+						// A folder made in, or moved into, a watched tree is watched with the rest of it.
+						if (changed.subfolders && (event->mask & IN_ISDIR) &&
+						    (event->mask & (IN_CREATE | IN_MOVED_TO)) && event->len > 0)
+						{
+							add_tree(changed.path.combine(event->name));
+						}
 					}
 				}
 				if (first && _notify) _notify();
@@ -142,24 +215,24 @@ namespace
 			_fd = _wake = -1;
 			std::lock_guard lock(_mutex);
 			_watches.clear();
+			_roots.clear();
 			_pending.clear();
 			_pending_text.clear();
 		}
 
-		void watch(const std::vector<core::folder_path>& folders)
+		void watch(const std::vector<platform::watched_folder>& folders)
 		{
 			if (_fd < 0) return;
 			std::lock_guard lock(_mutex);
 			for (const auto& entry : _watches) inotify_rm_watch(_fd, entry.first);
 			_watches.clear();
+			_roots.clear();
 
-			constexpr auto mask = IN_ATTRIB | IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM |
-				IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF;
 			for (const auto& folder : folders)
 			{
-				const auto text = std::string(folder.text());
-				const auto watch = inotify_add_watch(_fd, text.c_str(), mask);
-				if (watch >= 0) _watches[watch] = folder;
+				_roots.push_back(folder.path);
+				if (folder.subfolders) add_tree(folder.path);
+				else add(folder.path, false);
 			}
 		}
 
@@ -299,15 +372,18 @@ namespace
 		case SDL_EVENT_KEY_DOWN:
 		{
 			const auto key = platform::linux_detail::key_from_sdl(event.key.key);
-			if (key)
-				filter->key_down(static_cast<int>(key), platform::linux_detail::key_state_from_sdl(event.key.mod));
+			if (key) filter->key_down(key, platform::linux_detail::key_state_from_sdl(event.key.mod));
 			return true;
 		}
 		case SDL_EVENT_KEY_UP:
+		{
+			const auto key = platform::linux_detail::key_from_sdl(event.key.key);
+			if (key) filter->key_up(key, platform::linux_detail::key_state_from_sdl(event.key.mod));
+			return true;
+		}
 		case SDL_EVENT_TEXT_INPUT:
 		case SDL_EVENT_TEXT_EDITING:
-		case SDL_EVENT_TEXT_EDITING_CANDIDATES:
-			return true;
+		case SDL_EVENT_TEXT_EDITING_CANDIDATES: return true;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		{
 			if (auto* const target = platform::linux_detail::window_for(event.button.windowID))
@@ -334,14 +410,12 @@ namespace
 			// A compositor can hide a popup before its outside click reaches us. Treat that as menu
 			// cancellation, but still let the window update its visible state.
 			if (const auto* const target = platform::linux_detail::window_for(event.window.windowID);
-				target && target->kind() == platform::window_kind::popup)
+			    target && target->kind() == platform::window_kind::popup)
 				filter->activation_lost();
 			return false;
-		default:
-			return false;
+		default: return false;
 		}
 	}
-
 
 	SDL_Keycode sdl_keycode_for(const char32_t key)
 	{
@@ -437,6 +511,7 @@ namespace
 			if (key) set_key(key);
 			switch (event.key.key)
 			{
+				// clang-format off
 			case SDLK_LSHIFT: set_key(platform::keys::LSHIFT); set_key(platform::keys::SHIFT); break;
 			case SDLK_RSHIFT: set_key(platform::keys::RSHIFT); set_key(platform::keys::SHIFT); break;
 			case SDLK_LCTRL: set_key(platform::keys::LCONTROL); set_key(platform::keys::CONTROL); break;
@@ -444,10 +519,14 @@ namespace
 			case SDLK_LALT: set_key(platform::keys::LALT); set_key(platform::keys::ALT); break;
 			case SDLK_RALT: set_key(platform::keys::RALT); set_key(platform::keys::ALT); break;
 			default: break;
+				// clang-format on
 			}
 			handling_key_event = true;
 		}
-		const core::scope_exit clear_key_event([key_event] { if (key_event) handling_key_event = false; });
+		const core::scope_exit clear_key_event([key_event]
+		{
+			if (key_event) handling_key_event = false;
+		});
 		if (modal_event(event, filter)) return;
 		if (event_idle != no_event && event.type == static_cast<SDL_EventType>(event_idle))
 		{
@@ -498,8 +577,7 @@ namespace
 			if (active_app) active_app->system_event(platform::os_event_type::options_changed);
 			break;
 		default:
-			if (auto* const window = platform::linux_detail::window_for(event.window.windowID))
-				window->dispatch(event);
+			if (auto* const window = platform::linux_detail::window_for(event.window.windowID)) window->dispatch(event);
 			break;
 		}
 	}
@@ -517,16 +595,15 @@ namespace
 			if (now >= deadline) return false;
 			const auto next = next_due();
 			const auto event_deadline = std::min(deadline, next);
-			const auto wait = event_deadline == UINT64_MAX ? UINT64_MAX :
-				(event_deadline > now ? event_deadline - now : 0);
-			const auto wait_ms = wait == UINT64_MAX ? -1 :
-				static_cast<Sint32>(std::min<uint64_t>(wait, INT32_MAX));
+			const auto wait = event_deadline == UINT64_MAX ? UINT64_MAX
+			                                               : (event_deadline > now ? event_deadline - now : 0);
+			const auto wait_ms = wait == UINT64_MAX ? -1 : static_cast<Sint32>(std::min<uint64_t>(wait, INT32_MAX));
 
 			SDL_Event event{};
 			if (SDL_WaitEventTimeout(&event, wait_ms))
 			{
 				dispatch_event(event, filter);
-				while (SDL_PollEvent(&event)) dispatch_event(event, filter);
+				while (!done() && SDL_PollEvent(&event)) dispatch_event(event, filter);
 			}
 
 			const auto after_wait = SDL_GetTicks();
@@ -557,8 +634,8 @@ namespace
 			auto* selected = current.front();
 			for (auto* const candidate : current)
 			{
-				const auto has_child = std::any_of(current.begin(), current.end(),
-					[candidate](auto* child) { return child != candidate && child->parent_native() == candidate; });
+				const auto has_child = std::any_of(current.begin(), current.end(), [candidate](auto* child)
+				{ return child != candidate && child->parent_native() == candidate; });
 				if (!has_child)
 				{
 					selected = candidate;
@@ -608,10 +685,9 @@ namespace
 			for (const auto& display : all)
 			{
 				const auto scale = display.scale;
-				const core::recti physical{
-					core::round(display.bounds.x * scale), core::round(display.bounds.y * scale),
-					core::round((display.bounds.x + display.bounds.w) * scale),
-					core::round((display.bounds.y + display.bounds.h) * scale)};
+				const core::recti physical{core::round(display.bounds.x * scale), core::round(display.bounds.y * scale),
+				                           core::round((display.bounds.x + display.bounds.w) * scale),
+				                           core::round((display.bounds.y + display.bounds.h) * scale)};
 				const auto overlap = requested.intersection(physical);
 				const auto area = static_cast<int64_t>(std::max(0, overlap.width())) * std::max(0, overlap.height());
 				if (area > largest)
@@ -623,10 +699,8 @@ namespace
 		}
 
 		const auto& source = work_area ? chosen->usable : chosen->bounds;
-		return {
-			core::round(source.x * chosen->scale), core::round(source.y * chosen->scale),
-			core::round((source.x + source.w) * chosen->scale),
-			core::round((source.y + source.h) * chosen->scale)};
+		return {core::round(source.x * chosen->scale), core::round(source.y * chosen->scale),
+		        core::round((source.x + source.w) * chosen->scale), core::round((source.y + source.h) * chosen->scale)};
 	}
 }
 
@@ -801,7 +875,7 @@ namespace platform
 			std::unique_lock lock(ui_task_mutex);
 			if (ui_tasks.empty() && timeout_ms != 0)
 				ui_task_ready.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-					[&] { return !ui_tasks.empty() || !ui_accepting; });
+				                       [&] { return !ui_tasks.empty() || !ui_accepting; });
 			lock.unlock();
 			run_ui_tasks();
 			return ui_accepting;
@@ -870,7 +944,7 @@ namespace platform
 		if (hook) shutdown_hooks.push_back(std::move(hook));
 	}
 
-	void monitor_folders(const std::vector<core::folder_path>& folders)
+	void monitor_folders(const std::vector<watched_folder>& folders)
 	{
 		watcher.watch(folders);
 	}
@@ -889,8 +963,8 @@ namespace platform
 			if (total > 0)
 			{
 				SDL_SetWindowProgressState(window->native(), SDL_PROGRESS_STATE_NORMAL);
-				SDL_SetWindowProgressValue(window->native(),
-					static_cast<float>(std::clamp<int64_t>(done, 0, total)) / static_cast<float>(total));
+				SDL_SetWindowProgressValue(window->native(), static_cast<float>(std::clamp<int64_t>(done, 0, total)) /
+				                                                 static_cast<float>(total));
 			}
 			else
 			{
@@ -942,10 +1016,10 @@ namespace platform
 		for (auto y = 0; y < surface->h; ++y)
 		{
 			const auto* const source = static_cast<const uint8_t*>(surface->pixels) +
-				static_cast<ptrdiff_t>(y) * surface->pitch;
+			                           static_cast<ptrdiff_t>(y) * surface->pitch;
 			auto* const destination = result->pixels_line(y);
-			SDL_ConvertPixels(surface->w, 1, surface->format, source, surface->pitch,
-				SDL_PIXELFORMAT_ARGB8888, destination, static_cast<int>(result->stride()));
+			SDL_ConvertPixels(surface->w, 1, surface->format, source, surface->pitch, SDL_PIXELFORMAT_ARGB8888,
+			                  destination, static_cast<int>(result->stride()));
 			auto* const pixels = reinterpret_cast<core::color32*>(destination);
 			for (auto x = 0; x < surface->w; ++x) pixels[x] |= 0xff000000u;
 		}
@@ -1013,7 +1087,36 @@ namespace platform
 				return result;
 			}
 
-			if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
+			// Claimed before anything can print: from here stdout carries the protocol and nothing else.
+			std::unique_ptr<platform::detail::agent_session> agent;
+			const core::scope_exit end_agent([] { platform::detail::end_agent_session(); });
+
+			if (const auto server = application->agent_server())
+			{
+				agent = platform::detail::start_agent_session(server);
+
+				if (!agent)
+				{
+					std::fprintf(stderr,
+					             "An agent session is served on stdin and stdout, and this process has neither\n");
+					active_app.reset();
+					return 1;
+				}
+			}
+
+			const std::string app_id(core::app_file_stem());
+			SDL_SetHint(SDL_HINT_APP_ID, app_id.c_str());
+			auto video = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
+
+			// An agent session needs no screen: without a display its windows are SDL's offscreen ones.
+			if (!video && agent)
+			{
+				SDL_Quit();
+				SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
+				video = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
+			}
+
+			if (!video)
 			{
 				std::fprintf(stderr, "Cannot open a display: %s\n", SDL_GetError());
 				active_app.reset();
@@ -1022,20 +1125,15 @@ namespace platform
 			const core::scope_exit quit_sdl([] { SDL_Quit(); });
 			const core::scope_exit uninstall_clipboard([] { install_text_clipboard({}, {}); });
 
-			install_text_clipboard(
-				[]() -> std::optional<std::string>
-				{
-					if (!SDL_HasClipboardText()) return std::nullopt;
-					auto* const text = SDL_GetClipboardText();
-					if (!text) return std::nullopt;
-					std::string result(text);
-					SDL_free(text);
-					return result;
-				},
-				[](const std::string_view text)
-				{
-					return SDL_SetClipboardText(std::string(text).c_str());
-				});
+			install_text_clipboard([]() -> std::optional<std::string>
+			{
+				if (!SDL_HasClipboardText()) return std::nullopt;
+				auto* const text = SDL_GetClipboardText();
+				if (!text) return std::nullopt;
+				std::string result(text);
+				SDL_free(text);
+				return result;
+			}, [](const std::string_view text) { return SDL_SetClipboardText(std::string(text).c_str()); });
 
 			const auto events = SDL_RegisterEvents(3);
 			if (events != 0 && events != no_event)
@@ -1068,6 +1166,7 @@ namespace platform
 				for (auto* const window : app_windows)
 					if (window->kind() == platform::window_kind::app) window->update_now();
 				if (!frame_delay_chosen) apply_frame_delay(default_frame_delay_ms);
+				if (agent) agent->start_reading();
 				if (application->owns_loop()) result = application->main_loop();
 				else
 				{
@@ -1079,6 +1178,7 @@ namespace platform
 			{
 				result = quit_code;
 			}
+			if (agent) agent->stop();
 			{
 				std::lock_guard lock(ui_task_mutex);
 				ui_accepting = false;

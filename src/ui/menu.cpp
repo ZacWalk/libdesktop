@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The drawn menu: a column of rows - commands with their checks, accelerator text and submenus,
 // separators, rows of buttons laid out by flex, and content its owner draws - each measured, laid out,
@@ -36,6 +35,9 @@ namespace ui
 
 		class drawn_menu;
 
+		// The menu whose loop runs now: one at a time, since a menu's command runs only once it has closed.
+		menu_session* open_drawn_menu = nullptr;
+
 		// One button of a row of them. The row is an element container that flex lays out, giving every
 		// button an equal share of the menu's width; the menu draws the selection behind the buttons and
 		// the lines between them.
@@ -58,32 +60,34 @@ namespace ui
 				const auto pad = drawn::scaled(button_padding_x, s);
 				const auto shown = parse_mnemonic(command->text).text;
 				const auto has_name = !shown.empty();
-				const auto name = has_name
-					                  ? mc.measure_text(shown, render::font_face::dialog,
-					                                    render::text_style::single_line, 10000).cx
-					                  : 0;
+				const auto name = has_name ? mc.measure_text(shown, render::font_face::dialog,
+				                                             render::text_style::single_line, 10000)
+				                                 .cx
+				                           : 0;
 				const auto width = std::min(std::max(name, drawn::icon_cxy(s)) + pad * 2,
 				                            drawn::scaled(button_max_width, s));
 				const auto wrap = std::max(1, (width_limit > 0 ? width_limit : width) - pad * 2);
-				const auto name_height = has_name
-					                         ? mc.measure_text(shown, render::font_face::dialog,
-					                                           render::text_style::multiline_center, wrap).cy
-					                         : 0;
+				const auto name_height = has_name ? mc.measure_text(shown, render::font_face::dialog,
+				                                                    render::text_style::multiline_center, wrap)
+				                                        .cy
+				                                  : 0;
 				return {width, drawn::scaled(button_padding_top + button_icon_gap + button_padding_bottom, s) +
-				        drawn::icon_cxy(s) + name_height};
+				                   drawn::icon_cxy(s) + name_height};
 			}
 
 			void render(render::draw_context& dc, const core::pointi element_offset) const override
 			{
 				const auto s = dc.scale_factor;
 				const auto cell = bounds.offset(element_offset);
-				const auto base = command->clr ? core::average(command->clr, style::colors.menu_text) : style::colors.menu_text;
-				const auto clr = drawn::solid(command->enable ? base : core::average(style::colors.menu_background, base));
+				const auto base = command->clr ? core::average(command->clr, style::colors.menu_text)
+				                               : style::colors.menu_text;
+				const auto clr = drawn::solid(command->enable ? base
+				                                              : core::average(style::colors.menu_background, base));
 				const auto icon_top = cell.top + drawn::scaled(button_padding_top, s);
 				const core::recti icon(cell.left, icon_top, cell.right, icon_top + drawn::icon_cxy(s));
 				const auto pad = drawn::scaled(button_padding_x, s);
-				const core::recti name(cell.left + pad, icon.bottom + drawn::scaled(button_icon_gap, s), cell.right - pad,
-				                 cell.bottom - drawn::scaled(button_padding_bottom, s));
+				const core::recti name(cell.left + pad, icon.bottom + drawn::scaled(button_icon_gap, s),
+				                       cell.right - pad, cell.bottom - drawn::scaled(button_padding_bottom, s));
 
 				drawn::draw_icon(dc, command->icon, icon, clr);
 				dc.draw_text(parse_mnemonic(command->text).text, name, render::font_face::dialog,
@@ -112,15 +116,9 @@ namespace ui
 			// An item's height: its line of text with room around it.
 			int line_height = 0;
 
-			bool selectable() const
-			{
-				return type == kind::item || type == kind::buttons;
-			}
+			bool selectable() const { return type == kind::item || type == kind::buttons; }
 
-			bool has_submenu() const
-			{
-				return type == kind::item && command && static_cast<bool>(command->menu);
-			}
+			bool has_submenu() const { return type == kind::item && command && static_cast<bool>(command->menu); }
 		};
 
 		// One level of the menu, drawn in its own popup.
@@ -175,15 +173,9 @@ namespace ui
 				}
 			}
 
-			bool valid(const int i) const
-			{
-				return i >= 0 && i < static_cast<int>(rows.size());
-			}
+			bool valid(const int i) const { return i >= 0 && i < static_cast<int>(rows.size()); }
 
-			bool has_submenu(const int i) const
-			{
-				return valid(i) && rows[static_cast<size_t>(i)].has_submenu();
-			}
+			bool has_submenu(const int i) const { return valid(i) && rows[static_cast<size_t>(i)].has_submenu(); }
 
 			// What choosing the selection chooses: an item, or the selected button of a row of them.
 			command_ptr selected_command() const
@@ -192,8 +184,8 @@ namespace ui
 				const auto& r = rows[static_cast<size_t>(selected)];
 				if (r.type != kind::buttons) return r.command;
 				return selected_cell >= 0 && selected_cell < static_cast<int>(r.cells.size())
-					       ? r.cells[static_cast<size_t>(selected_cell)]->command
-					       : nullptr;
+				           ? r.cells[static_cast<size_t>(selected_cell)]->command
+				           : nullptr;
 			}
 
 			core::sizei measure(render::measure_context& mc)
@@ -208,13 +200,14 @@ namespace ui
 				{
 					if (r.type == kind::item)
 					{
-						const auto text = mc.measure_text(parse_mnemonic(r.command->text).text, render::font_face::dialog,
-						                                  render::text_style::single_line, 10000);
+						const auto text = mc.measure_text(parse_mnemonic(r.command->text).text,
+						                                  render::font_face::dialog, render::text_style::single_line,
+						                                  10000);
 						const auto accelerator = r.command->keyboard_accelerator_text.empty()
-							                         ? core::sizei{}
-							                         : mc.measure_text(r.command->keyboard_accelerator_text,
-							                                           render::font_face::dialog,
-							                                           render::text_style::single_line, 10000);
+						                             ? core::sizei{}
+						                             : mc.measure_text(r.command->keyboard_accelerator_text,
+						                                               render::font_face::dialog,
+						                                               render::text_style::single_line, 10000);
 						width = std::max(width, text.cx + accelerator.cx + drawn::scaled(64, scale));
 						r.line_height = std::max(text.cy + drawn::scaled(8, scale), drawn::scaled(20, scale));
 					}
@@ -227,8 +220,9 @@ namespace ui
 					}
 					else if (r.type == kind::content)
 					{
-						width = std::max(width, r.command->content->measure(mc, drawn::scaled(content_width, scale)).cx +
-						                 inset * 2);
+						width = std::max(width,
+						                 r.command->content->measure(mc, drawn::scaled(content_width, scale)).cx +
+						                     inset * 2);
 					}
 				}
 
@@ -242,22 +236,18 @@ namespace ui
 
 					switch (r.type)
 					{
-					case kind::separator:
-						h = drawn::scaled(8, scale);
-						break;
+					case kind::separator: h = drawn::scaled(8, scale); break;
 
-					case kind::item:
-						h = r.line_height;
-						break;
+					case kind::item: h = r.line_height; break;
 
 					case kind::buttons:
-						{
-							const auto left = border + inset;
-							const auto right = extent.cx - border - inset;
-							h = r.row->measure(mc, right - left).cy;
-							r.row->layout(mc, core::recti(left, y, right, y + h));
-						}
-						break;
+					{
+						const auto left = border + inset;
+						const auto right = extent.cx - border - inset;
+						h = r.row->measure(mc, right - left).cy;
+						r.row->layout(mc, core::recti(left, y, right, y + h));
+					}
+					break;
 
 					case kind::content:
 						h = r.command->content->measure(mc, std::max(1, width - inset * 2)).cy + inset * 2;
@@ -375,7 +365,8 @@ namespace ui
 					const auto shown = parse_mnemonic(c->text).text;
 					if (shown.empty()) return false;
 					auto t = std::string_view(shown).begin();
-					return core::to_upper(core::pop_utf8_char(t, std::string_view(shown).end())) == core::to_upper(letter);
+					return core::to_upper(core::pop_utf8_char(t, std::string_view(shown).end())) ==
+					       core::to_upper(letter);
 				};
 
 				const auto count = static_cast<int>(rows.size());
@@ -418,7 +409,8 @@ namespace ui
 				return result;
 			}
 
-			void on_window_layout(render::measure_context& mc, const core::sizei e, const bool is_minimized) override
+			void on_window_layout(render::measure_context& mc, const core::sizei e,
+			                      const bool /*is_minimized*/) override
 			{
 				if (mc.scale_factor != scale || e != extent) measure(mc);
 				else layout_content(mc);
@@ -472,8 +464,9 @@ namespace ui
 						{
 							if (c == chosen || c - 1 == chosen) continue;
 							const auto cell = row.cells[static_cast<size_t>(c)]->bounds;
-							dc.draw_rect({cell.left, cell.top + drawn::scaled(button_padding_top, s), cell.left + thickness,
-							              cell.bottom - drawn::scaled(button_padding_bottom, s)}, rule);
+							dc.draw_rect({cell.left, cell.top + drawn::scaled(button_padding_top, s),
+							              cell.left + thickness, cell.bottom - drawn::scaled(button_padding_bottom, s)},
+							             rule);
 						}
 
 						row.row->render(dc, {});
@@ -481,7 +474,8 @@ namespace ui
 					}
 
 					const auto& c = row.command;
-					const auto text_base = c->clr ? core::average(c->clr, style::colors.menu_text) : style::colors.menu_text;
+					const auto text_base = c->clr ? core::average(c->clr, style::colors.menu_text)
+					                              : style::colors.menu_text;
 					const auto text_clr = c->enable ? text_base : core::average(background, text_base);
 
 					if (is_selected) dc.draw_rect(r, drawn::solid(lit));
@@ -515,14 +509,15 @@ namespace ui
 					if (!c->keyboard_accelerator_text.empty())
 					{
 						dc.draw_text(c->keyboard_accelerator_text, text_bounds, render::font_face::dialog,
-						             render::text_style::single_line_far, drawn::solid(style::colors.menu_shortcut_text), {});
+						             render::text_style::single_line_far,
+						             drawn::solid(style::colors.menu_shortcut_text), {});
 					}
 
 					if (c->menu)
 					{
 						const core::recti arrow(r.right - icon_column, r.top, r.right, r.bottom);
-						dc.draw_text("\xE2\x80\xBA", arrow, render::font_face::dialog, render::text_style::single_line_center,
-						             drawn::solid(text_clr), {});
+						dc.draw_text("\xE2\x80\xBA", arrow, render::font_face::dialog,
+						             render::text_style::single_line_center, drawn::solid(text_clr), {});
 					}
 				}
 			}
@@ -543,32 +538,78 @@ namespace ui
 			command_ptr _chosen;
 			bool _done = false;
 
-			explicit drawn_menu(menu_host& host) : _host(host)
-			{
-			}
+			explicit drawn_menu(menu_host& host) : _host(host) {}
 
-			~drawn_menu() override
-			{
-				close_from(0);
-			}
+			~drawn_menu() override { close_from(0); }
 
 			drawn_menu(const drawn_menu&) = delete;
 			drawn_menu& operator=(const drawn_menu&) = delete;
 
-			bool done() const override
-			{
-				return _done;
-			}
+			bool done() const override { return _done; }
 
-			void cancel() override
-			{
-				_done = true;
-			}
+			void cancel() override { _done = true; }
 
 			std::vector<frame_ptr> popups() const override
 			{
 				std::vector<frame_ptr> result;
-				for (const auto& l : _levels) if (l->frame) result.push_back(l->frame);
+				for (const auto& l : _levels)
+					if (l->frame) result.push_back(l->frame);
+				return result;
+			}
+
+			std::vector<menu_level_state> levels() const override
+			{
+				std::vector<menu_level_state> result;
+
+				for (const auto& l : _levels)
+				{
+					menu_level_state level;
+					level.popup = l->frame;
+					level.opened_from = l->opened_from;
+
+					for (size_t i = 0; i < l->rows.size(); ++i)
+					{
+						const auto& r = l->rows[i];
+						menu_row_state row;
+						row.bounds = r.bounds;
+						row.selected = l->selected == static_cast<int>(i);
+						row.command = r.command;
+
+						switch (r.type)
+						{
+						case menu_row::kind::separator: row.type = menu_row_state::kind::separator; break;
+						case menu_row::kind::content: row.type = menu_row_state::kind::content; break;
+						case menu_row::kind::item:
+							row.text = parse_mnemonic(r.command->text).text;
+							row.keys = r.command->keyboard_accelerator_text;
+							row.enabled = r.command->enable;
+							row.checked = r.command->checked;
+							row.submenu = r.has_submenu();
+							break;
+						case menu_row::kind::buttons:
+							row.type = menu_row_state::kind::buttons;
+
+							for (size_t c = 0; c < r.cells.size(); ++c)
+							{
+								const auto& cell = r.cells[c];
+								menu_row_state shown;
+								shown.command = cell->command;
+								shown.text = parse_mnemonic(cell->command->text).text;
+								shown.enabled = cell->command->enable;
+								shown.checked = cell->command->checked;
+								shown.selected = row.selected && l->selected_cell == static_cast<int>(c);
+								shown.bounds = cell->bounds;
+								row.cells.push_back(std::move(shown));
+							}
+							break;
+						}
+
+						level.rows.push_back(std::move(row));
+					}
+
+					result.push_back(std::move(level));
+				}
+
 				return result;
 			}
 
@@ -638,8 +679,8 @@ namespace ui
 			bool show(const std::shared_ptr<menu_popup>& popup, const core::recti r)
 			{
 				const auto parent = popup->level > 0 && popup->level - 1 < _levels.size()
-					                    ? _levels[popup->level - 1]->frame
-					                    : frame_ptr{};
+				                        ? _levels[popup->level - 1]->frame
+				                        : frame_ptr{};
 				popup->frame = _host.create_menu_popup(popup, parent);
 				if (!popup->frame) return false;
 
@@ -721,12 +762,13 @@ namespace ui
 				const auto border = drawn::scaled(menu_border, popup->scale);
 				const auto size = popup->extent;
 				const auto work = _host.menu_work_area(anchor);
-				core::recti r(parent->screen.right - border, anchor.top - border, parent->screen.right - border + size.cx,
-				        anchor.top - border + size.cy);
+				core::recti r(parent->screen.right - border, anchor.top - border,
+				              parent->screen.right - border + size.cx, anchor.top - border + size.cy);
 
 				if (!work.is_empty() && r.right > work.right && parent->screen.left + border - size.cx >= work.left)
 				{
-					r = core::recti(parent->screen.left + border - size.cx, r.top, parent->screen.left + border, r.bottom);
+					r = core::recti(parent->screen.left + border - size.cx, r.top, parent->screen.left + border,
+					                r.bottom);
 				}
 
 				if (show(popup, fit(r, work)) && select_first) popup->select_edge(false);
@@ -757,20 +799,18 @@ namespace ui
 				}
 			}
 
-			bool takes_horizontal_key(const int key) const override
+			bool takes_horizontal_key(const char32_t key) const override
 			{
 				if (_levels.empty()) return false;
 				const auto popup = _levels.back();
 				const auto level = _levels.size() - 1;
-				const auto k = static_cast<char32_t>(key);
 
-				if (k == platform::keys::LEFT) return popup->can_move_cell(-1) || level > 0;
-				if (k == platform::keys::RIGHT)
-					return popup->can_move_cell(1) || popup->has_submenu(popup->selected);
+				if (key == platform::keys::LEFT) return popup->can_move_cell(-1) || level > 0;
+				if (key == platform::keys::RIGHT) return popup->can_move_cell(1) || popup->has_submenu(popup->selected);
 				return false;
 			}
 
-			bool key_down(const int key, const platform::key_state keys) override
+			bool key_down(const char32_t key, const platform::key_state keys) override
 			{
 				if (_levels.empty())
 				{
@@ -780,45 +820,45 @@ namespace ui
 
 				const auto level = _levels.size() - 1;
 				const auto popup = _levels.back();
-				const auto k = static_cast<char32_t>(key);
 
-				if (k == platform::keys::ESCAPE)
+				if (key == platform::keys::ESCAPE)
 				{
 					if (level > 0) close_from(level);
 					else cancel();
 				}
-				else if (k == platform::keys::LEFT)
+				else if (key == platform::keys::LEFT)
 				{
 					if (!popup->move_cell(-1) && level > 0) close_from(level);
 				}
-				else if (k == platform::keys::F10 || (keys.alt && k != platform::keys::DOWN && k != platform::keys::UP))
+				else if (key == platform::keys::F10 ||
+				         (keys.alt && key != platform::keys::DOWN && key != platform::keys::UP))
 				{
 					cancel();
 				}
-				else if (k == platform::keys::DOWN || k == platform::keys::UP)
+				else if (key == platform::keys::DOWN || key == platform::keys::UP)
 				{
-					popup->step(k == platform::keys::DOWN ? 1 : -1);
+					popup->step(key == platform::keys::DOWN ? 1 : -1);
 				}
-				else if (k == platform::keys::HOME || k == platform::keys::END)
+				else if (key == platform::keys::HOME || key == platform::keys::END)
 				{
-					popup->select_edge(k == platform::keys::END);
+					popup->select_edge(key == platform::keys::END);
 				}
-				else if (k == platform::keys::RIGHT)
+				else if (key == platform::keys::RIGHT)
 				{
 					if (!popup->move_cell(1) && popup->has_submenu(popup->selected))
 					{
 						open_submenu(level, popup->selected, true);
 					}
 				}
-				else if (k == platform::keys::RETURN || k == platform::keys::SPACE)
+				else if (key == platform::keys::RETURN || key == platform::keys::SPACE)
 				{
 					activate(level, popup->selected, true);
 				}
-				else if ((k >= U'A' && k <= U'Z') || (k >= U'0' && k <= U'9'))
+				else if ((key >= U'A' && key <= U'Z') || (key >= U'0' && key <= U'9'))
 				{
 					// A marked letter works as in a native menu: the one item marking it is chosen at once, and
 					// several take turns being selected. A menu marking none selects by first letter instead.
-					const auto marked = popup->rows_marked(k);
+					const auto marked = popup->rows_marked(key);
 					if (marked.size() == 1)
 					{
 						popup->select(marked.front());
@@ -839,7 +879,7 @@ namespace ui
 					}
 					else
 					{
-						popup->select_by_letter(k);
+						popup->select_by_letter(key);
 					}
 				}
 
@@ -848,7 +888,7 @@ namespace ui
 			}
 		};
 
-		void menu_popup::on_mouse_move(const core::pointi loc, const bool is_tracking)
+		void menu_popup::on_mouse_move(const core::pointi loc, const bool /*is_tracking*/)
 		{
 			if (!owner_menu) return;
 			const auto [row, cell] = row_at(loc);
@@ -865,14 +905,14 @@ namespace ui
 			}
 		}
 
-		void menu_popup::on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys)
+		void menu_popup::on_mouse_left_button_down(const core::pointi loc, const platform::key_state /*keys*/)
 		{
 			if (!owner_menu) return;
 			const auto [row, cell] = row_at(loc);
 			if (has_submenu(row)) owner_menu->open_submenu(level, row, false);
 		}
 
-		void menu_popup::on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys)
+		void menu_popup::on_mouse_left_button_up(const core::pointi loc, const platform::key_state /*keys*/)
 		{
 			if (!owner_menu) return;
 			const auto [row, cell] = row_at(loc);
@@ -881,7 +921,7 @@ namespace ui
 			owner_menu->activate(level, row, false);
 		}
 
-		void menu_popup::on_mouse_leave(const core::pointi loc)
+		void menu_popup::on_mouse_leave(const core::pointi /*loc*/)
 		{
 			if (!owner_menu) return;
 			pending = -2;
@@ -929,10 +969,14 @@ void ui::track_drawn_menu(menu_host& host, const core::recti button_bounds, cons
 
 	{
 		core::scope_locked_inc active(ui::command_active);
+		core::scope_locked_inc open(ui::menu_active);
 		drawn_menu menu(host);
 		if (!menu.open_root(commands, button_bounds, owner_bounds)) return;
 
+		const auto previous = open_drawn_menu;
+		open_drawn_menu = &menu;
 		host.run_menu_loop(menu);
+		open_drawn_menu = previous;
 		chosen = menu._chosen;
 	}
 
@@ -943,4 +987,9 @@ void ui::track_drawn_menu(menu_host& host, const core::recti button_bounds, cons
 		const auto invoke = chosen->invoke;
 		invoke();
 	}
+}
+
+ui::menu_session* ui::open_menu_session()
+{
+	return open_drawn_menu;
 }

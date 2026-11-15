@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: UI-facing application lifecycle and desktop event services.
 
@@ -16,7 +15,9 @@ namespace platform
 	{
 		MINIMIZE,
 		MAXIMIZE,
-		RESTORE
+		RESTORE,
+		// Restore if minimized and request the foreground, without unmaximizing.
+		ACTIVATE
 	};
 	enum class os_event_type
 	{
@@ -54,6 +55,10 @@ namespace platform
 	core::recti desktop_bounds(bool work_area);
 	bool is_ui_thread();
 }
+namespace core::mcp
+{
+	class server;
+}
 namespace platform
 {
 	class window;
@@ -65,10 +70,15 @@ namespace platform
 		// Before anything else; false ends the process.
 		virtual bool pre_init() { return true; }
 		// The whole command line, before any window; true when it asks for a headless mode.
-		virtual bool parse_command_line(std::string_view command_line) { return false; }
+		virtual bool parse_command_line(std::string_view /*command_line*/) { return false; }
 		// That headless mode, in the console run() has attached; the process's exit code.
 		virtual int run_console_mode() { return 0; }
-		virtual bool load_settings(const setting_file_ptr& store) { return true; }
+		// Asked once parse_command_line has answered false. A server makes this run an agent session, which
+		// serves it on stdin and stdout until stdin closes: load_settings and init as for a window, though init
+		// may make none, and its handlers run on the UI thread; but no restart registration, no message box, and
+		// nothing on stdout but the protocol - what else is printed there goes to stderr. Null is an ordinary run.
+		virtual std::shared_ptr<core::mcp::server> agent_server() { return {}; }
+		virtual bool load_settings(const setting_file_ptr& /*store*/) { return true; }
 		// Makes the application's windows; false ends the process, with the code given to quit if
 		// init called it.
 		virtual bool init(std::string_view command_line) = 0;
@@ -79,14 +89,14 @@ namespace platform
 		virtual void idle() {}
 		// Each tick of the frame delay set with set_frame_delay.
 		virtual void frame_tick() {}
-		virtual void system_event(os_event_type e) {}
-		virtual void folder_changed(core::folder_path folder) {}
+		virtual void system_event(os_event_type /*e*/) {}
+		virtual void folder_changed(core::folder_path /*folder*/) {}
 		virtual bool can_exit() { return true; }
 		virtual void exit() {}
 		virtual void final_exit() {}
-		virtual void fail(std::string_view message, std::string_view more_text) {}
+		virtual void fail(std::string_view /*message*/, std::string_view /*more_text*/) {}
 		virtual std::string restart_command_line() { return {}; }
-		void crash(core::file_path dump_file_path) override {}
+		void crash(core::file_path /*dump_file_path*/) override {}
 		void save_recovery_state() override {}
 	};
 
@@ -94,6 +104,12 @@ namespace platform
 	// awareness, the UI thread, the log, crash handling), the console for a headless mode, the
 	// event loop with idle, frame ticks and folder notifications, and teardown.
 	int run(std::shared_ptr<app> a, int argc, char** argv);
+	// True while run serves an agent session (app::agent_server).
+	bool is_agent_session();
+	// Whether an agent session may open another program, a folder or a web page - open, run, show_in_file_browser, an
+	// Open with handler - which would open on the user's desktop, beyond the session: the application's to allow, as
+	// its client grants. Until it does, each is skipped and logged. Outside an agent session, each always opens.
+	void allow_agent_to_open(bool allowed);
 	// Ends run's loop once the current event has been handled; run then returns exit_code.
 	void quit(int exit_code = 0);
 	// Handles every pending event, UI tasks included, without blocking; false once the application
@@ -103,7 +119,17 @@ namespace platform
 	void queue_idle();
 	// Milliseconds between frame ticks; 0 stops them.
 	void set_frame_delay(int milliseconds);
-	void monitor_folders(const std::vector<core::folder_path>& folders);
+
+	// A folder whose changes are reported to app::folder_changed. Watched with its subfolders, a change in
+	// one of them is reported as the subfolder it happened in.
+	struct watched_folder
+	{
+		core::folder_path path;
+		bool subfolders = false;
+	};
+
+	// Replaces the folders watched before.
+	void monitor_folders(const std::vector<watched_folder>& folders);
 	void enable_screen_saver(bool enable);
 	// How far long-running work has got, on the application's taskbar button; a total of zero is
 	// work of unknown size.
@@ -123,12 +149,16 @@ namespace platform
 	public:
 		virtual ~modal_filter() = default;
 		// True when the filter consumed the event.
-		virtual bool key_down(int key, key_state keys) { return false; }
-		virtual bool pointer_down(window& target, core::pointi screen) { return false; }
+		virtual bool key_down(char32_t /*key*/, key_state /*keys*/) { return false; }
+		// Every release in the loop is the filter's, so none reaches a window; it may pass one on.
+		virtual void key_up(char32_t /*key*/, key_state /*keys*/) {}
+		virtual bool pointer_down(window& /*target*/, core::pointi /*screen*/) { return false; }
 		virtual void activation_lost() {}
 	};
 
-	// Handles events until done answers true, or the timeout passes; false on the timeout.
+	// Handles events until done answers true, or the timeout passes; false on the timeout. Events that arrive once
+	// done answers true are left for the loop outside, so the filter sees none after its loop has finished: the
+	// release of a press that closed a menu reaches the window under it unfiltered.
 	bool run_modal_loop(const std::function<bool()>& done, modal_filter* filter = nullptr,
 	                    uint32_t timeout_ms = UINT32_MAX);
 }

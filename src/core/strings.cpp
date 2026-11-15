@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: String manipulation utilities. Implements UTF-8/UTF-16 conversion,
 // string formatting, parsing, splitting, and comparison functions.
@@ -14,7 +13,6 @@
 #include "libdesktop/core/strings.h"
 
 #include <cstdarg>
-
 
 df_assert_pod(core::part_t);
 df_assert_pod(core::cached);
@@ -26,6 +24,7 @@ std::atomic<const core::cached_string_storage_t*> core::detail::intern_pool_base
 
 bool core::is_utf8(const char* sz, const int len)
 {
+	// clang-format off
 	static constexpr int byte_class_table[256] = {
 		/*       00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  */
 		/* 00 */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -77,6 +76,7 @@ bool core::is_utf8(const char* sz, const int len)
 		/* 0xf1-0xf3: 10           */ kE, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR,
 		/* 0xf4: 11                */ kG, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR, kERROR
 	};
+	// clang-format on
 
 	auto current = kSTART;
 	const auto* p = std::bit_cast<const uint8_t*>(sz);
@@ -90,9 +90,9 @@ bool core::is_utf8(const char* sz, const int len)
 	return current == kSTART;
 }
 
-static constexpr uint8_t BOM_UTF8[] = {0xef, 0xbb, 0xbf}; // UTF-8
-static constexpr uint8_t BOM_UTF16_LE[] = {0xff, 0xfe}; // UTF-16, little-endian
-static constexpr uint8_t BOM_UTF16_BE[] = {0xfe, 0xff}; // UTF-16, big-endian
+static constexpr uint8_t BOM_UTF8[] = {0xef, 0xbb, 0xbf};           // UTF-8
+static constexpr uint8_t BOM_UTF16_LE[] = {0xff, 0xfe};             // UTF-16, little-endian
+static constexpr uint8_t BOM_UTF16_BE[] = {0xfe, 0xff};             // UTF-16, big-endian
 static constexpr uint8_t BOM_UTF32_LE[] = {0xff, 0xfe, 0x00, 0x00}; // UTF-32, little-endian
 static constexpr uint8_t BOM_UTF32_BE[] = {0x00, 0x00, 0xfe, 0xff}; // UTF-32, big-endian
 
@@ -245,7 +245,7 @@ struct string_index_t
 	struct shard
 	{
 		core::mutex cs;
-		std::vector<uint32_t> hashes; // power-of-two size; 0 marks an empty slot
+		std::vector<uint32_t> hashes;  // power-of-two size; 0 marks an empty slot
 		std::vector<uint32_t> entries; // core::cached handles
 		uint32_t mask = 0;
 		uint32_t count = 0;
@@ -298,9 +298,7 @@ struct string_index_t
 	// Grow a shard to the next power of two, rehashing existing entries. Caller holds the lock.
 	static void grow_locked(shard& s)
 	{
-		const uint32_t new_size = s.hashes.empty()
-			                          ? initial_capacity
-			                          : static_cast<uint32_t>(s.hashes.size()) * 2;
+		const uint32_t new_size = s.hashes.empty() ? initial_capacity : static_cast<uint32_t>(s.hashes.size()) * 2;
 		std::vector<uint32_t> next_hashes(new_size);
 		std::vector<uint32_t> next_entries(new_size);
 		const uint32_t new_mask = new_size - 1;
@@ -451,15 +449,13 @@ bool core::is_num(const std::string_view sv)
 	return digits > 0;
 }
 
-
 bool core::is_probably_num(const std::string_view sv)
 {
 	int digits = 0;
 
 	for (const auto& c : sv)
 	{
-		if (!isdigit(static_cast<unsigned char>(c)) && c != '.' && c != ',' && c != '-')
-			break;
+		if (!isdigit(static_cast<unsigned char>(c)) && c != '.' && c != ',' && c != '-') break;
 
 		digits += 1;
 	}
@@ -496,8 +492,7 @@ bool core::starts(const std::string_view text, const std::string_view sub_string
 		const auto text_match_char = core::normalize_for_compare(core::pop_utf8_char(text_p, text_end));
 		const auto sub_match_char = core::normalize_for_compare(core::pop_utf8_char(sub_p, sub_end));
 
-		if (text_match_char != sub_match_char)
-			return false;
+		if (text_match_char != sub_match_char) return false;
 	}
 
 	// Folded alike, a character of the text can be longer than the prefix's, so the text can run out
@@ -534,8 +529,7 @@ std::string_view::size_type core::ifind(const std::string_view text, const std::
 					matching = text_match_char == sub_match_char;
 				}
 
-				if (matching && sub_match == sub_end)
-					return text_start - text.begin();
+				if (matching && sub_match == sub_end) return text_start - text.begin();
 			}
 		}
 	}
@@ -544,7 +538,7 @@ std::string_view::size_type core::ifind(const std::string_view text, const std::
 }
 
 core::find_result core::ifind2(const std::string_view text, const std::string_view sub_string,
-                             const size_t parts_offset)
+                               const size_t parts_offset)
 {
 	core::find_result result;
 	std::vector<core::part_t> parts;
@@ -648,7 +642,7 @@ bool core::is_quote(const char c)
 }
 
 void core::split2(const std::string_view text, const bool detect_quotes,
-                 const std::function<void(std::string_view)>& inserter, const std::function<bool(char)>& pred)
+                  const std::function<void(std::string_view)>& inserter, const std::function<bool(char)>& pred)
 {
 	if (!text.empty())
 	{
@@ -662,7 +656,10 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 		// unescaped quote that cannot close answers every later opening quote before that stop too.
 		size_t cached_quote_stop[2] = {std::string_view::npos, std::string_view::npos};
 
-		const auto quote_index = [](const char c) { return c == '"' ? 0_z : 1_z; };
+		const auto quote_index = [](const char c)
+		{
+			return c == '"' ? 0_z : 1_z;
+		};
 		const auto is_quote_close_at_boundary = [&text, &pred](const size_t close)
 		{
 			auto boundary = close + 1;
@@ -675,7 +672,8 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 		};
 
 		const auto find_closing_quote = [&text, &quote_index, &cached_quote_close, &cached_quote_no_close_from,
-			&cached_quote_stop, &is_quote_close_at_boundary](const size_t open, const char quote)
+		                                 &cached_quote_stop,
+		                                 &is_quote_close_at_boundary](const size_t open, const char quote)
 		{
 			const auto index = quote_index(quote);
 			const auto cached_close = cached_quote_close[index];
@@ -684,8 +682,7 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 			{
 				return std::string_view::npos;
 			}
-			if (cached_quote_no_close_from[index] != std::string_view::npos &&
-				open > cached_quote_no_close_from[index])
+			if (cached_quote_no_close_from[index] != std::string_view::npos && open > cached_quote_no_close_from[index])
 			{
 				return std::string_view::npos;
 			}
@@ -728,7 +725,7 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 			else
 			{
 				const auto quote_at_token_boundary = split_start == std::string_view::npos ||
-					(split_end == i && token_is_blank);
+				                                     (split_end == i && token_is_blank);
 
 				if (detect_quotes && core::is_quote(c) && quote_at_token_boundary)
 				{
@@ -738,7 +735,7 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 						auto boundary = close + 1;
 						const auto closes_at_boundary = boundary == text.size() || pred(text[boundary]);
 						while (!closes_at_boundary && boundary < text.size() && !pred(text[boundary]) &&
-							core::is_white_space(text[boundary]))
+						       core::is_white_space(text[boundary]))
 						{
 							++boundary;
 						}
@@ -783,8 +780,7 @@ void core::split2(const std::string_view text, const bool detect_quotes,
 	}
 }
 
-std::string core::replace(const std::string_view s, const std::string_view find,
-                         const std::string_view replacement)
+std::string core::replace(const std::string_view s, const std::string_view find, const std::string_view replacement)
 {
 	auto result = std::string(s);
 	if (find.empty()) return result; // an empty needle matches at every position and never advances
@@ -802,38 +798,13 @@ std::string core::replace(const std::string_view s, const std::string_view find,
 	return result;
 }
 
-static constexpr std::string_view months[] =
-{
-	{},
-	"January",
-	"February",
-	"March",
-	"April",
-	"May",
-	"June",
-	"July",
-	"August",
-	"September",
-	"October",
-	"November",
-	"December",
+static constexpr std::string_view months[] = {
+	{},     "January", "February",  "March",   "April",    "May",      "June",
+	"July", "August",  "September", "October", "November", "December",
 };
 
-static constexpr std::string_view short_months[] =
-{
-	{},
-	"jan",
-	"feb",
-	"mar",
-	"apr",
-	"may",
-	"jun",
-	"jul",
-	"aug",
-	"sep",
-	"oct",
-	"nov",
-	"dec",
+static constexpr std::string_view short_months[] = {
+	{}, "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
 };
 
 static std::atomic<const core::words*> s_installed_words{nullptr};
@@ -853,8 +824,7 @@ void core::install_words(const core::words* w)
 static std::string_view translated_month(const int m)
 {
 	const auto& w = core::installed_words();
-	const std::string_view result[] =
-	{
+	const std::string_view result[] = {
 		{},
 		w.month_january,
 		w.month_february,
@@ -876,8 +846,7 @@ static std::string_view translated_month(const int m)
 static std::string_view translated_short_month(const int m)
 {
 	const auto& w = core::installed_words();
-	const std::string_view result[] =
-	{
+	const std::string_view result[] = {
 		{},
 		w.month_short_jan,
 		w.month_short_feb,
@@ -911,21 +880,17 @@ std::string_view core::short_month(const int m, const bool translate)
 int core::month(const std::string_view r)
 {
 	for (int i = 1; i <= 12; i++)
-		if (icmp(months[i], r) == 0)
-			return i;
+		if (icmp(months[i], r) == 0) return i;
 
 	for (int i = 1; i <= 12; i++)
-		if (icmp(short_months[i], r) == 0)
-			return i;
+		if (icmp(short_months[i], r) == 0) return i;
 
 	for (int i = 1; i <= 12; i++)
-		if (icmp(translated_month(i), r) == 0)
-			return i;
+		if (icmp(translated_month(i), r) == 0) return i;
 
 	// No length gate here: translated short months are not all 3 bytes (French "janv", Cyrillic, CJK).
 	for (int i = 1; i <= 12; i++)
-		if (icmp(translated_short_month(i), r) == 0)
-			return i;
+		if (icmp(translated_short_month(i), r) == 0) return i;
 
 	return 0;
 }
@@ -1286,12 +1251,12 @@ double core::to_double(const std::string_view r)
 static core::dense_hash_map<int, char32_t> make_normalizations()
 {
 	core::dense_hash_map<int, char32_t> normalizations = {
-		{0x20, ' '}, // space 
-		{0x0c, ' '}, // form feed 
-		{0x0a, ' '}, // line feed 
-		{0x0d, ' '}, // carriage return 
-		{0x09, ' '}, // horizontal tab 
-		{0x0b, ' '}, // vertical tab 
+		{0x20, ' '}, // space
+		{0x0c, ' '}, // form feed
+		{0x0a, ' '}, // line feed
+		{0x0d, ' '}, // carriage return
+		{0x09, ' '}, // horizontal tab
+		{0x0b, ' '}, // vertical tab
 		{0x0041, 'a'},
 		{0x0042, 'b'},
 		{0x0043, 'c'},
@@ -1457,8 +1422,8 @@ static core::dense_hash_map<int, char32_t> make_normalizations()
 		{0x012f, 'i'}, // latin small letter i with ogonek
 		{0x0130, 'i'}, // latin capital letter i with dot above
 		{0x0131, 'i'}, // latin small letter dotless i -- no decomposition
-		{0x0132, 'i'}, // latin capital ligature ij    
-		{0x0133, 'i'}, // latin small ligature ij      
+		{0x0132, 'i'}, // latin capital ligature ij
+		{0x0133, 'i'}, // latin small ligature ij
 		{0x0134, 'j'}, // latin capital letter j with circumflex
 		{0x0135, 'j'}, // latin small letter j with circumflex
 		{0x0136, 'k'}, // latin capital letter k with cedilla
@@ -1529,7 +1494,7 @@ static core::dense_hash_map<int, char32_t> make_normalizations()
 		{0x017c, 'z'}, // latin small letter z with dot above
 		{0x017d, 'z'}, // latin capital letter z with caron
 		{0x017e, 'z'}, // latin small letter z with caron
-		{0x017f, 's'}, // latin small letter long s    
+		{0x017f, 's'}, // latin small letter long s
 		{0x0180, 'b'}, // latin small letter b with stroke -- no decomposition
 		{0x0181, 'b'}, // latin capital letter b with hook -- no decomposition
 		{0x0182, 'b'}, // latin capital letter b with topbar -- no decomposition
@@ -2095,7 +2060,7 @@ static core::dense_hash_map<int, char32_t> make_normalizations()
 		{0x1eee, 'u'}, // latin capital letter u with horn and tilde
 		{0x1eef, 'u'}, // latin small letter u with horn and tilde
 		{0x1ef0, 'u'}, // latin capital letter u with horn and dot below
-		{0x1ef1, 'u'}, // latin small letter u with horn and dot below		
+		{0x1ef1, 'u'}, // latin small letter u with horn and dot below
 		{0x1ef2, 'y'}, // latin capital letter y with grave
 		{0x1ef3, 'y'}, // latin small letter y with grave
 		{0x1ef4, 'y'}, // latin capital letter y with dot below
@@ -2190,22 +2155,14 @@ int core::normalize_for_compare(const int c)
 	if (static_cast<uint32_t>(c) < 128)
 	{
 		constexpr int ascii_mapping[] = {
-			0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
-			0x8, 0x20, 0x20, 0x20, 0x20, 0x20, 0xe, 0xf,
-			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-			0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-			0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
-			0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
-			0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-			0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
-			0x40, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
-			0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
-			0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
-			0x78, 0x79, 0x7a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
-			0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
-			0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
-			0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
-			0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f,
+			0x0,  0x1,  0x2,  0x3,  0x4,  0x5,  0x6,  0x7,  0x8,  0x20, 0x20, 0x20, 0x20, 0x20, 0xe,  0xf,
+			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+			0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+			0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+			0x40, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+			0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
+			0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+			0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f,
 		};
 
 		return ascii_mapping[static_cast<uint32_t>(c)];
@@ -2216,7 +2173,6 @@ int core::normalize_for_compare(const int c)
 	if (found != normalizations.cend()) return found->second;
 	return core::to_lower(c);
 }
-
 
 bool core::wildcard_icmp(const std::string_view text_in, const std::string_view wildcard_in)
 {
@@ -2229,7 +2185,7 @@ bool core::wildcard_icmp(const std::string_view text_in, const std::string_view 
 	// the rest of the pattern can match. 'seen_star' distinguishes "no '*' yet"
 	// from a trailing '*' whose fallback wildcard position is wildcard_end.
 	auto star_wildcard = wildcard_end; // wildcard position just after the last '*'
-	auto star_text = text_end; // text position to retry the match from
+	auto star_text = text_end;         // text position to retry the match from
 	auto seen_star = false;
 
 	while (text < text_end)

@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The CPU rasterizer and the seam between it and whatever shows its pixels.
 // software_canvas owns a BGRA buffer and a clip and knows how to fill, blend and sample into it;
@@ -111,7 +110,7 @@ namespace render
 			a.r + (b.r - a.r) * t,
 			a.g + (b.g - a.g) * t,
 			a.b + (b.b - a.b) * t,
-			a.a + (b.a - a.a) * t
+			a.a + (b.a - a.a) * t,
 		};
 	}
 
@@ -192,6 +191,16 @@ namespace render
 		// When false (layered bubble popups) real per-pixel alpha is preserved.
 		bool _opaque = true;
 
+		software_canvas() = default;
+
+		// Over the whole of a packed, top-down surface, keeping its alpha: how a picture of one's own - a bubble, a
+		// chart - is rasterised to be drawn as a texture, the same pixels whichever backend then draws it.
+		explicit software_canvas(core::surface& target) noexcept :
+			_bits(target.pixels()), _stride(static_cast<int>(target.stride())), _buffer_extent(target.dimensions()),
+			_clip(core::pointi(0, 0), target.dimensions()), _opaque(false)
+		{
+		}
+
 		uint8_t* pixel(const int x, const int y) const noexcept
 		{
 			return _bits + static_cast<ptrdiff_t>(y - _origin.y) * _stride + static_cast<ptrdiff_t>(x - _origin.x) * 4;
@@ -215,13 +224,12 @@ namespace render
 			const auto pixel_at = [=](const int px, const int py)
 			{
 				return pixels + static_cast<ptrdiff_t>(std::clamp(py, 0, height - 1)) * stride +
-					static_cast<ptrdiff_t>(std::clamp(px, 0, width - 1)) * 4;
+				       static_cast<ptrdiff_t>(std::clamp(px, 0, width - 1)) * 4;
 			};
 
 			if (sampler == texture_sampler::point)
 			{
-				const auto* p = pixel_at(static_cast<int>(std::floor(x + 0.5)),
-				                         static_cast<int>(std::floor(y + 0.5)));
+				const auto* p = pixel_at(static_cast<int>(std::floor(x + 0.5)), static_cast<int>(std::floor(y + 0.5)));
 				return {p[0], p[1], p[2], p[3]};
 			}
 
@@ -248,12 +256,8 @@ namespace render
 
 			const auto weights = [](const double f)
 			{
-				return std::array{
-					f * (-0.5 + f * (1.0 - 0.5 * f)),
-					1.0 + f * f * (1.5 * f - 2.5),
-					f * (0.5 + f * (2.0 - 1.5 * f)),
-					f * f * (-0.5 + 0.5 * f)
-				};
+				return std::array{f * (-0.5 + f * (1.0 - 0.5 * f)), 1.0 + f * f * (1.5 * f - 2.5),
+				                  f * (0.5 + f * (2.0 - 1.5 * f)), f * f * (-0.5 + 0.5 * f)};
 			};
 			const auto wx = weights(fx);
 			const auto wy = weights(fy);
@@ -271,8 +275,87 @@ namespace render
 				static_cast<int>(std::clamp(channels[0], 0.0, 255.0)),
 				static_cast<int>(std::clamp(channels[1], 0.0, 255.0)),
 				static_cast<int>(std::clamp(channels[2], 0.0, 255.0)),
-				static_cast<int>(std::clamp(channels[3], 0.0, 255.0))
+				static_cast<int>(std::clamp(channels[3], 0.0, 255.0)),
 			};
+		}
+
+		struct sampled_wide_pixel
+		{
+			float r;
+			float g;
+			float b;
+			float a;
+		};
+
+		// sample() for a wide surface - four 16-bit channels, red first - with the same filters, answered 0 to 1
+		// and unrounded.
+		static sampled_wide_pixel sample_wide(const uint8_t* pixels, const int stride, const int width,
+		                                      const int height, const double x, const double y,
+		                                      const texture_sampler sampler) noexcept
+		{
+			const auto pixel_at = [=](const int px, const int py)
+			{
+				return std::bit_cast<const uint16_t*>(pixels +
+				                                      static_cast<ptrdiff_t>(std::clamp(py, 0, height - 1)) * stride) +
+				       static_cast<ptrdiff_t>(std::clamp(px, 0, width - 1)) * 4;
+			};
+			const auto result = [](const double (&channels)[4])
+			{
+				const auto unit = [](const double v)
+				{
+					return static_cast<float>(std::clamp(v / 65535.0, 0.0, 1.0));
+				};
+				return sampled_wide_pixel{unit(channels[0]), unit(channels[1]), unit(channels[2]), unit(channels[3])};
+			};
+			double channels[4]{};
+
+			if (sampler == texture_sampler::point)
+			{
+				const auto* p = pixel_at(static_cast<int>(std::floor(x + 0.5)), static_cast<int>(std::floor(y + 0.5)));
+				for (auto c = 0; c < 4; ++c) channels[c] = p[c];
+				return result(channels);
+			}
+
+			const auto x0 = static_cast<int>(std::floor(x));
+			const auto y0 = static_cast<int>(std::floor(y));
+			const auto fx = x - x0;
+			const auto fy = y - y0;
+
+			if (sampler == texture_sampler::bilinear)
+			{
+				const std::array<std::pair<const uint16_t*, double>, 4> taps{
+					{{pixel_at(x0, y0), (1.0 - fx) * (1.0 - fy)},
+				     {pixel_at(x0 + 1, y0), fx * (1.0 - fy)},
+				     {pixel_at(x0, y0 + 1), (1.0 - fx) * fy},
+				     {pixel_at(x0 + 1, y0 + 1), fx * fy}}};
+
+				for (const auto& [p, weight] : taps)
+				{
+					for (auto c = 0; c < 4; ++c) channels[c] += p[c] * weight;
+				}
+
+				return result(channels);
+			}
+
+			const auto weights = [](const double f)
+			{
+				return std::array{f * (-0.5 + f * (1.0 - 0.5 * f)), 1.0 + f * f * (1.5 * f - 2.5),
+				                  f * (0.5 + f * (2.0 - 1.5 * f)), f * f * (-0.5 + 0.5 * f)};
+			};
+			const auto wx = weights(fx);
+			const auto wy = weights(fy);
+
+			for (auto yy = 0; yy < 4; ++yy)
+			{
+				for (auto xx = 0; xx < 4; ++xx)
+				{
+					const auto* p = pixel_at(x0 + xx - 1, y0 + yy - 1);
+					const auto weight = wx[xx] * wy[yy];
+					for (auto c = 0; c < 4; ++c) channels[c] += p[c] * weight;
+				}
+			}
+
+			return result(channels);
 		}
 
 		// Unconditional write of the clipped region: unlike fill_rect this ignores source alpha and
@@ -287,7 +370,7 @@ namespace render
 			const auto red = to_byte(c.r);
 			const auto a = _opaque ? uint8_t{255} : to_byte(c.a);
 			const auto pixel_value = static_cast<uint32_t>(b) | static_cast<uint32_t>(g) << 8 |
-				static_cast<uint32_t>(red) << 16 | static_cast<uint32_t>(a) << 24;
+			                         static_cast<uint32_t>(red) << 16 | static_cast<uint32_t>(a) << 24;
 
 			for (auto y = r.top; y < r.bottom; ++y)
 			{
@@ -307,7 +390,7 @@ namespace render
 			if (c.a >= 1.0f)
 			{
 				const auto pixel_value = static_cast<uint32_t>(b) | static_cast<uint32_t>(g) << 8 |
-					static_cast<uint32_t>(red) << 16 | 0xff000000u;
+				                         static_cast<uint32_t>(red) << 16 | 0xff000000u;
 				for (auto y = r.top; y < r.bottom; ++y)
 				{
 					std::fill_n(std::bit_cast<uint32_t*>(pixel(r.left, y)), r.width(), pixel_value);
@@ -383,8 +466,8 @@ namespace render
 					if (opaque_fill)
 					{
 						const auto pixel_value = static_cast<uint32_t>(to_byte(mid.b)) |
-							static_cast<uint32_t>(to_byte(mid.g)) << 8 |
-							static_cast<uint32_t>(to_byte(mid.r)) << 16 | 0xff000000u;
+						                         static_cast<uint32_t>(to_byte(mid.g)) << 8 |
+						                         static_cast<uint32_t>(to_byte(mid.r)) << 16 | 0xff000000u;
 						std::fill_n(std::bit_cast<uint32_t*>(p), mid_right - mid_left, pixel_value);
 						p += static_cast<ptrdiff_t>(mid_right - mid_left) * 4;
 					}
@@ -453,6 +536,39 @@ namespace render
 			fill_band(core::recti(inside.left, inside.bottom, inside.right, outside.bottom));
 		}
 
+		// A soft shadow in the width-pixel band just inside bounds: black, alpha against the rectangle the band
+		// encloses and nothing at bounds, falling away as (1 - d^2)^3 of the distance d past that rectangle in band
+		// widths, so round at the corners. The enclosed rectangle is left alone for whatever casts the shadow, so an
+		// object's shadow is drawn in its bounds inflated by the width.
+		void fill_shadow(const core::recti bounds, const int width, const float alpha) const
+		{
+			const auto r = clamp_to_clip(bounds);
+			if (r.is_empty() || width <= 0 || alpha <= 0.0f) return;
+
+			const auto w = static_cast<float>(width);
+			const auto cx = static_cast<float>(bounds.left + bounds.right) / 2.0f;
+			const auto cy = static_cast<float>(bounds.top + bounds.bottom) / 2.0f;
+			// Half the enclosed rectangle: nothing for a shadow too small to hold both its bands.
+			const auto hx = std::max(static_cast<float>(bounds.width()) / 2.0f - w, 0.0f);
+			const auto hy = std::max(static_cast<float>(bounds.height()) / 2.0f - w, 0.0f);
+			const core::color black(0.0f, 0.0f, 0.0f, alpha);
+
+			for (auto y = r.top; y < r.bottom; ++y)
+			{
+				const auto dy = std::max(std::abs(y + 0.5f - cy) - hy, 0.0f) / w;
+				auto* p = pixel(r.left, y);
+
+				for (auto x = r.left; x < r.right; ++x, p += 4)
+				{
+					const auto dx = std::max(std::abs(x + 0.5f - cx) - hx, 0.0f) / w;
+					if (dx + dy <= 0.0f) continue;
+
+					const auto k = 1.0f - (dx * dx + dy * dy);
+					if (k > 0.0f) blend_over(p, black, k * k * k, _opaque);
+				}
+			}
+		}
+
 		void fill_rounded_rect(const core::recti bounds, const core::color c, int radius) const
 		{
 			const auto max_radius = std::min(bounds.width(), bounds.height()) / 2;
@@ -467,9 +583,9 @@ namespace render
 			const auto r = clamp_to_clip(bounds);
 			if (r.is_empty()) return;
 
-			const auto cxl = bounds.left + radius; // left corner centre x
-			const auto cxr = bounds.right - radius; // right corner centre x
-			const auto cyt = bounds.top + radius; // top corner centre y
+			const auto cxl = bounds.left + radius;   // left corner centre x
+			const auto cxr = bounds.right - radius;  // right corner centre x
+			const auto cyt = bounds.top + radius;    // top corner centre y
 			const auto cyb = bounds.bottom - radius; // bottom corner centre y
 			const auto rf = static_cast<float>(radius);
 
@@ -526,8 +642,17 @@ namespace render
 			}
 		}
 
+		// Fills the union of closed contours - their points one after another, each contour ending at an index
+		// in ends - by the non-zero rule. Smooth covers each pixel by how much of it is inside, sampling sixteen
+		// lines a row and each exactly across; crisp fills the pixels whose centres are inside, a centre on a
+		// left or top edge counting as inside. Every value comes from the contours, so a tile draws exactly
+		// what the whole canvas would.
+		void fill_contours(std::span<const core::pointd> points, std::span<const uint32_t> ends, const paint& fill,
+		                   bool smooth) const;
+
 		// Fill a triangle (used for the bubble pointer).
-		void fill_triangle(const core::pointd a, const core::pointd b, const core::pointd c, const core::color clr) const
+		void fill_triangle(const core::pointd a, const core::pointd b, const core::pointd c,
+		                   const core::color clr) const
 		{
 			const auto min_x = static_cast<int>(std::floor(std::min({a.X, b.X, c.X})));
 			const auto max_x = static_cast<int>(std::ceil(std::max({a.X, b.X, c.X})));
@@ -566,14 +691,13 @@ namespace render
 		// A small fixed supersample keeps one-pixel strokes and ellipse edges smooth while making the
 		// result independent of the scratch tile that happens to contain them.
 		static double distance_to_segment_sq(const double px, const double py, const core::pointd a,
-		                                    const core::pointd b) noexcept
+		                                     const core::pointd b) noexcept
 		{
 			const auto dx = b.X - a.X;
 			const auto dy = b.Y - a.Y;
 			const auto length_sq = dx * dx + dy * dy;
-			const auto t = length_sq > 0.0
-			               ? std::clamp(((px - a.X) * dx + (py - a.Y) * dy) / length_sq, 0.0, 1.0)
-			               : 0.0;
+			const auto t = length_sq > 0.0 ? std::clamp(((px - a.X) * dx + (py - a.Y) * dy) / length_sq, 0.0, 1.0)
+			                               : 0.0;
 			const auto x = a.X + t * dx;
 			const auto y = a.Y + t * dy;
 			const auto ox = px - x;
@@ -581,16 +705,40 @@ namespace render
 			return ox * ox + oy * oy;
 		}
 
+		// The pixels of row y that a stroke of this radius along a-b can reach: the segment, clipped to the rows
+		// its radius reaches from the row, widened by the radius and a pixel. False when it reaches none of them.
+		static bool stroke_reach(core::pointd a, core::pointd b, const double radius, const int y, int& left,
+		                         int& right) noexcept
+		{
+			if (!std::isfinite(a.X) || !std::isfinite(a.Y) || !std::isfinite(b.X) || !std::isfinite(b.Y)) return false;
+			if (a.Y > b.Y) std::swap(a, b);
+
+			const auto top = y - radius;
+			const auto bottom = y + 1.0 + radius;
+			if (b.Y < top || a.Y > bottom) return false;
+
+			auto x0 = a.X;
+			auto x1 = b.X;
+			if (const auto dy = b.Y - a.Y; dy > 0.0)
+			{
+				x0 = a.X + (b.X - a.X) * std::clamp((top - a.Y) / dy, 0.0, 1.0);
+				x1 = a.X + (b.X - a.X) * std::clamp((bottom - a.Y) / dy, 0.0, 1.0);
+			}
+
+			left = static_cast<int>(std::clamp(std::floor(std::min(x0, x1) - radius - 1.0), -1e9, 1e9));
+			right = static_cast<int>(std::clamp(std::ceil(std::max(x0, x1) + radius + 1.0), -1e9, 1e9));
+			return true;
+		}
+
 		void draw_line(const core::pointd a, const core::pointd b, const core::color c, const double width = 1.0) const
 		{
 			if (!(width > 0.0) || c.a <= 0.0f) return;
 
 			const auto radius = width * 0.5;
-			const core::recti bounds(
-				static_cast<int>(std::floor(std::min(a.X, b.X) - radius - 1.0)),
-				static_cast<int>(std::floor(std::min(a.Y, b.Y) - radius - 1.0)),
-				static_cast<int>(std::ceil(std::max(a.X, b.X) + radius + 1.0)),
-				static_cast<int>(std::ceil(std::max(a.Y, b.Y) + radius + 1.0)));
+			const core::recti bounds(static_cast<int>(std::floor(std::min(a.X, b.X) - radius - 1.0)),
+			                         static_cast<int>(std::floor(std::min(a.Y, b.Y) - radius - 1.0)),
+			                         static_cast<int>(std::ceil(std::max(a.X, b.X) + radius + 1.0)),
+			                         static_cast<int>(std::ceil(std::max(a.Y, b.Y) + radius + 1.0)));
 			const auto r = clamp_to_clip(bounds);
 			if (r.is_empty()) return;
 
@@ -598,8 +746,16 @@ namespace render
 			constexpr auto sample_count = samples_per_axis * samples_per_axis;
 			for (auto y = r.top; y < r.bottom; ++y)
 			{
-				auto* p = pixel(r.left, y);
-				for (auto x = r.left; x < r.right; ++x, p += 4)
+				// Only the pixels the stroke reaches on this row are sampled, not the whole box a diagonal spans.
+				int left = 0;
+				int right = 0;
+				if (!stroke_reach(a, b, radius, y, left, right)) continue;
+				left = std::max(left, r.left);
+				right = std::min(right, r.right);
+				if (left >= right) continue;
+
+				auto* p = pixel(left, y);
+				for (auto x = left; x < right; ++x, p += 4)
 				{
 					auto covered = 0;
 					for (auto sy = 0; sy < samples_per_axis; ++sy)
@@ -616,7 +772,8 @@ namespace render
 			}
 		}
 
-		void draw_polyline(const std::span<const core::pointd> points, const core::color c, const double width = 1.0) const
+		void draw_polyline(const std::span<const core::pointd> points, const core::color c,
+		                   const double width = 1.0) const
 		{
 			if (points.size() < 2 || !(width > 0.0) || c.a <= 0.0f) return;
 
@@ -633,38 +790,64 @@ namespace render
 				max_y = std::max(max_y, point.Y);
 			}
 
-			const core::recti bounds(
-				static_cast<int>(std::floor(min_x - radius - 1.0)),
-				static_cast<int>(std::floor(min_y - radius - 1.0)),
-				static_cast<int>(std::ceil(max_x + radius + 1.0)),
-				static_cast<int>(std::ceil(max_y + radius + 1.0)));
+			const core::recti bounds(static_cast<int>(std::floor(min_x - radius - 1.0)),
+			                         static_cast<int>(std::floor(min_y - radius - 1.0)),
+			                         static_cast<int>(std::ceil(max_x + radius + 1.0)),
+			                         static_cast<int>(std::ceil(max_y + radius + 1.0)));
 			const auto r = clamp_to_clip(bounds);
 			if (r.is_empty()) return;
 
 			constexpr auto samples_per_axis = 4;
 			constexpr auto sample_count = samples_per_axis * samples_per_axis;
+			// Per row: the segments that reach it, and the merged runs of pixels they reach.
+			std::vector<size_t> reaching;
+			std::vector<std::pair<int, int>> spans;
 			for (auto y = r.top; y < r.bottom; ++y)
 			{
-				auto* p = pixel(r.left, y);
-				for (auto x = r.left; x < r.right; ++x, p += 4)
+				reaching.clear();
+				spans.clear();
+				for (size_t i = 1; i < points.size(); ++i)
 				{
-					auto covered = 0;
-					for (auto sy = 0; sy < samples_per_axis; ++sy)
+					int left = 0;
+					int right = 0;
+					if (!stroke_reach(points[i - 1], points[i], radius, y, left, right)) continue;
+					reaching.push_back(i);
+					left = std::max(left, r.left);
+					right = std::min(right, r.right);
+					if (left < right) spans.emplace_back(left, right);
+				}
+				if (spans.empty()) continue;
+				std::ranges::sort(spans);
+
+				for (size_t s = 0; s < spans.size();)
+				{
+					const auto left = spans[s].first;
+					auto right = spans[s].second;
+					for (++s; s < spans.size() && spans[s].first <= right; ++s)
+						right = std::max(right, spans[s].second);
+
+					auto* p = pixel(left, y);
+					for (auto x = left; x < right; ++x, p += 4)
 					{
-						for (auto sx = 0; sx < samples_per_axis; ++sx)
+						auto covered = 0;
+						for (auto sy = 0; sy < samples_per_axis; ++sy)
 						{
-							const auto px = x + (sx + 0.5) / samples_per_axis;
-							const auto py = y + (sy + 0.5) / samples_per_axis;
-							const auto hit = [&]
+							for (auto sx = 0; sx < samples_per_axis; ++sx)
 							{
-								for (size_t i = 1; i < points.size(); ++i)
-									if (distance_to_segment_sq(px, py, points[i - 1], points[i]) <= radius * radius) return true;
-								return false;
-							}();
-							if (hit) ++covered;
+								const auto px = x + (sx + 0.5) / samples_per_axis;
+								const auto py = y + (sy + 0.5) / samples_per_axis;
+								const auto hit = [&]
+								{
+									for (const auto i : reaching)
+										if (distance_to_segment_sq(px, py, points[i - 1], points[i]) <= radius * radius)
+											return true;
+									return false;
+								}();
+								if (hit) ++covered;
+							}
 						}
+						if (covered > 0) blend_over(p, c, static_cast<float>(covered) / sample_count, _opaque);
 					}
-					if (covered > 0) blend_over(p, c, static_cast<float>(covered) / sample_count, _opaque);
 				}
 			}
 		}
@@ -789,8 +972,8 @@ namespace render
 		}
 
 		// Blit (with scaling) a BGRA source surface region into a destination rect.
-		void blit_surface(const core::surface& src, const core::recti src_rect, const core::recti dst_rect, const float alpha,
-		                  const texture_sampler sampler, const bool has_alpha) const
+		void blit_surface(const core::surface& src, const core::recti src_rect, const core::recti dst_rect,
+		                  const float alpha, const texture_sampler sampler, const bool has_alpha) const
 		{
 			const auto r = clamp_to_clip(dst_rect);
 			if (r.is_empty() || dst_rect.width() <= 0 || dst_rect.height() <= 0) return;
@@ -816,8 +999,7 @@ namespace render
 
 			for (auto i = 0; i < width; ++i)
 			{
-				build_taps(first_sx + scale_x * i, src_w, 4, taps,
-				           col_offsets.data() + static_cast<size_t>(i) * taps,
+				build_taps(first_sx + scale_x * i, src_w, 4, taps, col_offsets.data() + static_cast<size_t>(i) * taps,
 				           col_weights.data() + static_cast<size_t>(i) * taps);
 			}
 
@@ -918,7 +1100,8 @@ namespace render
 		// 1:1 copy of a source surface (already at destination size) into dst_rect, honouring the clip.
 		// The opaque case is a per-row memcpy - the fast tail after swscale has scaled the source to the
 		// destination size (see software_texture::display_scaled).
-		void blit_copy(const core::surface& src, const core::recti dst_rect, const float alpha, const bool has_alpha) const
+		void blit_copy(const core::surface& src, const core::recti dst_rect, const float alpha,
+		               const bool has_alpha) const
 		{
 			const auto r = clamp_to_clip(dst_rect);
 			if (r.is_empty()) return;
@@ -932,7 +1115,7 @@ namespace render
 			for (auto y = r.top; y < r.bottom; ++y)
 			{
 				const auto* srow = src_pixels + static_cast<ptrdiff_t>(y - dst_rect.top) * src_stride +
-					static_cast<ptrdiff_t>(r.left - dst_rect.left) * 4;
+				                   static_cast<ptrdiff_t>(r.left - dst_rect.left) * 4;
 				auto* p = pixel(r.left, y);
 
 				if (opaque_write)
@@ -964,6 +1147,7 @@ namespace render
 
 		// rotated / transformed images (e.g. the edit view). The transforms in use (rotate / scale /
 		// translate) are affine, so the quad is a parallelogram and dest->source is an exact linear map.
+		// A wide source is sampled at its own precision.
 		void blit_quad(const core::surface& src, const core::recti src_rect, const core::quadd& q, const float alpha,
 		               const texture_sampler sampler, const bool has_alpha,
 		               const texture_transform* transform = nullptr) const
@@ -971,6 +1155,7 @@ namespace render
 			const auto r = clamp_to_clip(q.bounding_rect_i());
 			if (r.is_empty()) return;
 
+			const auto wide = core::is_wide(src.format());
 			const auto* src_pixels = src.pixels();
 			const auto src_stride = static_cast<int>(src.stride());
 			const auto src_w = static_cast<int>(src.width());
@@ -1008,7 +1193,7 @@ namespace render
 						const auto normalized_x = u - 0.5;
 						const auto normalized_y = v - 0.5;
 						const auto denominator = 1.0 + transform->perspective_horizontal * normalized_x +
-							transform->perspective_vertical * normalized_y;
+						                         transform->perspective_vertical * normalized_y;
 						if (denominator <= 0.0) continue;
 						u = 0.5 + normalized_x / denominator;
 						v = 0.5 + normalized_y / denominator;
@@ -1018,42 +1203,52 @@ namespace render
 					const auto sx = src_rect.left + u * src_fw - 0.5;
 					const auto sy = src_rect.top + v * src_fh - 0.5;
 
-					const auto sampled = sample(src_pixels, src_stride, src_w, src_h, sx, sy, sampler);
-					auto [sb, sg, sr, sample_a] = sampled;
+					int sb;
+					int sg;
+					int sr;
+					int sample_a;
 
-					if (transform && transform->has_color_changes)
+					if (wide)
 					{
-						const auto red = std::clamp(sr / 255.0f * transform->red_gain, 0.0f, 1.0f);
-						const auto green = std::clamp(sg / 255.0f * transform->green_gain, 0.0f, 1.0f);
-						const auto blue = std::clamp(sb / 255.0f * transform->blue_gain, 0.0f, 1.0f);
-						auto luminance = 0.299f * red + 0.587f * green + 0.114f * blue;
-						auto chroma_u = -0.147f * red - 0.289f * green + 0.436f * blue;
-						auto chroma_v = 0.615f * red - 0.515f * green - 0.100f * blue;
-						const auto curve_index = std::clamp(
-							static_cast<int>(luminance * texture_transform::curve_len),
-							0, texture_transform::curve_len - 1);
-						luminance = transform->curve[curve_index];
-						if (!core::is_zero(transform->vibrance))
+						// Graded from the sixteen-bit sample, so an edit's curve has the source's precision
+						// to work with and is rounded to a byte once, at the end.
+						const auto sampled = sample_wide(src_pixels, src_stride, src_w, src_h, sx, sy, sampler);
+						auto red = sampled.r;
+						auto green = sampled.g;
+						auto blue = sampled.b;
+
+						if (transform && transform->has_color_changes)
 						{
-							const auto chroma_x = -0.105f - chroma_u;
-							const auto chroma_y = 0.227f - chroma_v;
-							const auto distance = std::sqrt(chroma_x * chroma_x + chroma_y * chroma_y);
-							const auto saturation = transform->saturation *
-								(1.0f + transform->vibrance * distance * 4.0f);
-							chroma_u *= saturation;
-							chroma_v *= saturation;
+							render::grade_color(red, green, blue, transform->curve.data(), texture_transform::curve_len,
+							                    transform->saturation, transform->vibrance, transform->red_gain,
+							                    transform->green_gain, transform->blue_gain);
 						}
-						else
+
+						sr = core::round(std::clamp(red, 0.0f, 1.0f) * 255.0f);
+						sg = core::round(std::clamp(green, 0.0f, 1.0f) * 255.0f);
+						sb = core::round(std::clamp(blue, 0.0f, 1.0f) * 255.0f);
+						sample_a = core::round(std::clamp(sampled.a, 0.0f, 1.0f) * 255.0f);
+					}
+					else
+					{
+						const auto sampled = sample(src_pixels, src_stride, src_w, src_h, sx, sy, sampler);
+						sb = sampled.b;
+						sg = sampled.g;
+						sr = sampled.r;
+						sample_a = sampled.a;
+
+						if (transform && transform->has_color_changes)
 						{
-							chroma_u *= transform->saturation;
-							chroma_v *= transform->saturation;
+							auto red = sr / 255.0f;
+							auto green = sg / 255.0f;
+							auto blue = sb / 255.0f;
+							render::grade_color(red, green, blue, transform->curve.data(), texture_transform::curve_len,
+							                    transform->saturation, transform->vibrance, transform->red_gain,
+							                    transform->green_gain, transform->blue_gain);
+							sr = core::round(std::clamp(red, 0.0f, 1.0f) * 255.0f);
+							sg = core::round(std::clamp(green, 0.0f, 1.0f) * 255.0f);
+							sb = core::round(std::clamp(blue, 0.0f, 1.0f) * 255.0f);
 						}
-						chroma_u = std::clamp(chroma_u, -1.0f, 1.0f);
-						chroma_v = std::clamp(chroma_v, -1.0f, 1.0f);
-						sr = core::round(std::clamp(luminance + 1.14025f * chroma_v, 0.0f, 1.0f) * 255.0f);
-						sg = core::round(
-							std::clamp(luminance - 0.39473f * chroma_u - 0.58081f * chroma_v, 0.0f, 1.0f) * 255.0f);
-						sb = core::round(std::clamp(luminance + 2.03252f * chroma_u, 0.0f, 1.0f) * 255.0f);
 					}
 
 					if (opaque_write)
@@ -1128,8 +1323,8 @@ namespace render
 		// custom descriptors carry their own pixel size.
 		virtual void base_font_size(int size) = 0;
 
-		virtual core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style, int cx,
-		                           int cy) = 0;
+		virtual core::sizei measure_text(std::string_view text, render::font_face font, render::text_style style,
+		                                 int cx, int cy) = 0;
 		virtual int text_line_height(render::font_face font) = 0;
 		// As measure_context::text_baseline: the face's ascent, with any line gap, in pixels.
 		virtual int text_baseline(render::font_face font) = 0;
@@ -1142,8 +1337,8 @@ namespace render
 		virtual void draw_text(draw_context& dc, software_canvas& canvas, std::string_view text,
 		                       const std::vector<text_highlight_t>& highlights, core::recti bounds,
 		                       render::font_face font, render::text_style style, core::color c, core::color bg) = 0;
-		virtual void draw_text(draw_context& dc, software_canvas& canvas, const text_layout_ptr& layout, core::recti bounds,
-		                       core::color c, core::color bg) = 0;
+		virtual void draw_text(draw_context& dc, software_canvas& canvas, const text_layout_ptr& layout,
+		                       core::recti bounds, core::color c, core::color bg) = 0;
 	};
 
 	using software_text_engine_ptr = std::shared_ptr<software_text_engine>;
@@ -1160,10 +1355,6 @@ namespace render
 	// Draws directly into a caller-owned BGRA surface, including software text.
 	draw_context_device_ptr create_surface_context(const core::surface_ptr& target);
 
-	// The drop shadow the CPU backend stretches behind bubbles and bars: a centred radial blob in
-	// straight-alpha BGRA. Each platform supplies the artwork; null draws no shadow.
-	core::surface_ptr load_shadow_art();
-
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// The rasterizer probe. Tiling is sound only while every primitive derives its colour, coverage
 	// and source mapping from its own bounds and treats the clip purely as a write mask, so this
@@ -1176,9 +1367,9 @@ namespace render
 
 	struct rasterizer_probe
 	{
-		int painted_pixels = 0; // pixels the scene changed from the initial fill
+		int painted_pixels = 0;    // pixels the scene changed from the initial fill
 		int mismatched_pixels = 0; // pixels where the tiled result differs from the untiled one
-		int tiles = 0; // tiles the scene was rasterised in
+		int tiles = 0;             // tiles the scene was rasterised in
 		// Evenly spaced pixels of the whole-surface rendering, packed BGRA. Sampled rather than
 		// hashed because the rasterizer is float arithmetic that an optimiser may reassociate, so an
 		// exact digest differs between two builds of one compiler and says nothing about portability.

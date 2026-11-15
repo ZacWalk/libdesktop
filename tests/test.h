@@ -27,9 +27,7 @@ class test_assert_exception final : public std::exception
 public:
 	std::string message;
 
-	explicit test_assert_exception(std::string m) : message(std::move(m))
-	{
-	}
+	explicit test_assert_exception(std::string m) : message(std::move(m)) {}
 };
 
 struct test_registry
@@ -57,9 +55,8 @@ inline void assert_equal(const std::string_view expected, const std::string_view
 
 	if (core::icmp(actual, expected) != 0)
 	{
-		throw test_assert_exception(
-			std::format("{} - {}: expected '{}', got '{}' at {}", message, name, expected, actual,
-			            test_assert_where(loc)));
+		throw test_assert_exception(std::format("{} - {}: expected '{}', got '{}' at {}", message, name, expected,
+		                                        actual, test_assert_where(loc)));
 	}
 }
 
@@ -84,9 +81,8 @@ inline void assert_equal_strict(const std::string_view expected, const std::stri
 
 	if (actual != expected)
 	{
-		throw test_assert_exception(
-			std::format("{} - {}: expected '{}', got '{}' at {}", message, name, expected, actual,
-			            test_assert_where(loc)));
+		throw test_assert_exception(std::format("{} - {}: expected '{}', got '{}' at {}", message, name, expected,
+		                                        actual, test_assert_where(loc)));
 	}
 }
 
@@ -142,11 +138,10 @@ inline void assert_near(const double expected, const double actual, const double
 	++test_assert_count;
 
 	if (!std::isfinite(expected) || !std::isfinite(actual) || !std::isfinite(tolerance) || tolerance < 0.0 ||
-		std::abs(expected - actual) > tolerance)
+	    std::abs(expected - actual) > tolerance)
 	{
-		throw test_assert_exception(
-			std::format("{} - {}: expected '{}' within '{}', got '{}' at {}", message, name, expected, tolerance,
-			            actual, test_assert_where(loc)));
+		throw test_assert_exception(std::format("{} - {}: expected '{}' within '{}', got '{}' at {}", message, name,
+		                                        expected, tolerance, actual, test_assert_where(loc)));
 	}
 }
 
@@ -158,10 +153,9 @@ inline void assert_equal(const core::date_t expected, const core::date_t actual,
 
 	if (expected.to_int64() != actual.to_int64())
 	{
-		throw test_assert_exception(
-			std::format("{} - {}: expected {} ({}), got {} ({}) at {}", message, name,
-			            expected.to_int64(), expected.to_int64(),
-			            actual.to_int64(), actual.to_int64(), test_assert_where(loc)));
+		throw test_assert_exception(std::format("{} - {}: expected {} ({}), got {} ({}) at {}", message, name,
+		                                        expected.to_int64(), expected.to_int64(), actual.to_int64(),
+		                                        actual.to_int64(), test_assert_where(loc)));
 	}
 }
 
@@ -221,4 +215,3 @@ int run_registered_tests(Registry& all, const int argc, char* argv[], Cleanup cl
 	std::printf("\n%d tests, %d failed, %d checks\n", run, failed, test_assert_count);
 	return failed == 0 && run > 0 ? 0 : 1;
 }
-

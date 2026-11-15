@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Regression tests for list, hexadecimal, and CSV view controls
 
@@ -47,10 +46,8 @@ namespace
 		view.layout_list();
 	}
 
-	std::shared_ptr<ui::text_buffer> show_document(ui::read_only_doc_view& view,
-	                                               ui::test::recording_view_host& host,
-	                                               std::string_view text,
-	                                               core::sizei extent = {480, 320})
+	std::shared_ptr<ui::text_buffer> show_document(ui::read_only_doc_view& view, ui::test::recording_view_host& host,
+	                                               std::string_view text, core::sizei extent = {480, 320})
 	{
 		auto buffer = std::make_shared<ui::text_buffer>(host);
 		buffer->set_text(text);
@@ -143,7 +140,8 @@ namespace
 
 		bool saw_selection = false;
 		for (const auto& fill : draw.fills)
-			if (fill.color == core::color(theme.handle) || fill.color == core::color(theme.focus_handle)) saw_selection = true;
+			if (fill.color == core::color(theme.handle) || fill.color == core::color(theme.focus_handle))
+				saw_selection = true;
 		assert_equal(true, saw_selection, "selection fill");
 
 		int folder_x = 0;
@@ -241,8 +239,7 @@ namespace
 		assert_equal(true, draw.drawn_text().find("+1.2%") != std::string::npos, "third cell");
 		bool sorted_marked = false;
 		for (const auto& text : draw.texts)
-			if (text.text.find("Chg% ▼") != std::string::npos)
-				sorted_marked = true;
+			if (text.text.find("Chg% ▼") != std::string::npos) sorted_marked = true;
 		assert_equal(true, sorted_marked, "sort marker");
 		bool coloured = false;
 		for (const auto& text : draw.texts)
@@ -297,7 +294,10 @@ namespace
 		assert_equal(false, commands[0]->enable, "copy command disabled");
 
 		view.set_selected(0);
-		const auto row_y = [&](const int row) { return view._items[row]->bounds.top + 1; };
+		const auto row_y = [&](const int row)
+		{
+			return view._items[row]->bounds.top + 1;
+		};
 		(void)view.context_commands({10, row_y(3)});
 		assert_equal(3, view.selected_index(), "context click changes selection");
 		view.set_selected(1);
@@ -317,7 +317,7 @@ namespace
 		const auto buffer = show_document(csv, host, "name,qty,note\nwidget,12,the long one\nbolt,3,short");
 		assert_equal(3u, static_cast<unsigned>(csv.table().col_widths.size()), "CSV column count");
 		assert_equal(6, csv.table().col_widths[0], "CSV first width");
-		assert_equal(12, csv.table().col_widths[2], "CSV third width");
+		assert_equal(39, csv.table().col_widths[2], "CSV last column fills the viewport");
 		ui::test::fake_draw_context draw({0, 0, 480, 320});
 		csv.paint(draw, false);
 		assert_equal(true, draw.drawn_text().find("name") != std::string::npos, "CSV header");
@@ -334,7 +334,7 @@ namespace
 
 		ui::test::fake_draw_context quote_draw({0, 0, 480, 320});
 		show_document(csv, host, "a,b\n\"x,y\",caf\xC3\xA9");
-		assert_equal(4, csv.table().col_widths[1], "CSV counts UTF-8 codepoints");
+		assert_equal(4, csv.table().sizing.natural_widths()[1], "CSV counts UTF-8 codepoints");
 		csv.paint(quote_draw, false);
 		assert_equal(true, quote_draw.drawn_text().find("x,y") != std::string::npos, "CSV keeps quoted comma");
 		for (const auto& text : quote_draw.texts)
@@ -391,9 +391,84 @@ namespace
 	}
 }
 
+namespace
+{
+	void should_resize_list_columns_without_sorting()
+	{
+		const ui::view_theme theme;
+		auto view = std::make_shared<list_probe>(theme);
+		ui::test::fake_control_host host;
+		auto input = std::make_shared<ui::input_manager>(&host);
+		view->found(input, {}, true);
+		view->set_columns({{"Name", 1}, {"Value", 1}, {"Other", 1}});
+		auto row = std::make_shared<ui::list_item>();
+		row->cells = {{"alpha"}, {"123"}, {"x"}};
+		view->_items.push_back(row);
+		view->layout(host.measure_context, {0, 0, 480, 200});
+		const auto before = view->column_rects(480);
+		const core::pointi divider{before[0].right, 4};
+		view->on_mouse_down(divider, {});
+		assert_equal(true, host.captured, "list divider captures the pointer");
+		view->on_mouse_move({divider.x + 40, 1000}, true);
+		assert_equal(before[0].width() + 40, view->column_rects(480)[0].width(),
+		             "list drag resizes outside its header");
+		assert_equal(-1, view->sort_column(), "divider drag never sorts rows");
+		view->on_key(platform::keys::ESCAPE, {});
+		assert_equal(false, host.captured, "Escape releases pointer capture");
+		assert_equal(before[0].width(), view->column_rects(480)[0].width(), "Escape restores list columns");
+		view->on_mouse_up({divider.x + 40, 4}, {});
+		assert_equal(before[0].width(), view->column_rects(480)[0].width(), "cancelled release does not resize");
+		view->on_double_click(divider, {});
+		assert_equal(5 * 8 + theme.padding_x * 2, view->column_rects(480)[0].width(), "list fit measures its cells");
+		view->set_selected(0);
+		assert_equal_strict("alpha\t123\tx", view->selected_rows_text(), "column resizing preserves row copy");
+		view->lost(input.get());
+		ui::test::fake_measure_context scaled;
+		scaled.scale_factor = 2.0;
+		view->on_placed(scaled);
+		assert_equal((5 * 8 + theme.padding_x * 2) * 2, view->column_rects(480)[0].width(),
+		             "user-sized list columns follow the layout context's DPI without a frame");
+	}
+
+	void should_resize_csv_table_columns()
+	{
+		ui::test::recording_view_host host;
+		const ui::view_theme theme;
+		ui::csv_view view(host, theme);
+		auto buffer = std::make_shared<ui::text_buffer>(host);
+		const auto source = "Name,Value\nalpha,longer value";
+		buffer->set_text(source);
+		view.set_buffer(buffer, {});
+		ui::test::fake_measure_context mc;
+		static_cast<ui::control&>(view).layout(mc, {0, 0, 480, 320});
+		const auto width = view.table().col_widths[0];
+		const auto x = (2 + width + 3) * view.font_extent().cx;
+		const auto y = view.font_extent().cy / 2;
+		assert_equal(true, view.cursor_at({x, y}) == platform::cursor::left_right, "CSV header divider");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x + 24, y}, true);
+		view.on_mouse_up({x + 24, y}, {});
+		assert_equal(width + 3, view.table().col_widths[0], "CSV resize follows the pointer");
+		assert_equal(false, buffer->has_selection(), "divider does not select a record");
+		assert_equal_strict(source, buffer->str(), "CSV source survives resizing");
+		view.on_double_click({x + 24, y}, {});
+		assert_equal(width, view.table().col_widths[0], "CSV divider fits content");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x - 10000, y}, true);
+		assert_equal(1, view.table().col_widths[0], "CSV column keeps one character");
+		view.on_key(platform::keys::ESCAPE, {});
+		assert_equal(width, view.table().col_widths[0], "CSV Escape restores width");
+		view.on_mouse_down({x, y}, {});
+		view.on_mouse_move({x + 16, y}, true);
+		view.on_focus(false, false);
+		assert_equal(width, view.table().col_widths[0], "focus loss cancels a captured CSV divider");
+	}
+}
 
 void register_ui_list_view_tests(test_registry& tests)
 {
+	tests.add(std::string("Should resize list columns without sorting"), should_resize_list_columns_without_sorting);
+	tests.add(std::string("Should resize CSV table columns"), should_resize_csv_table_columns);
 	tests.add(std::string("Should lay out and hit-test list rows"), should_layout_and_hit_test_rows);
 	tests.add(std::string("Should select, navigate, and copy list rows"), should_select_navigate_and_copy_rows);
 	tests.add(std::string("Should paint and clip list rows"), should_paint_rows_and_clip_text);

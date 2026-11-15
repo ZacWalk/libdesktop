@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
 //
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: Layout and pointer interaction for the two-pane splitter element.
 
@@ -34,8 +33,8 @@ namespace
 
 	public:
 		split_controller(const ui::element_host_ptr& host, ui::split_element& split, const core::recti bounds,
-		                 const core::pointi origin) : controller(host, bounds), _split(split), _origin(origin),
-		                                             _start_ratio(split._ratio)
+		                 const core::pointi origin) :
+			controller(host, bounds), _split(split), _origin(origin), _start_ratio(split._ratio)
 		{
 			_split._hover = true;
 		}
@@ -45,10 +44,7 @@ namespace
 			if (!_split._tracking) _split._hover = false;
 		}
 
-		platform::cursor cursor() const override
-		{
-			return _split.cursor();
-		}
+		platform::cursor cursor() const override { return _split.cursor(); }
 
 		void on_mouse_left_button_down(const core::pointi loc, const platform::key_state keys) override
 		{
@@ -74,7 +70,7 @@ namespace
 			}
 		}
 
-		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state keys) override
+		void on_mouse_left_button_up(const core::pointi loc, const platform::key_state /*keys*/) override
 		{
 			if (_split._tracking)
 			{
@@ -103,7 +99,8 @@ namespace
 
 ui::split_element::split_element(element_ptr first, element_ptr second, const orientation orient,
                                  const double initial_ratio, const view_theme* const theme) noexcept :
-	elements(), _orient(orient), _ratio(initial_ratio), _first(std::move(first)), _second(std::move(second)), _theme(theme)
+	elements(), _orient(orient), _ratio(initial_ratio), _first(std::move(first)), _second(std::move(second)),
+	_theme(theme)
 {
 	kind = element_kind::content;
 	if (_first) _children.push_back(_first);
@@ -129,9 +126,8 @@ ui::split_element::split_element(const orientation orient, const double initial_
 {
 }
 
-ui::split_element::split_element(const orientation orient, const double initial_ratio,
-                                 const view_theme& theme) noexcept :
-	split_element(orient, initial_ratio, {}, {}, &theme)
+ui::split_element::split_element(const orientation orient, const double initial_ratio, const view_theme& theme) noexcept
+	: split_element(orient, initial_ratio, {}, {}, &theme)
 {
 }
 
@@ -147,8 +143,7 @@ void ui::split_element::set_dpi_scale(const double scale) noexcept
 
 int ui::split_element::split_pos(const core::recti bounds_in) const noexcept
 {
-	if (_orient == orientation::vertical)
-		return bounds_in.left + static_cast<int>(bounds_in.width() * _ratio);
+	if (_orient == orientation::vertical) return bounds_in.left + static_cast<int>(bounds_in.width() * _ratio);
 	return bounds_in.top + static_cast<int>(bounds_in.height() * _ratio);
 }
 
@@ -156,8 +151,7 @@ core::recti ui::split_element::bar_rect(const core::recti bounds_in) const noexc
 {
 	const auto pos = split_pos(bounds_in);
 	const auto bw = bar_width();
-	if (_orient == orientation::vertical)
-		return {pos - bw, bounds_in.top, pos + bw, bounds_in.bottom};
+	if (_orient == orientation::vertical) return {pos - bw, bounds_in.top, pos + bw, bounds_in.bottom};
 	return {bounds_in.left, pos - bw, bounds_in.right, pos + bw};
 }
 
@@ -256,8 +250,7 @@ core::sizei ui::split_element::measure(render::measure_context& mc, const int wi
 	const auto second = _second ? _second->measure(mc, width_limit) : core::sizei{};
 	const auto gap = bar_width() * 2;
 
-	if (_orient == orientation::vertical)
-		return {first.cx + second.cx + gap, std::max(first.cy, second.cy)};
+	if (_orient == orientation::vertical) return {first.cx + second.cx + gap, std::max(first.cy, second.cy)};
 	return {std::max(first.cx, second.cx), first.cy + second.cy + gap};
 }
 
@@ -270,9 +263,11 @@ void ui::split_element::layout(render::measure_context& mc, const core::recti bo
 	const auto total = _orient == orientation::vertical ? bounds.width() : bounds.height();
 	const auto available = std::max(0, total - 2 * bw);
 	const auto first_requested = _first ? (_orient == orientation::vertical ? _first->flex.min_size.cx
-	                                                                         : _first->flex.min_size.cy) : 0;
+	                                                                        : _first->flex.min_size.cy)
+	                                    : 0;
 	const auto second_requested = _second ? (_orient == orientation::vertical ? _second->flex.min_size.cx
-	                                                                          : _second->flex.min_size.cy) : 0;
+	                                                                          : _second->flex.min_size.cy)
+	                                      : 0;
 	const auto first_min = std::max(core::round(min_pane_size * mc.scale_factor),
 	                                core::round(first_requested * mc.scale_factor));
 	const auto second_min = std::max(core::round(min_pane_size * mc.scale_factor),

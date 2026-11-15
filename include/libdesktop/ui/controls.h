@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: The controls libdesktop-render draws itself - push, check and radio buttons, command links,
 // the slider, the toolbar, the text edit and the date field, each an element of the tree drawn where it
@@ -46,10 +45,7 @@ namespace ui
 		std::vector<edit_state> _undo;
 		std::vector<edit_state> _redo;
 
-		static bool is_continuation(const unsigned char c) noexcept
-		{
-			return (c & 0xc0) == 0x80;
-		}
+		static bool is_continuation(const unsigned char c) noexcept { return (c & 0xc0) == 0x80; }
 
 		static bool is_word_byte(const unsigned char c) noexcept
 		{
@@ -125,9 +121,7 @@ namespace ui
 		}
 
 	public:
-		explicit text_edit_model(const bool multi_line = false) noexcept : _multi_line(multi_line)
-		{
-		}
+		explicit text_edit_model(const bool multi_line = false) noexcept : _multi_line(multi_line) {}
 
 		const std::string& text() const noexcept { return _text; }
 		bool multi_line() const noexcept { return _multi_line; }
@@ -177,8 +171,8 @@ namespace ui
 		{
 			pos = clamp_boundary(pos);
 			while (pos < _text.size() && is_word_byte(static_cast<unsigned char>(_text[pos]))) pos = next_boundary(pos);
-			while (pos < _text.size() && !is_word_byte(static_cast<unsigned char>(_text[pos]))) pos =
-				next_boundary(pos);
+			while (pos < _text.size() && !is_word_byte(static_cast<unsigned char>(_text[pos])))
+				pos = next_boundary(pos);
 			return pos;
 		}
 
@@ -205,15 +199,9 @@ namespace ui
 			_redo.clear();
 		}
 
-		void begin_edit()
-		{
-			_original_text = _text;
-		}
+		void begin_edit() { _original_text = _text; }
 
-		void cancel_edit()
-		{
-			text(_original_text);
-		}
+		void cancel_edit() { text(_original_text); }
 
 		void select(const size_t anchor, const size_t caret)
 		{
@@ -420,10 +408,7 @@ namespace ui
 			return leap ? 29 : 28;
 		}
 
-		core::day_t parts() const
-		{
-			return _value.date();
-		}
+		core::day_t parts() const { return _value.date(); }
 
 		void assign(core::day_t d)
 		{
@@ -455,15 +440,9 @@ namespace ui
 		{
 			switch (order)
 			{
-			case date_field_order::ymd:
-				_segments = {date_segment::year, date_segment::month, date_segment::day};
-				break;
-			case date_field_order::mdy:
-				_segments = {date_segment::month, date_segment::day, date_segment::year};
-				break;
-			default:
-				_segments = {date_segment::day, date_segment::month, date_segment::year};
-				break;
+			case date_field_order::ymd: _segments = {date_segment::year, date_segment::month, date_segment::day}; break;
+			case date_field_order::mdy: _segments = {date_segment::month, date_segment::day, date_segment::year}; break;
+			default: _segments = {date_segment::day, date_segment::month, date_segment::year}; break;
 			}
 
 			if (include_time)
@@ -503,10 +482,7 @@ namespace ui
 			return true;
 		}
 
-		static int digit_count(const date_segment segment) noexcept
-		{
-			return segment == date_segment::year ? 4 : 2;
-		}
+		static int digit_count(const date_segment segment) noexcept { return segment == date_segment::year ? 4 : 2; }
 
 		int maximum(const date_segment segment) const
 		{
@@ -559,18 +535,12 @@ namespace ui
 
 			switch (segment)
 			{
-			case date_segment::year: d.year = v;
-				break;
-			case date_segment::month: d.month = v;
-				break;
-			case date_segment::day: d.day = v;
-				break;
-			case date_segment::hour: d.hour = v;
-				break;
-			case date_segment::minute: d.minute = v;
-				break;
-			case date_segment::second: d.second = v;
-				break;
+			case date_segment::year: d.year = v; break;
+			case date_segment::month: d.month = v; break;
+			case date_segment::day: d.day = v; break;
+			case date_segment::hour: d.hour = v; break;
+			case date_segment::minute: d.minute = v; break;
+			case date_segment::second: d.second = v; break;
 			}
 
 			assign(d);
@@ -594,25 +564,23 @@ namespace ui
 				assign(d);
 				return;
 			case date_segment::month:
+			{
+				auto month = d.month + delta;
+				while (month > 12)
 				{
-					auto month = d.month + delta;
-					while (month > 12)
-					{
-						month -= 12;
-						++d.year;
-					}
-					while (month < 1)
-					{
-						month += 12;
-						--d.year;
-					}
-					d.month = month;
-					assign(d);
-					return;
+					month -= 12;
+					++d.year;
 				}
-			case date_segment::day:
-				step_ticks(delta * static_cast<int64_t>(core::date_t::intervals_per_day));
+				while (month < 1)
+				{
+					month += 12;
+					--d.year;
+				}
+				d.month = month;
+				assign(d);
 				return;
+			}
+			case date_segment::day: step_ticks(delta * static_cast<int64_t>(core::date_t::intervals_per_day)); return;
 			case date_segment::hour:
 				step_ticks(delta * static_cast<int64_t>(core::date_t::intervals_per_second) * 3600);
 				return;
@@ -679,10 +647,7 @@ namespace ui
 
 		// The month is the one segment with a name, so it is the one segment worth a drop menu:
 		// everything else is a number faster to type than to pick.
-		bool active_has_menu() const noexcept
-		{
-			return active_segment() == date_segment::month;
-		}
+		bool active_has_menu() const noexcept { return active_segment() == date_segment::month; }
 
 		void commit_typing()
 		{
@@ -757,6 +722,40 @@ namespace ui
 
 	class menu_session;
 
+	// A row of an open menu as it shows: an item, a separator, a row of buttons - each a cell, a row of its own - or
+	// content its owner draws. Text is without its mnemonic marker; keys is the accelerator text beside it. Bounds are
+	// the level's popup's client pixels.
+	struct menu_row_state
+	{
+		enum class kind
+		{
+			item,
+			separator,
+			buttons,
+			content
+		};
+
+		kind type = kind::item;
+		command_ptr command;
+		std::string text;
+		std::string keys;
+		bool enabled = true;
+		bool checked = false;
+		bool submenu = false;
+		bool selected = false;
+		core::recti bounds;
+		std::vector<menu_row_state> cells;
+	};
+
+	// One level of an open menu: the popup it is drawn in, its rows, and the row of the level before it that it opened
+	// from, or -1 for the first.
+	struct menu_level_state
+	{
+		frame_ptr popup;
+		std::vector<menu_row_state> rows;
+		int opened_from = -1;
+	};
+
 	// What a window layer gives the drawn menu: popups to draw it in, and its message loop.
 	class menu_host
 	{
@@ -783,12 +782,18 @@ namespace ui
 		virtual ~menu_session() = default;
 		virtual bool done() const = 0;
 		virtual void cancel() = 0;
-		virtual bool key_down(int key, platform::key_state keys) = 0;
+		virtual bool key_down(char32_t key, platform::key_state keys) = 0;
 		// Whether a horizontal key belongs to the deepest popup rather than to a menu-bar neighbour.
-		virtual bool takes_horizontal_key(int key) const { return false; }
+		virtual bool takes_horizontal_key(char32_t /*key*/) const { return false; }
 		// The popups open now, deepest last: a press on any other window dismisses the menu.
 		virtual std::vector<frame_ptr> popups() const = 0;
+		// Its levels as they show now, the first first: for whoever works the menu from outside it - an agent, a test -
+		// which presses a row where its level's popup shows it.
+		virtual std::vector<menu_level_state> levels() const { return {}; }
 	};
+
+	// The drawn menu open now, its loop running, or null.
+	menu_session* open_menu_session();
 
 	// Shows commands as a drawn menu beside button_bounds - below or above it as owner_bounds leaves
 	// room, or at its top left when it is a point - and invokes the command chosen once the menu has
@@ -822,7 +827,8 @@ namespace ui
 		core::pointi focus;
 	};
 
-	bubble_placement place_bubble(core::sizei content_extent, core::recti anchor, int x_focus, bool horizontal, core::recti work);
+	bubble_placement place_bubble(core::sizei content_extent, core::recti anchor, int x_focus, bool horizontal,
+	                              core::recti work);
 
 	// A bubble the module draws in a layered popup of its own, the same on every platform: placed beside
 	// what it points at, with its arrow and shadow, faded in and out where animations run.
@@ -908,7 +914,8 @@ namespace ui
 		bool enabled = true;
 		bool ancestors_enabled = true;
 		bool hovered = false;
-		// Set before a press reaches the control: whether this press gave it the focus.
+		// Set while a press reaches the control, from before the press gives it the focus, so on_focus tells a
+		// press from the keyboard: whether this press gave it the focus.
 		bool click_took_focus = false;
 		// The key its label marks, which a dialog's keyboard presses it with; zero for none.
 		char32_t mnemonic = 0;
@@ -935,9 +942,9 @@ namespace ui
 
 		// As an element: as large as it asks with room added, at least its share, and drawn by itself where
 		// its layout put it.
-		core::sizei measure(render::measure_context& mc, int width_limit) const final;
-		void layout(render::measure_context& mc, core::recti bounds_in) final;
-		void render(render::draw_context& dc, core::pointi element_offset) const final;
+		core::sizei measure(render::measure_context& mc, const int width_limit) const final;
+		void layout(render::measure_context& mc, const core::recti bounds_in) final;
+		void render(render::draw_context& dc, const core::pointi element_offset) const final;
 		void enabled_changed() override;
 
 		// The behaviour the kinds differ in. Locations are the control's content coordinates, the ones its
@@ -946,36 +953,43 @@ namespace ui
 		virtual void paint(render::draw_context& dc, bool focused) const = 0;
 		virtual bool can_focus() const { return enabled; }
 		virtual bool is_checked() const { return false; }
-		virtual void check_from_group(bool checked) {}
+		virtual void check_from_group(bool /*checked*/) {}
 		virtual void notify_changed() {}
 
-		virtual void on_focus(bool focused, bool select_all) {}
-		virtual void on_keyboard(bool has_keyboard) {}
-		virtual bool on_system_key(int key, platform::key_state keys, bool down) { return false; }
+		virtual void on_focus(bool /*focused*/, bool /*select_all*/) {}
+		virtual void on_keyboard(bool /*has_keyboard*/) {}
+		virtual bool on_system_key(char32_t /*key*/, platform::key_state /*keys*/, bool /*down*/) { return false; }
 		virtual bool in_system_mode() const { return false; }
 		virtual void cancel_system_mode() {}
-		virtual bool on_key(int key, platform::key_state keys) { return false; }
-		virtual bool on_text(std::string_view text) { return false; }
-		virtual void on_mouse_down(core::pointi loc, platform::key_state keys) {}
-		virtual void on_mouse_move(core::pointi loc, bool captured) {}
-		virtual void on_mouse_up(core::pointi loc, platform::key_state keys) {}
+		virtual bool on_key(char32_t /*key*/, platform::key_state /*keys*/) { return false; }
+		// A key a window offers its application before the typing control that has the focus - Escape, Tab,
+		// Return, Up and Down - which the control takes first now: an edit's open list of suggestions is
+		// worked with them.
+		virtual bool claims_key(char32_t /*key*/, platform::key_state /*keys*/) const { return false; }
+		virtual bool on_text(std::string_view /*text*/) { return false; }
+		virtual void on_mouse_down(core::pointi /*loc*/, platform::key_state /*keys*/) {}
+		virtual void on_mouse_move(core::pointi /*loc*/, bool /*captured*/) {}
+		virtual void on_mouse_up(core::pointi /*loc*/, platform::key_state /*keys*/) {}
 		virtual void on_double_click(core::pointi loc, const platform::key_state keys) { on_mouse_down(loc, keys); }
 		virtual void on_mouse_leave() {}
-		virtual bool on_wheel(core::pointi loc, int delta, platform::key_state keys) { return false; }
-		virtual std::vector<command_ptr> context_commands(core::pointi loc) { return {}; }
-		virtual platform::cursor cursor_at(core::pointi loc) const { return platform::cursor::normal; }
+		// The pointer it held since a press was taken from it before the button was let go - by a message box,
+		// another window or the system - so whatever the press began ends here, with no release to finish it.
+		virtual void on_capture_lost() {}
+		virtual bool on_wheel(core::pointi /*loc*/, int /*delta*/, platform::key_state /*keys*/) { return false; }
+		virtual std::vector<command_ptr> context_commands(core::pointi /*loc*/) { return {}; }
+		virtual platform::cursor cursor_at(core::pointi /*loc*/) const { return platform::cursor::normal; }
 		virtual core::recti caret_bounds() const { return {}; }
 		virtual void blink() {}
 		virtual void tick() {}
 		virtual void scale_changed() {}
 		// Laid out at new bounds, measured by the context the layout was given: a control is laid out
 		// before any frame has found it, so it cannot ask its frame.
-		virtual void on_placed(render::measure_context& mc) {}
+		virtual void on_placed(render::measure_context& /*mc*/) {}
 		virtual void click() {}
 
-		virtual int caption_button_at(core::pointi loc) const { return 0; }
-		virtual bool has_caption_button(int id) const { return false; }
-		virtual void invoke_caption(int id) {}
+		virtual int caption_button_at(core::pointi /*loc*/) const { return 0; }
+		virtual bool has_caption_button(int /*id*/) const { return false; }
+		virtual void invoke_caption(int /*id*/) {}
 
 		// The module's plumbing.
 		input_manager_ptr input() const { return _input.lock(); }
@@ -1022,9 +1036,10 @@ namespace ui
 		button() = default;
 	};
 
-	// Text is UTF-8 with '\n' line breaks, and offsets count its bytes. window_text(text) from code puts
-	// the caret at the end and, being the owner's own value, is not reported to changed. A negative
-	// offset is the end of the text.
+	// Text is UTF-8 with '\n' line breaks, and offsets count its bytes. window_text(text) from code puts the
+	// caret at the end and, being the owner's own value, is not reported to changed; a multi-line edit without
+	// the focus shows the text from its first line, and its caret once it has the focus. A negative offset is
+	// the end of the text.
 	class edit : public control
 	{
 	public:
@@ -1053,12 +1068,26 @@ namespace ui
 	class toolbar : public control
 	{
 	public:
+		// A button as the toolbar shows it now - its command, name, state, and where it is in its frame's client
+		// pixels, empty while hidden - for whoever works the toolbar from outside it: an agent, a test.
+		struct shown_button
+		{
+			command_ptr command;
+			std::string text;
+			core::recti bounds;
+			bool visible = false;
+			bool enabled = false;
+			bool checked = false;
+		};
+
 		// Its extent with every shown button, measured by mc: a toolbar is measured for the slot it is given
 		// before a frame finds it, so it cannot take its text metrics from the frame.
 		core::sizei measure_toolbar(render::measure_context& mc, int cx);
 		void update_button_state(bool resize, bool text_changed);
 		// Where a command's button is on screen; empty when it has none.
 		core::recti button_bounds(const command_ptr& command) const;
+		// Its buttons, in order, separators left out.
+		std::vector<shown_button> buttons() const;
 
 	protected:
 		toolbar() = default;
@@ -1069,13 +1098,18 @@ namespace ui
 	public:
 		// The date as it is shown.
 		std::string window_text() const;
+		core::date_t date() const;
+		// Shows another date, as choosing it would: the owner hears of it, and anything typed but not yet
+		// finished is dropped.
+		void date(core::date_t val);
 
 	protected:
 		date_time_control() = default;
 	};
 
 	// The controls, each made apart from any frame.
-	edit_ptr make_edit(const edit_styles& styles, std::string_view text, std::function<void(const std::string&)> changed);
+	edit_ptr make_edit(const edit_styles& styles, std::string_view text,
+	                   std::function<void(const std::string&)> changed);
 	trackbar_ptr make_slider(int min, int max, std::function<void(int, bool)> changed);
 	toolbar_ptr make_toolbar(const toolbar_styles& styles, const std::vector<command_ptr>& buttons);
 	button_ptr make_button(std::string_view text, std::function<void()> invoke, bool default_button = false);
@@ -1092,6 +1126,13 @@ namespace ui
 	// skipped unless with_hidden.
 	void walk_tree(const element_ptr& root, core::pointi offset, bool with_hidden,
 	               const std::function<void(element&, core::pointi, bool, bool)>& f);
+
+	// Told each time a drawn control acts for whoever works it - a button pressed, checked or chosen, a toolbar's
+	// command run or menu opened, an edit's text typed, pasted or chosen, a slider let go of or stepped, a date chosen
+	// - with the toolbar button's command where there is one: for an application that counts what has been used. One
+	// listener, told on the UI thread; an empty one stops the telling.
+	using control_used_listener = std::function<void(const control& used, const command_ptr& command)>;
+	void on_control_used(control_used_listener listener);
 
 	// One frame's keyboard and pointer, for the drawn controls in its host's tree: which has the focus,
 	// which the pointer is over and which holds it. It owns no controls. It finds them by walking the
@@ -1135,10 +1176,15 @@ namespace ui
 		bool mouse_up(core::pointi loc, platform::key_state keys);
 		bool mouse_double_click(core::pointi loc, platform::key_state keys);
 		void mouse_leave();
+		// The window lost the pointer while a control held it since a press: the control lets go of it, and of
+		// whatever the press began, without a release.
+		void cancel_capture();
 		bool wheel(core::pointi loc, int delta, platform::key_state keys);
 		bool context_menu(core::pointi loc);
-		bool key_down(int key, platform::key_state keys);
-		bool system_key(int key, platform::key_state keys, bool down);
+		bool key_down(char32_t key, platform::key_state keys);
+		// Whether the focused control takes key before the window offers it to its application.
+		bool claims_key(char32_t key, platform::key_state keys) const;
+		bool system_key(char32_t key, platform::key_state keys, bool down);
 		bool in_system_mode() const;
 		void cancel_system_mode();
 		bool text_input(std::string_view text);
@@ -1186,6 +1232,8 @@ namespace ui
 		std::weak_ptr<control> _focused;
 		std::weak_ptr<control> _hover;
 		std::weak_ptr<control> _captured;
+		// The window's pointer is held for a press on a control - one its owner may have let go of since.
+		bool _capturing = false;
 		// A control that entered a system-key mode keeps first refusal of its navigation keys.
 		std::weak_ptr<control> _system_control;
 		bool _keyboard_focus = false;
@@ -1208,4 +1256,9 @@ namespace ui
 	core::recti probe_edit_range_bounds(const edit_ptr& edit, size_t start, size_t end);
 	// The commands an edit's context menu holds for a press at loc, in client pixels.
 	std::vector<command_ptr> probe_edit_context_commands(const edit_ptr& edit, core::pointi loc);
+	// What an edit completing a typed path lists on a worker: the names of the folders in a folder - its
+	// shares, when it names a computer - sorted. A test stands in for a slow drive with its own; an empty one
+	// puts the platform's back.
+	using folder_lister = std::function<std::vector<std::string>(const std::string& folder)>;
+	void test_folder_lister(folder_lister lister);
 }

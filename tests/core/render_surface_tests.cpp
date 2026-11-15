@@ -24,6 +24,67 @@ static void should_unpremultiply_surface_alpha()
 	assert_equal(0xff336699u, surface.get_pixel(2, 0), "opaque pixels are unchanged");
 }
 
+// A planar surface holds luma rows and then chroma rows, narrower than four-byte pixels would be. Walked as
+// pixels, a short one ran off the end of its block; the accessors that walk pixels now leave it alone, and
+// a comparison reads each plane as it is stored.
+static void should_leave_planar_surfaces_to_planar_readers()
+{
+	const auto planar = std::make_shared<core::surface>();
+	assert_equal(true, planar->alloc(64, 2, core::texture_format::NV12) != nullptr,
+	             "a short NV12 surface is allocated");
+	planar->make_blank();
+
+	planar->clear(0xffffffffu);
+	planar->set_pixel(63, 1, 0xffffffffu);
+	const auto* const bytes = planar->pixels();
+	assert_equal(true, std::all_of(bytes, bytes + planar->size(), [](const uint8_t b) { return b == 0; }),
+	             "clear and set_pixel do not write it");
+	assert_equal(0u, planar->get_pixel(63, 1), "and get_pixel reads nothing from it");
+
+	const auto copy = std::make_shared<core::surface>();
+	assert_equal(true, copy->alloc(64, 2, core::texture_format::NV12) != nullptr, "a second one is allocated");
+	copy->make_blank();
+	assert_equal(true, planar->pixel_difference(copy) == core::pixel_difference_result::equal,
+	             "two blank pictures are equal");
+
+	copy->pixels()[copy->stride() * 2] = 1;
+	assert_equal(true, planar->pixel_difference(copy) == core::pixel_difference_result::not_equal,
+	             "a chroma sample tells them apart");
+
+	const auto packed = std::make_shared<core::surface>();
+	assert_equal(true, packed->alloc(64, 2, core::texture_format::RGB) != nullptr, "a packed surface is allocated");
+	assert_equal(true, planar->pixel_difference(packed) == core::pixel_difference_result::unknown,
+	             "a packed picture cannot be compared with a planar one");
+	assert_equal(true, planar->pixel_difference(nullptr) == core::pixel_difference_result::unknown,
+	             "nor can no picture");
+}
+
+// A draw copies whole rows with no clipping, so one that would run past either surface draws nothing.
+static void should_draw_only_inside_both_surfaces()
+{
+	core::surface target;
+	assert_equal(true, target.alloc(4, 4, core::texture_format::RGB) != nullptr, "the target is allocated");
+	target.clear(0u);
+
+	core::surface source;
+	assert_equal(true, source.alloc(2, 2, core::texture_format::RGB) != nullptr, "the source is allocated");
+	source.clear(0xff00ff00u);
+
+	target.draw(source, {3, 3}, {0, 0, 2, 2});
+	assert_equal(0u, target.get_pixel(3, 3), "a draw past the target's edge draws nothing");
+
+	target.draw(source, {0, 0}, {1, 1, 3, 3});
+	assert_equal(0u, target.get_pixel(0, 0), "nor does one from past the source's");
+
+	core::surface planar;
+	assert_equal(true, planar.alloc(2, 2, core::texture_format::NV12) != nullptr, "a planar source is allocated");
+	target.draw(planar, {0, 0}, {0, 0, 2, 2});
+	assert_equal(0u, target.get_pixel(0, 0), "nor does one from a planar surface");
+
+	target.draw(source, {2, 2}, {0, 0, 2, 2});
+	assert_equal(0xff00ff00u, target.get_pixel(3, 3), "one inside both draws");
+}
+
 // A video's decode thread prepares a picture of the same size for every frame. Allocated again at the size it
 // has, a surface keeps its block, where a fresh block of a frame's size is fresh pages to fault in and clear.
 static void should_keep_a_surface_block_allocated_again_at_its_size()
@@ -50,11 +111,14 @@ static uint8_t blend_opaque_normalized_channel(const uint8_t dest, const float s
 
 // Each displayed pixel against the stored one it comes from, for every transform an orientation names.
 // The mirrored four answered nothing, so a caller turning a photo upright left it mirrored or sideways.
-static void should_transform_surfaces_for_every_orientation()
+static void check_transforms_for_every_orientation(const core::texture_format format)
 {
 	core::surface stored;
-	assert_equal(true, stored.alloc(3, 2, core::texture_format::RGB) != nullptr, "stored fixture allocated");
-	const auto at = [](const int x, const int y) { return 0xff000000u | static_cast<uint32_t>(y * 16 + x); };
+	assert_equal(true, stored.alloc(3, 2, format) != nullptr, "stored fixture allocated");
+	const auto at = [](const int x, const int y)
+	{
+		return 0xff000000u | static_cast<uint32_t>(y * 16 + x);
+	};
 	for (auto y = 0; y < 2; ++y)
 		for (auto x = 0; x < 3; ++x) stored.set_pixel(x, y, at(x, y));
 
@@ -78,11 +142,12 @@ static void should_transform_surfaces_for_every_orientation()
 
 	for (const auto& e : expected)
 	{
-		const auto name = std::format("transform {}", static_cast<int>(e.transform));
+		const auto name = std::format("{} transform {}", core::to_string(format), static_cast<int>(e.transform));
 		const auto turned = stored.transform(e.transform);
 		assert_equal(true, turned != nullptr, name + " gives a surface");
 		if (!turned) continue;
 
+		assert_equal(true, turned->format() == format, name + " keeps the format");
 		assert_equal(e.extent.cx, turned->dimensions().cx, name + " width");
 		assert_equal(e.extent.cy, turned->dimensions().cy, name + " height");
 		const auto right = e.extent.cx - 1;
@@ -93,6 +158,13 @@ static void should_transform_surfaces_for_every_orientation()
 	}
 
 	assert_equal(true, stored.transform(core::simple_transform::none) == nullptr, "none asks for no copy");
+}
+
+// A wide surface moves eight bytes a pixel, which a turn that assumed four would tear.
+static void should_transform_surfaces_for_every_orientation()
+{
+	check_transforms_for_every_orientation(core::texture_format::RGB);
+	check_transforms_for_every_orientation(core::texture_format::RGBX16);
 }
 
 static void should_match_simd_software_blends()
@@ -135,38 +207,31 @@ static void should_match_simd_software_blends()
 				dest[3] = 255;
 			};
 
-			check([&](uint8_t* dest, size_t) { blend_solid_pixel(dest, sb / 255.0f, sg / 255.0f, sr / 255.0f, alpha); },
-			      [&](uint8_t* dest)
-			      {
-				      return blend_solid_opaque_sse2(dest, count, sb / 255.0f, sg / 255.0f,
-				                                     sr / 255.0f, alpha);
-			      }, "SIMD solid blend");
+			check([&](uint8_t* dest, size_t)
+			{ blend_solid_pixel(dest, sb / 255.0f, sg / 255.0f, sr / 255.0f, alpha); }, [&](uint8_t* dest) {
+				return blend_solid_opaque_sse2(dest, count, sb / 255.0f, sg / 255.0f, sr / 255.0f, alpha);
+			}, "SIMD solid blend");
 
-			check([&](uint8_t* dest, const size_t i)
-			      {
-				      blend_solid_pixel(dest, sb / 255.0f, sg / 255.0f,
-				                        sr / 255.0f, alpha * coverage[i] / 255.0f);
-			      },
-			      [&](uint8_t* dest)
-			      {
-				      return blend_glyph_opaque_sse2(dest, coverage.data(), count, sb / 255.0f,
-				                                     sg / 255.0f, sr / 255.0f, alpha);
-			      }, "SIMD glyph blend");
+			check([&](uint8_t* dest, const size_t i) {
+				blend_solid_pixel(dest, sb / 255.0f, sg / 255.0f, sr / 255.0f, alpha * coverage[i] / 255.0f);
+			}, [&](uint8_t* dest) {
+				return blend_glyph_opaque_sse2(dest, coverage.data(), count, sb / 255.0f, sg / 255.0f, sr / 255.0f,
+				                               alpha);
+			}, "SIMD glyph blend");
 
 			for (const auto has_alpha : {false, true})
 			{
 				check([&](uint8_t* dest, const size_t i)
-				      {
-					      const auto* src = source.data() + i * 4;
-					      const auto pixel_alpha = (has_alpha ? src[3] / 255.0f : 1.0f) * alpha;
-					      dest[0] = blend_opaque_channel(dest[0], src[0], pixel_alpha);
-					      dest[1] = blend_opaque_channel(dest[1], src[1], pixel_alpha);
-					      dest[2] = blend_opaque_channel(dest[2], src[2], pixel_alpha);
-					      dest[3] = 255;
-				      }, [&](uint8_t* dest)
-				      {
-					      return blend_bgra_opaque_sse2(dest, source.data(), count, has_alpha, alpha);
-				      }, "SIMD BGRA blend");
+				{
+					const auto* src = source.data() + i * 4;
+					const auto pixel_alpha = (has_alpha ? src[3] / 255.0f : 1.0f) * alpha;
+					dest[0] = blend_opaque_channel(dest[0], src[0], pixel_alpha);
+					dest[1] = blend_opaque_channel(dest[1], src[1], pixel_alpha);
+					dest[2] = blend_opaque_channel(dest[2], src[2], pixel_alpha);
+					dest[3] = 255;
+				}, [&](uint8_t* dest) {
+					return blend_bgra_opaque_sse2(dest, source.data(), count, has_alpha, alpha);
+				}, "SIMD BGRA blend");
 			}
 		}
 	}
@@ -237,8 +302,8 @@ static void should_bilinear_resize_packed_surfaces()
 
 			for (auto x = 0; x < 31; ++x)
 			{
-				flat = flat && row[x * 4 + 0] == 19 && row[x * 4 + 1] == 140 &&
-					row[x * 4 + 2] == 233 && row[x * 4 + 3] == 77;
+				flat = flat && row[x * 4 + 0] == 19 && row[x * 4 + 1] == 140 && row[x * 4 + 2] == 233 &&
+				       row[x * 4 + 3] == 77;
 			}
 		}
 
@@ -259,9 +324,7 @@ static void should_bilinear_resize_packed_surfaces()
 	{
 		core::surface nv12;
 		nv12.alloc(8, 8, core::texture_format::NV12);
-		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*)
-		{
-		});
+		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*) {});
 
 		core::surface_ptr dst;
 		assert_equal(false, core::bilinear_resize(nv12_view, dst, {16, 16}), "refuse a planar format");
@@ -381,17 +444,13 @@ static void should_area_downscale_packed_and_planar_surfaces()
 		// P010 samples are 16 bit, which the Q8 accumulators cannot hold.
 		core::surface p010;
 		p010.alloc(8, 8, core::texture_format::P010);
-		const auto p010_view = core::const_surface_ptr(&p010, [](const core::surface*)
-		{
-		});
+		const auto p010_view = core::const_surface_ptr(&p010, [](const core::surface*) {});
 		assert_equal(false, core::area_downscale(p010_view, dst, {4, 4}), "refuse a 16 bit planar format");
 
 		// NV12 chroma is one pair per 2x2 luma block, so an odd extent has no whole answer.
 		core::surface nv12;
 		nv12.alloc(8, 8, core::texture_format::NV12);
-		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*)
-		{
-		});
+		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*) {});
 		assert_equal(false, core::area_downscale(nv12_view, dst, {5, 4}), "refuse an odd nv12 extent");
 	}
 
@@ -422,9 +481,7 @@ static void should_area_downscale_packed_and_planar_surfaces()
 			}
 		}
 
-		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*)
-		{
-		});
+		const auto nv12_view = core::const_surface_ptr(&nv12, [](const core::surface*) {});
 
 		core::surface_ptr dst;
 		assert_equal(true, core::area_downscale(nv12_view, dst, {32, 16}), "reduce an nv12 surface");
@@ -514,13 +571,117 @@ static void should_area_downscale_packed_and_planar_surfaces()
 	}
 }
 
+// Sixteen bits a channel hold every byte exactly, so a picture widened and narrowed again comes back as it
+// was; narrowing rounds to the nearest level rather than truncating, which would darken by half a level.
+static void should_convert_surfaces_between_eight_and_sixteen_bits()
+{
+	const auto bytes = std::make_shared<core::surface>();
+	assert_equal(true, bytes->alloc(256, 1, core::texture_format::ARGB) != nullptr, "byte ramp allocated");
 
+	for (auto x = 0; x < 256; ++x)
+	{
+		auto* const p = bytes->pixels_line(0) + x * 4;
+		p[0] = static_cast<uint8_t>(x);
+		p[1] = static_cast<uint8_t>(255 - x);
+		p[2] = static_cast<uint8_t>(x * 7);
+		p[3] = static_cast<uint8_t>(x * 3);
+	}
+
+	const auto wide = core::to_16_bit(bytes);
+	assert_equal(true, wide != nullptr && wide->format() == core::texture_format::RGBA16, "widened with its alpha");
+	if (!wide) return;
+
+	const auto* const first = std::bit_cast<const uint16_t*>(wide->pixels_line(0)) + 2 * 4;
+	assert_equal(14u * 257u, static_cast<uint32_t>(first[0]), "red first, each byte times 257");
+	assert_equal(2u * 257u, static_cast<uint32_t>(first[2]), "blue third");
+
+	const auto back = core::to_8_bit(wide);
+	assert_equal(true, back != nullptr && back->format() == core::texture_format::ARGB, "narrowed with its alpha");
+	if (!back) return;
+	assert_equal(0, std::memcmp(bytes->pixels_line(0), back->pixels_line(0), 256 * 4), "the round trip is exact");
+
+	const auto opaque = std::make_shared<core::surface>();
+	assert_equal(true, opaque->alloc(4, 1, core::texture_format::RGBX16) != nullptr, "wide fixture allocated");
+	auto* const channels = std::bit_cast<uint16_t*>(opaque->pixels_line(0));
+	const uint16_t reds[] = {0, 128, 129, 65535};
+
+	for (auto x = 0; x < 4; ++x)
+	{
+		channels[x * 4 + 0] = reds[x];
+		channels[x * 4 + 1] = 0;
+		channels[x * 4 + 2] = 0;
+		channels[x * 4 + 3] = 0xffff;
+	}
+
+	const auto narrow = core::to_8_bit(opaque);
+	assert_equal(true, narrow != nullptr && narrow->format() == core::texture_format::RGB,
+	             "an opaque one stays opaque");
+	if (!narrow) return;
+
+	const auto* const out = narrow->pixels_line(0);
+	const uint8_t expected[] = {0, 0, 1, 255};
+	for (auto x = 0; x < 4; ++x)
+	{
+		assert_equal(static_cast<uint32_t>(expected[x]), static_cast<uint32_t>(out[x * 4 + 2]),
+		             "red rounds to the nearest level");
+	}
+
+	assert_equal(true, core::to_8_bit(narrow) == narrow, "a packed surface is already eight bits");
+	assert_equal(true, core::to_16_bit(wide) == wide, "and a wide one sixteen");
+}
+
+// A wide picture reduces and enlarges as a packed one does, at its own precision.
+static void should_resize_wide_surfaces()
+{
+	const auto source = std::make_shared<core::surface>();
+	assert_equal(true, source->alloc(4, 2, core::texture_format::RGBX16) != nullptr, "wide source allocated");
+
+	for (auto y = 0; y < 2; ++y)
+	{
+		auto* const row = std::bit_cast<uint16_t*>(source->pixels_line(y));
+		for (auto x = 0; x < 4; ++x)
+		{
+			row[x * 4 + 0] = static_cast<uint16_t>(1000 * (x + 1) + 3 * y);
+			row[x * 4 + 1] = static_cast<uint16_t>(60000 - 1000 * x);
+			row[x * 4 + 2] = 1;
+			row[x * 4 + 3] = 0xffff;
+		}
+	}
+
+	core::surface_ptr reduced;
+	assert_equal(true, core::area_downscale(source, reduced, {2, 1}), "a wide surface reduces");
+	if (!reduced) return;
+
+	assert_equal(true, reduced->format() == core::texture_format::RGBX16, "keeping its format");
+	const auto* const r = std::bit_cast<const uint16_t*>(reduced->pixels_line(0));
+	// The left pair averages 1000, 2000, 1003 and 2003; a byte-precision path could not answer 1502.
+	assert_equal(1502u, static_cast<uint32_t>(r[0]), "averaged at sixteen bits");
+	assert_equal(59500u, static_cast<uint32_t>(r[1]), "every channel");
+	assert_equal(0xffffu, static_cast<uint32_t>(r[3]), "and still opaque");
+
+	core::surface_ptr enlarged;
+	assert_equal(true, core::bilinear_resize(source, enlarged, {8, 2}), "a wide surface enlarges");
+	if (!enlarged) return;
+
+	assert_equal(true, enlarged->format() == core::texture_format::RGBX16, "keeping its format");
+	const auto* const e = std::bit_cast<const uint16_t*>(enlarged->pixels_line(0));
+	auto rising = true;
+	for (auto x = 1; x < 8; ++x) rising = rising && e[x * 4] >= e[(x - 1) * 4];
+	assert_equal(true, rising, "the ramp stays a ramp");
+	assert_equal(true, e[4] > 1000 && e[4] < 2000, "with values between its samples");
+}
 
 void register_render_surface_tests(test_registry& tests)
 {
 	tests.add("Should unpremultiply surface alpha"s, should_unpremultiply_surface_alpha);
-	tests.add("Should keep a surface block allocated again at its size"s, should_keep_a_surface_block_allocated_again_at_its_size);
+	tests.add("Should leave planar surfaces to planar readers"s, should_leave_planar_surfaces_to_planar_readers);
+	tests.add("Should draw only inside both surfaces"s, should_draw_only_inside_both_surfaces);
+	tests.add("Should keep a surface block allocated again at its size"s,
+	          should_keep_a_surface_block_allocated_again_at_its_size);
 	tests.add("Should transform surfaces for every orientation"s, should_transform_surfaces_for_every_orientation);
+	tests.add("Should convert surfaces between eight and sixteen bits"s,
+	          should_convert_surfaces_between_eight_and_sixteen_bits);
+	tests.add("Should resize wide surfaces"s, should_resize_wide_surfaces);
 	tests.add("Should match SIMD software blends"s, should_match_simd_software_blends);
 	tests.add("Should area downscale packed and planar surfaces"s, should_area_downscale_packed_and_planar_surfaces);
 	tests.add("Should bilinear resize packed surfaces"s, should_bilinear_resize_packed_surfaces);

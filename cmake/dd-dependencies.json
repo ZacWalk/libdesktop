@@ -2,8 +2,8 @@
   "schema": 1,
   "dependencies": {
     "rapidjson": {
-      "url": "https://github.com/Tencent/rapidjson/archive/24b5e7a8b27f42fa16b96fc70aade9106cf7102f.tar.gz",
-      "sha256": "2d2601a82d2d3b7e143a3c8d43ef616671391034bc46891a9816b79cf2d3e7a8",
+      "url": "https://github.com/Tencent/rapidjson/archive/297637bc0a0f00dc504dbc1a47ebdaa577f8ae19.tar.gz",
+      "sha256": "104f57d1512da80740a3eca7d7b2acee7f749d79dbf15328ad1869c5c962011b",
       "method": "application"
     },
     "sdl3": {

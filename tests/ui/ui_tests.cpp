@@ -15,6 +15,7 @@ void register_ui_view_tests(test_registry& tests);
 void register_ui_list_view_tests(test_registry& tests);
 void register_ui_doc_view_tests(test_registry& tests);
 void register_ui_markdown_view_tests(test_registry& tests);
+void register_ui_shell_tests(test_registry& tests);
 #ifdef _WIN32
 void register_ui_render_win_tests(test_registry& tests);
 #endif
@@ -35,6 +36,7 @@ static void register_tests(test_registry& tests)
 	register_ui_list_view_tests(tests);
 	register_ui_doc_view_tests(tests);
 	register_ui_markdown_view_tests(tests);
+	register_ui_shell_tests(tests);
 	register_text_tests(tests);
 }
 

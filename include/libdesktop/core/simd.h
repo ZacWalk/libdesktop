@@ -1,10 +1,9 @@
 // This file is part of libdesktop, a C++20 platform layer for desktop applications
 // Copyright 2026  Zac Walker
-// 
-// This program is free software; you can redistribute it and / or modify it
-// under the terms of the LGPL License either version 2.1 or later.
-// License details are available at https://www.gnu.org/licenses/lgpl-2.1.html
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: SIMD intrinsics wrappers. Provides SSE/AVX/NEON optimized
 // implementations for image processing and CRC calculations.
@@ -15,8 +14,8 @@
 
 // Include proper SIMD intrinsics headers
 #if defined(COMPILE_SIMD_INTRINSIC)
-#include <emmintrin.h>  // For SSE2 intrinsics
-#include <nmmintrin.h>  // For CRC32 intrinsics
+#include <emmintrin.h> // For SSE2 intrinsics
+#include <nmmintrin.h> // For CRC32 intrinsics
 #endif
 
 // crc32 is SSE4.2, which is above the x86-64 baseline, and the caller reaches it only after a
@@ -32,9 +31,9 @@
 
 #if defined(COMPILE_ARM_INTRINSIC)
 #if defined(_MSC_VER)
-#include <intrin.h>     // For ARM64 CRC intrinsics on MSVC
+#include <intrin.h> // For ARM64 CRC intrinsics on MSVC
 #else
-#include <arm_acle.h>   // For ARM CRC intrinsics
+#include <arm_acle.h> // For ARM CRC intrinsics
 #endif
 #endif
 
@@ -46,7 +45,6 @@
 static constexpr uint32_t CRCPOLY = 0x82f63b78;
 static constexpr uint32_t CRCINIT = 0xFFFFFFFF;
 
-
 inline std::array<std::array<uint32_t, 256>, 4> create_crc32_precalc()
 {
 	std::array<std::array<uint32_t, 256>, 4> result;
@@ -55,8 +53,7 @@ inline std::array<std::array<uint32_t, 256>, 4> create_crc32_precalc()
 	{
 		uint32_t x = i;
 
-		for (uint32_t j = 0; j < 8; j++)
-			x = (x >> 1) ^ (CRCPOLY & -static_cast<int32_t>(x & 1));
+		for (uint32_t j = 0; j < 8; j++) x = (x >> 1) ^ (CRCPOLY & -static_cast<int32_t>(x & 1));
 
 		result[0][i] = x;
 	}
@@ -92,11 +89,8 @@ inline uint32_t calc_crc32c_c(uint32_t crc, const void* data, const size_t len)
 	while (static_cast<size_t>(end - p) >= sizeof(uint32_t))
 	{
 		crc ^= *std::bit_cast<const uint32_t*>(p);
-		crc =
-			crc_precalc[3][crc & 0xFF] ^
-			crc_precalc[2][crc >> 8 & 0xFF] ^
-			crc_precalc[1][crc >> 16 & 0xFF] ^
-			crc_precalc[0][crc >> 24 & 0xFF];
+		crc = crc_precalc[3][crc & 0xFF] ^ crc_precalc[2][crc >> 8 & 0xFF] ^ crc_precalc[1][crc >> 16 & 0xFF] ^
+		      crc_precalc[0][crc >> 24 & 0xFF];
 
 		p += sizeof(uint32_t);
 	}
@@ -228,8 +222,8 @@ inline __m128 blend_bgra_sse2(const __m128 dest, const __m128 src, const __m128 
 	return _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(_mm_castps_si128(blended), rgb_mask), opaque_alpha));
 }
 
-inline size_t blend_solid_opaque_sse2(uint8_t* dest, const size_t count, const float b, const float g,
-                                      const float r, const float alpha) noexcept
+inline size_t blend_solid_opaque_sse2(uint8_t* dest, const size_t count, const float b, const float g, const float r,
+                                      const float alpha) noexcept
 {
 	const auto vector_count = count & ~size_t{3};
 	const auto src = _mm_set_ps(255.0f, r * 255.0f, g * 255.0f, b * 255.0f);
@@ -239,16 +233,16 @@ inline size_t blend_solid_opaque_sse2(uint8_t* dest, const size_t count, const f
 	{
 		__m128 d0, d1, d2, d3;
 		unpack_bgra_sse2(_mm_loadu_si128(std::bit_cast<const __m128i*>(dest + i * 4)), d0, d1, d2, d3);
-		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4), pack_bgra_sse2(
-			                 blend_bgra_sse2(d0, src, a), blend_bgra_sse2(d1, src, a),
-			                 blend_bgra_sse2(d2, src, a), blend_bgra_sse2(d3, src, a)));
+		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4),
+		                 pack_bgra_sse2(blend_bgra_sse2(d0, src, a), blend_bgra_sse2(d1, src, a),
+		                                blend_bgra_sse2(d2, src, a), blend_bgra_sse2(d3, src, a)));
 	}
 
 	return vector_count;
 }
 
-inline size_t blend_glyph_opaque_sse2(uint8_t* dest, const uint8_t* coverage, const size_t count,
-                                      const float b, const float g, const float r, const float alpha) noexcept
+inline size_t blend_glyph_opaque_sse2(uint8_t* dest, const uint8_t* coverage, const size_t count, const float b,
+                                      const float g, const float r, const float alpha) noexcept
 {
 	const auto vector_count = count & ~size_t{3};
 	const auto src = _mm_set_ps(255.0f, r * 255.0f, g * 255.0f, b * 255.0f);
@@ -262,16 +256,16 @@ inline size_t blend_glyph_opaque_sse2(uint8_t* dest, const uint8_t* coverage, co
 		const auto a1 = _mm_set1_ps(alpha * coverage[i + 1] * byte_scale);
 		const auto a2 = _mm_set1_ps(alpha * coverage[i + 2] * byte_scale);
 		const auto a3 = _mm_set1_ps(alpha * coverage[i + 3] * byte_scale);
-		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4), pack_bgra_sse2(
-			                 blend_bgra_sse2(d0, src, a0), blend_bgra_sse2(d1, src, a1),
-			                 blend_bgra_sse2(d2, src, a2), blend_bgra_sse2(d3, src, a3)));
+		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4),
+		                 pack_bgra_sse2(blend_bgra_sse2(d0, src, a0), blend_bgra_sse2(d1, src, a1),
+		                                blend_bgra_sse2(d2, src, a2), blend_bgra_sse2(d3, src, a3)));
 	}
 
 	return vector_count;
 }
 
-inline size_t blend_bgra_opaque_sse2(uint8_t* dest, const uint8_t* src_bytes, const size_t count,
-                                     const bool has_alpha, const float global_alpha) noexcept
+inline size_t blend_bgra_opaque_sse2(uint8_t* dest, const uint8_t* src_bytes, const size_t count, const bool has_alpha,
+                                     const float global_alpha) noexcept
 {
 	const auto vector_count = count & ~size_t{3};
 	const auto rgb_mask = _mm_set_epi32(0, -1, -1, -1);
@@ -292,9 +286,9 @@ inline size_t blend_bgra_opaque_sse2(uint8_t* dest, const uint8_t* src_bytes, co
 		s1 = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(_mm_castps_si128(s1), rgb_mask), opaque_alpha));
 		s2 = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(_mm_castps_si128(s2), rgb_mask), opaque_alpha));
 		s3 = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(_mm_castps_si128(s3), rgb_mask), opaque_alpha));
-		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4), pack_bgra_sse2(
-			                 blend_bgra_sse2(d0, s0, a0), blend_bgra_sse2(d1, s1, a1),
-			                 blend_bgra_sse2(d2, s2, a2), blend_bgra_sse2(d3, s3, a3)));
+		_mm_storeu_si128(std::bit_cast<__m128i*>(dest + i * 4),
+		                 pack_bgra_sse2(blend_bgra_sse2(d0, s0, a0), blend_bgra_sse2(d1, s1, a1),
+		                                blend_bgra_sse2(d2, s2, a2), blend_bgra_sse2(d3, s3, a3)));
 	}
 
 	return vector_count;
