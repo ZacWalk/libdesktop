@@ -17,6 +17,7 @@
 #include "libdesktop/ui/elements.h"
 
 #include <cctype>
+#include <utility>
 
 namespace ui
 {
@@ -879,6 +880,8 @@ namespace ui
 	class input_manager;
 	using input_manager_ptr = std::shared_ptr<input_manager>;
 
+	template <class Derived, class Base = control> class control_with_features;
+
 	// A control the module draws: an element of the tree, measured and laid out by flex like any other and
 	// drawn by its own render where it sits in the tree, then given the pointer and the keyboard by the
 	// input_manager of the frame whose host's tree it is found in. Made apart from any frame, it holds what
@@ -952,15 +955,9 @@ namespace ui
 		virtual core::sizei measure_content(render::measure_context& mc, int width_limit) const = 0;
 		virtual void paint(render::draw_context& dc, bool focused) const = 0;
 		virtual bool can_focus() const { return enabled; }
-		virtual bool is_checked() const { return false; }
-		virtual void check_from_group(bool /*checked*/) {}
-		virtual void notify_changed() {}
 
 		virtual void on_focus(bool /*focused*/, bool /*select_all*/) {}
 		virtual void on_keyboard(bool /*has_keyboard*/) {}
-		virtual bool on_system_key(char32_t /*key*/, platform::key_state /*keys*/, bool /*down*/) { return false; }
-		virtual bool in_system_mode() const { return false; }
-		virtual void cancel_system_mode() {}
 		virtual bool on_key(char32_t /*key*/, platform::key_state /*keys*/) { return false; }
 		// A key a window offers its application before the typing control that has the focus - Escape, Tab,
 		// Return, Up and Down - which the control takes first now: an edit's open list of suggestions is
@@ -980,16 +977,10 @@ namespace ui
 		virtual platform::cursor cursor_at(core::pointi /*loc*/) const { return platform::cursor::normal; }
 		virtual core::recti caret_bounds() const { return {}; }
 		virtual void blink() {}
-		virtual void tick() {}
 		virtual void scale_changed() {}
 		// Laid out at new bounds, measured by the context the layout was given: a control is laid out
 		// before any frame has found it, so it cannot ask its frame.
 		virtual void on_placed(render::measure_context& /*mc*/) {}
-		virtual void click() {}
-
-		virtual int caption_button_at(core::pointi /*loc*/) const { return 0; }
-		virtual bool has_caption_button(int /*id*/) const { return false; }
-		virtual void invoke_caption(int /*id*/) {}
 
 		// The module's plumbing.
 		input_manager_ptr input() const { return _input.lock(); }
@@ -1018,9 +1009,86 @@ namespace ui
 		bool take_focus_request();
 
 	private:
+		friend class input_manager;
+		template <class, class> friend class control_with_features;
+
+		struct system_key_handlers
+		{
+			bool (*key)(control&, char32_t, platform::key_state, bool);
+			bool (*active)(const control&);
+			void (*cancel)(control&);
+
+			explicit operator bool() const noexcept { return key != nullptr; }
+		};
+
+		struct caption_handlers
+		{
+			int (*at)(const control&, core::pointi);
+			bool (*contains)(const control&, int);
+			void (*invoke)(control&, int);
+
+			explicit operator bool() const noexcept { return at != nullptr; }
+		};
+
+		struct features
+		{
+			system_key_handlers system_keys;
+			caption_handlers caption;
+			void (*tick)(control&);
+		};
+
+		static constexpr features no_features{};
+		const features* _features = &no_features;
 		std::weak_ptr<input_manager> _input;
 		mutable core::pointi _origin;
 		bool _focus_requested = false;
+	};
+
+	// Opt in to ticks or a complete group of system-key or caption operations. The bindings are shared by
+	// controls of the same type; the input manager still finds the controls in the element tree.
+	template <class Derived, class Base>
+	class control_with_features : public Base
+	{
+		friend Derived;
+
+		template <class... Args>
+		explicit control_with_features(Args&&... args) : Base(std::forward<Args>(args)...)
+		{
+			this->_features = bindings();
+		}
+
+		static const control::features* bindings() noexcept
+		{
+			static constexpr auto result = bind_features();
+			return &result;
+		}
+
+		static consteval control::features bind_features()
+		{
+			control::features result{};
+			if constexpr (requires { &Derived::on_system_key; } || requires { &Derived::in_system_mode; } ||
+			              requires { &Derived::cancel_system_mode; })
+			{
+				result.system_keys = {
+					[](control& c, char32_t key, platform::key_state keys, bool down)
+					{ return static_cast<Derived&>(c).on_system_key(key, keys, down); },
+					[](const control& c) { return static_cast<const Derived&>(c).in_system_mode(); },
+					[](control& c) { static_cast<Derived&>(c).cancel_system_mode(); },
+				};
+			}
+			if constexpr (requires { &Derived::caption_button_at; } || requires { &Derived::has_caption_button; } ||
+			              requires { &Derived::invoke_caption; })
+			{
+				result.caption = {
+					[](const control& c, core::pointi loc) { return static_cast<const Derived&>(c).caption_button_at(loc); },
+					[](const control& c, int id) { return static_cast<const Derived&>(c).has_caption_button(id); },
+					[](control& c, int id) { static_cast<Derived&>(c).invoke_caption(id); },
+				};
+			}
+			if constexpr (requires { &Derived::on_control_tick; })
+				result.tick = [](control& c) { static_cast<Derived&>(c).on_control_tick(); };
+			return result;
+		}
 	};
 
 	// A push, check or radio button, or a command link.
@@ -1030,11 +1098,19 @@ namespace ui
 		// As given, with its mnemonic marker.
 		std::string window_text() const;
 		void window_text(std::string_view text);
+		bool is_checked() const;
 		void set_checked(bool checked);
+		void click();
 
-	protected:
+	private:
+		friend class drawn_button;
+		friend class input_manager;
 		button() = default;
+		void notify_changed();
 	};
+
+	// A radio group is one Tab stop, entered at its checked button.
+	bool is_tab_stop(const control& c, const std::vector<control_ptr>& controls);
 
 	// Text is UTF-8 with '\n' line breaks, and offsets count its bytes. window_text(text) from code puts the
 	// caret at the end and, being the owner's own value, is not reported to changed; a multi-line edit without
@@ -1223,7 +1299,7 @@ namespace ui
 		void invalidate(core::recti bounds) const;
 		void focus(control* c, bool select_all);
 		bool has_focus(const control& c) const;
-		void pressed_radio(const control& c);
+		void pressed_radio(const button& pressed);
 		void track_menu(core::recti screen_bounds, const std::vector<command_ptr>& commands);
 		void caret_moved(const control& c);
 

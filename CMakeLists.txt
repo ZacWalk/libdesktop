@@ -65,7 +65,7 @@ if(PROJECT_IS_TOP_LEVEL)
         target_sources(libdesktop_platform_tests PRIVATE
             tests/platform/win/system_tests.cpp tests/platform/win/render_tests.cpp
             tests/platform/win/os_tests.cpp tests/platform/loopback_http.cpp tests/platform/loopback_http.h
-            tests/platform/win/instance_tests.cpp
+            tests/platform/win/instance_tests.cpp tests/platform/win/prompt_tests.cpp
             tests/tests.manifest)
         target_include_directories(libdesktop_platform_tests PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win")
@@ -164,6 +164,8 @@ if(PROJECT_IS_TOP_LEVEL)
         set_tests_properties(libdesktop-platform-smoke PROPERTIES LABELS "libdesktop-platform;headless")
         add_test(NAME libdesktop-platform-ui-pump COMMAND libdesktop_platform_smoke --check-ui-pump)
         set_tests_properties(libdesktop-platform-ui-pump PROPERTIES LABELS "libdesktop-platform;headless" TIMEOUT 30)
+        add_test(NAME libdesktop-platform-busy-input COMMAND libdesktop_platform_smoke --check-busy-input)
+        set_tests_properties(libdesktop-platform-busy-input PROPERTIES LABELS "libdesktop-platform;headless" TIMEOUT 30)
 
         # Makes real frames over an offscreen application window, none of them shown.
         libdesktop_add_app(libdesktop_ui_smoke

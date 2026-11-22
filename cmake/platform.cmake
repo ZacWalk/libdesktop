@@ -66,7 +66,9 @@ if(WIN32)
         src/platform/win/text_encoding.cpp
         src/platform/win/shell.cpp
         src/platform/win/dialogs.cpp
+        src/platform/win/system_prompts.cpp
         src/platform/win/file_io.cpp
+        src/platform/win/portable_devices.cpp
     )
 
     # Cursor files are application-independent platform assets. Convert them while configuring so

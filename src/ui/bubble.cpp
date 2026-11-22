@@ -30,6 +30,7 @@ namespace
 		ui::frame_ptr _popup;
 		ui::element_ptr _content;
 		core::recti _bounds;
+		core::recti _content_bounds;
 		core::pointi _focus;
 
 	public:
@@ -54,14 +55,29 @@ namespace
 			auto* const mc = host->bubble_measure(_popup);
 			if (!mc) return;
 
-			const auto extent = content->measure(*mc, core::round(preferred_size * _popup->scale_factor()));
-			const auto placement = ui::place_bubble(extent, anchor, x_focus, horizontal,
-			                                        host->bubble_work_area(anchor));
+			const auto work = host->bubble_work_area(anchor);
+			const core::sizei limit{work.width() - 2 * horz_padding, work.height() - 2 * vert_padding};
+			if (limit.cx <= 0 || limit.cy <= 0)
+			{
+				hide();
+				return;
+			}
+			const auto width = std::clamp(core::round(preferred_size * _popup->scale_factor()), 1, limit.cx);
+			auto extent = content->measure(*mc, width);
+			if (extent.cy > limit.cy && width < limit.cx)
+			{
+				const auto wider = content->measure(*mc, limit.cx);
+				if (wider.cy < extent.cy) extent = wider;
+			}
+			extent.cx = std::clamp(extent.cx, 0, limit.cx);
+			extent.cy = std::clamp(extent.cy, 0, limit.cy);
+			const auto placement = ui::place_bubble(extent, anchor, x_focus, horizontal, work);
 			_bounds = placement.bounds;
 			_focus = placement.focus;
 			_content = content;
 
-			_content->layout(*mc, core::center_rect(extent, _bounds.extent()));
+			_content_bounds = core::center_rect(extent, _bounds.extent());
+			_content->layout(*mc, _content_bounds);
 
 			_popup->invalidate();
 			_popup->window_bounds(_bounds, true);
@@ -84,7 +100,11 @@ namespace
 			render::draw_surface(dc, background(core::color(dc.colors.background, 1.0f)),
 			                     {0, 0, _bounds.width(), _bounds.height()}, 1.0f, render::texture_sampler::point);
 
-			if (_content) _content->render(dc, {});
+			if (_content)
+			{
+				render::scoped_clip clip(dc, _content_bounds);
+				_content->render(dc, {});
+			}
 		}
 
 		// The shadow, the body and the arrow pointing at the focus, rasterised on the CPU as an application draws a
@@ -111,22 +131,26 @@ namespace
 
 			if (_focus.y <= _bounds.top)
 			{
-				const auto center = std::clamp(static_cast<float>(_focus.x - _bounds.left), l + 24.0f, r - 24.0f);
+				const auto inset = std::min(24.0f, (r - l) / 2);
+				const auto center = std::clamp(static_cast<float>(_focus.x - _bounds.left), l + inset, r - inset);
 				pointer = {{{center - p, t}, {center, t - p}, {center + p, t}}};
 			}
 			else if (_focus.x >= _bounds.right)
 			{
-				const auto center = std::clamp(static_cast<float>(_focus.y - _bounds.top), t + 24.0f, b - 24.0f);
+				const auto inset = std::min(24.0f, (b - t) / 2);
+				const auto center = std::clamp(static_cast<float>(_focus.y - _bounds.top), t + inset, b - inset);
 				pointer = {{{r, center - p}, {r + p, center}, {r, center + p}}};
 			}
 			else if (_focus.y >= _bounds.bottom)
 			{
-				const auto center = std::clamp(static_cast<float>(_focus.x - _bounds.left), l + 24.0f, r - 24.0f);
+				const auto inset = std::min(24.0f, (r - l) / 2);
+				const auto center = std::clamp(static_cast<float>(_focus.x - _bounds.left), l + inset, r - inset);
 				pointer = {{{center + p, b}, {center, b + p}, {center - p, b}}};
 			}
 			else
 			{
-				const auto center = std::clamp(static_cast<float>(_focus.y - _bounds.top), t + 24.0f, b - 24.0f);
+				const auto inset = std::min(24.0f, (b - t) / 2);
+				const auto center = std::clamp(static_cast<float>(_focus.y - _bounds.top), t + inset, b - inset);
 				pointer = {{{l, center + p}, {l - p, center}, {l, center - p}}};
 			}
 
@@ -139,19 +163,27 @@ namespace
 ui::bubble_placement ui::place_bubble(const core::sizei content_extent, const core::recti anchor, const int x_focus,
                                       const bool horizontal, const core::recti work)
 {
-	const auto cx = std::max(80, content_extent.cx) + horz_padding * 2;
-	const auto cy = std::max(36, content_extent.cy) + vert_padding * 2;
+	if (work.is_empty()) return {};
+	const auto cx = std::min(work.width(), std::max(80, content_extent.cx) + horz_padding * 2);
+	const auto cy = std::min(work.height(), std::max(36, content_extent.cy) + vert_padding * 2);
 
 	const auto x_centered = (x_focus == -1 ? (anchor.left + anchor.right) / 2 : anchor.left + x_focus) - cx / 2;
 	const auto y_centered = (anchor.top + anchor.bottom - cy) / 2;
 
-	auto x = horizontal ? anchor.left - cx : x_centered;
-	auto y = horizontal ? y_centered : anchor.top - cy;
+	const auto left = anchor.left - work.left;
+	const auto right = work.right - anchor.right;
+	const auto above = anchor.top - work.top;
+	const auto below = work.bottom - anchor.bottom;
+	// Try the other axis before overlapping the very thing whose hover opened the bubble.
+	const auto beside = horizontal ? std::max(left, right) >= cx || std::max(above, below) < cy
+	                               : std::max(above, below) < cy && std::max(left, right) >= cx;
+	auto x = beside ? anchor.left - cx : x_centered;
+	auto y = beside ? y_centered : anchor.top - cy;
 	auto focus = core::recti(x, y, x + cx, y + cy).center();
 
-	if (horizontal)
+	if (beside)
 	{
-		if (anchor.left - cx < work.left)
+		if (left < cx && right > left)
 		{
 			x = anchor.right;
 			focus.x = anchor.right - 5;
@@ -163,7 +195,7 @@ ui::bubble_placement ui::place_bubble(const core::sizei content_extent, const co
 	}
 	else
 	{
-		if (anchor.top - cy < work.top)
+		if (above < cy && below > above)
 		{
 			y = anchor.bottom;
 			focus.y = anchor.bottom - 5;
@@ -174,8 +206,7 @@ ui::bubble_placement ui::place_bubble(const core::sizei content_extent, const co
 		}
 	}
 
-	// The shadow may hang off the work area, but not the bubble.
-	return {core::recti(x, y, x + cx, y + cy).clamp(work.inflate(shadow_padding)), focus};
+	return {core::recti(x, y, x + cx, y + cy).clamp(work), focus};
 }
 
 ui::bubble_window_ptr ui::create_drawn_bubble(const std::shared_ptr<bubble_host>& host)

@@ -281,3 +281,20 @@ bool platform::prompt_for_save_path(platform::window*, core::file_path&, const s
 {
 	return false;
 }
+
+// The message boxes above are SDL's, shown by the application itself, and the system puts up no prompt of its own over
+// the application's window, so there is none to read or answer.
+bool platform::system_prompt_shown(uintptr_t)
+{
+	return false;
+}
+
+std::vector<platform::system_prompt> platform::system_prompts()
+{
+	return {};
+}
+
+bool platform::answer_system_prompt(uintptr_t, std::string_view)
+{
+	return false;
+}

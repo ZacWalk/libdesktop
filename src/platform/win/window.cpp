@@ -672,9 +672,15 @@ namespace
 		}
 		if (message == WM_NCLBUTTONUP && (_caption_tracked || wparam == HTMAXBUTTON))
 		{
-			caption_point(lparam, loc);
+			const auto over = caption_point(lparam, loc);
 			if (auto e = events()) e->caption_button(platform::caption_button_action::release, loc);
-			_caption_tracked = false;
+			// Released over the button, it stays lit, so it is still tracked for the leave that puts the light out.
+			_caption_tracked = over;
+			if (over && !_nonclient_tracking)
+			{
+				track_nonclient_leave(_hwnd);
+				_nonclient_tracking = true;
+			}
 			handled = true;
 			return 0;
 		}

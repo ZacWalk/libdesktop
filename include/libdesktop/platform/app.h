@@ -110,6 +110,25 @@ namespace platform
 	// Open with handler - which would open on the user's desktop, beyond the session: the application's to allow, as
 	// its client grants. Until it does, each is skipped and logged. Outside an agent session, each always opens.
 	void allow_agent_to_open(bool allowed);
+
+	// A window the system puts up in front of the application's while a call into it waits - a confirmation, a
+	// question, or an error the system reports itself, as the shell's file operations do. An agent session lists one
+	// with the application's own dialogs and answers it, since nobody else is there to.
+	struct system_prompt
+	{
+		uintptr_t id = 0;
+		std::string title;
+		std::vector<std::string> texts;
+		std::vector<std::string> buttons;
+	};
+	// Whether one shows - or, given its id, whether that one still does - without reading it: cheap enough to ask every
+	// frame.
+	bool system_prompt_shown(uintptr_t id = 0);
+	// Those showing, each read as a screen reader reads it.
+	std::vector<system_prompt> system_prompts();
+	// Presses the prompt's button with that text, or, given none, cancels it as Escape does. False where the prompt has
+	// gone or has no such button.
+	bool answer_system_prompt(uintptr_t id, std::string_view button);
 	// Ends run's loop once the current event has been handled; run then returns exit_code.
 	void quit(int exit_code = 0);
 	// Handles every pending event, UI tasks included, without blocking; false once the application

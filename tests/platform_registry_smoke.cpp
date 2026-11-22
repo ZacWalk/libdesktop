@@ -6,13 +6,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: A tiny executable smoke-check for libdesktop_add_app(), embedded resources, the UI task
-// queue of an application platform::run started, the folders its event loop watches, and the agent session it
-// serves on stdin and stdout, checked over real pipes by a copy of itself - which opens no other program until its
-// application allows it.
+// queue of an application platform::run started, its idle work while input arrives without pause, the folders
+// its event loop watches, and the agent session it serves on stdin and stdout, checked over real pipes by a copy
+// of itself - which opens no other program until its application allows it.
 
 #include "libdesktop/platform.h"
 #include "libdesktop/core/mcp.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -45,6 +46,59 @@ namespace
 		}
 
 		bool init(std::string_view) override { return false; }
+		void crash(core::file_path) override {}
+		void save_recovery_state() override {}
+	};
+
+	// Input that keeps arriving - here a UI task queueing itself again each time it runs, as a drag keeps posting
+	// moves - must not hold the event loop on messages: the application's idle work, which runs what it queued for
+	// the UI thread, still runs while the gesture lasts rather than once it ends.
+	class busy_input_check final : public platform::app
+	{
+		std::atomic_bool _flooding = true;
+		std::atomic_bool _timed_out = false;
+		int _idle_during_flood = 0;
+		std::thread _watchdog;
+
+		void flood()
+		{
+			if (_flooding) platform::run_ui([this] { flood(); });
+		}
+
+		void finish(const bool passed)
+		{
+			_flooding = false;
+			platform::write_stdout(passed ? "Busy input: 1 check, 0 failed\n" : "Busy input: 1 check, 1 failed\n");
+			platform::quit(passed ? 0 : 1);
+		}
+
+	public:
+		~busy_input_check() override
+		{
+			_flooding = false;
+			if (_watchdog.joinable()) _watchdog.join();
+		}
+
+		bool init(std::string_view) override
+		{
+			flood();
+
+			// A loop held on messages never comes back to say so: after five seconds the flood is stopped from
+			// outside, and the idle work that then runs reports the failure.
+			_watchdog = std::thread([this]
+			{
+				for (auto i = 0; i < 100 && _flooding; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+				if (_flooding.exchange(false)) _timed_out = true;
+			});
+			return true;
+		}
+
+		void idle() override
+		{
+			if (_timed_out.exchange(false)) finish(false);
+			else if (_flooding && ++_idle_during_flood >= 3) finish(true);
+		}
+
 		void crash(core::file_path) override {}
 		void save_recovery_state() override {}
 	};
@@ -366,6 +420,12 @@ int main(const int argc, char** argv)
 	{
 		core::set_app_name("libdesktop-platform-smoke");
 		return platform::run(std::make_shared<ui_pump_check>(), argc, argv);
+	}
+
+	if (argc == 2 && std::strcmp(argv[1], "--check-busy-input") == 0)
+	{
+		core::set_app_name("libdesktop-platform-smoke");
+		return platform::run(std::make_shared<busy_input_check>(), argc, argv);
 	}
 
 	if (argc == 2 && std::strcmp(argv[1], "--check-folder-watch") == 0)

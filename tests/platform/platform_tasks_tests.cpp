@@ -228,6 +228,31 @@ namespace
 		assert_equal(true, platform::has_shell_metacharacter("a\nb"), "shell newline");
 	}
 
+#ifdef __linux__
+	void should_cancel_reads_with_inherited_pipes()
+	{
+		platform::process_options options;
+		options.exe = "/bin/sh";
+		options.args = {"-c", "sleep 4 & printf R"};
+		options.kill_descendants_on_close = false;
+		const auto child = platform::process_spawn(options);
+		assert_equal(true, child != nullptr, "spawn shell with inherited pipes");
+		if (!child) return;
+		char ready{};
+		assert_equal(size_t{1}, platform::process_read(child, &ready, 1), "descendant has inherited the pipes");
+		auto read = std::async(std::launch::async, [&]
+		{
+			char byte{};
+			return platform::process_read_err(child, &byte, 1);
+		});
+		assert_equal(true, read.wait_for(50ms) == std::future_status::timeout, "empty pipe is still open");
+		const auto start = std::chrono::steady_clock::now();
+		platform::process_terminate(child);
+		assert_equal(size_t{0}, read.get(), "cancelled read returns EOF");
+		assert_equal(true, std::chrono::steady_clock::now() - start < 2s, "termination does not wait for descendant EOF");
+	}
+#endif
+
 	void should_complete_key_contract()
 	{
 		assert_equal(true, platform::keys::F12 != 0, "F12 is defined");
@@ -248,6 +273,9 @@ namespace
 
 void register_platform_tasks_tests(test_registry& tests)
 {
+#ifdef __linux__
+	tests.add("Should cancel reads with inherited pipes"s, should_cancel_reads_with_inherited_pipes);
+#endif
 	tests.add("Should run serial work FIFO"s, should_run_serial_work_fifo);
 	tests.add("Should stop serial work from its worker"s, should_stop_serial_work_from_its_worker);
 	tests.add("Should serialize pool jobs without blocking the pool"s,

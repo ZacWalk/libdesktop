@@ -3,8 +3,11 @@
 #include "libdesktop/render.h"
 #include "libdesktop/render/software.h"
 #include "libdesktop/ui.h"
+#include "libdesktop/ui/elements.h"
 #include "libdesktop/ui/test_support.h"
 #include "test.h"
+
+#include <set>
 
 using namespace std::literals;
 
@@ -135,9 +138,54 @@ namespace
 			             std::format("{} bubble's shadow is gone by its corners", s.name));
 		}
 	}
+
+	// Every list, grid and strip draws its entries' states alike: a selection is full while its pane has the
+	// keyboard and muted while it has not, and never the colour of a hover; the keyboard's ring goes round what it is
+	// on, or inside it where asked; and a row's tone is the palette's own colour, normal leaving text as it was.
+	void should_draw_entry_states_alike()
+	{
+		ui::style::install({});
+
+		const auto active = ui::selection_fill(true);
+		const auto muted = ui::selection_fill(false);
+		assert_equal(true, active != muted, "a selection is muted while its pane has not the keyboard");
+		assert_equal(true, active != ui::selection_fill(true, true), "and lightened under the pointer");
+		assert_equal(true, muted != ui::hover_fill() && active != ui::hover_fill(), "and never reads as a hover");
+		assert_equal(true, ui::marquee_fill(1.0f).a == 0.5f, "the marquee band is half see-through");
+
+		assert_equal(0u, ui::style::tone_text(ui::style::tone::normal), "a normal row keeps its text colour");
+		const std::set<core::color32> tones{ui::style::tone_text(ui::style::tone::muted),
+		                                    ui::style::tone_text(ui::style::tone::accent),
+		                                    ui::style::tone_text(ui::style::tone::caution),
+		                                    ui::style::tone_text(ui::style::tone::succeeded),
+		                                    ui::style::tone_text(ui::style::tone::failed)};
+		assert_equal(5u, static_cast<unsigned>(tones.size()), "and every other tone reads apart from the rest");
+
+		const auto surface = std::make_shared<core::surface>();
+		const auto context = render::create_surface_context(surface);
+		assert_equal(true, context != nullptr, "a context to draw the ring in");
+		if (!context) return;
+
+		context->begin_draw({40, 40}, render::default_font_size, {});
+		const core::recti part{10, 10, 30, 30};
+		ui::draw_keyboard_ring(*context, part);
+		ui::draw_keyboard_ring(*context, part, true);
+		assert_equal(false, context->render().failed, "the rings render");
+		if (surface->dimensions() != core::sizei{40, 40}) return;
+
+		assert_equal(0xffu, surface->get_pixel(9, 20) >> 24, "the ring goes round the part");
+		assert_equal(0xffu, surface->get_pixel(10, 20) >> 24, "or inside it");
+		assert_equal(0u, surface->get_pixel(20, 20) >> 24, "and leaves the part itself alone");
+
+		ui::test::fake_draw_context empty({0, 0, 200, 100});
+		ui::draw_empty_message(empty, {0, 0, 200, 100}, "Nothing here");
+		assert_equal(true, empty.drawn_text().find("Nothing here") != std::string::npos,
+		             "an area with nothing to show says so");
+	}
 }
 
 void register_ui_render_primitives_tests(test_registry& tests)
 {
 	tests.add("Should draw a bubble with its arrow and shadow"s, should_draw_a_bubble_with_its_arrow_and_shadow);
+	tests.add("Should draw entry states alike"s, should_draw_entry_states_alike);
 }

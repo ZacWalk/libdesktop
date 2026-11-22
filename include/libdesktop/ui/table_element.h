@@ -6,12 +6,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Purpose: An element table with shared column sizing, optional headings that sort its rows and resize its
-// columns, and normal tree-owned cells.
+// columns, and normal tree-owned cells. The headings' band is table_headings.h's, which every headed table shares.
 
 #pragma once
 
 #include "libdesktop/ui/elements.h"
-#include "libdesktop/ui/text/table_layout.h"
+#include "libdesktop/ui/table_headings.h"
 
 #include <array>
 #include <numeric>
@@ -19,51 +19,6 @@
 
 namespace ui
 {
-	// A column's heading. A table with headings draws them in a band over its rows: a click on one sorts the rows
-	// by its column, and the divider after one resizes its column. A table without headings draws neither and
-	// fits its columns to what they hold, so its first row never reads as a heading.
-	struct table_heading
-	{
-		std::string title;
-		bool right_align = false;
-		bool sortable = true;
-		// The order a first click sorts in: text from A, a size or a date often largest or latest first.
-		bool default_ascending = true;
-	};
-
-	// What orders a row in one column: a number, or text compared as people read it - regardless of case, and
-	// with the numbers in it by value. A row with no key for the column follows those that have one.
-	class table_sort_key
-	{
-		std::string _text;
-		double _number = 0.0;
-		uint8_t _kind = 0;
-
-	public:
-		table_sort_key() = default;
-
-		template <typename T>
-			requires std::is_arithmetic_v<T>
-		table_sort_key(const T number) : _number(static_cast<double>(number)), _kind(1)
-		{
-		}
-
-		table_sort_key(const std::string_view text) : _text(text), _kind(2) {}
-
-		table_sort_key(const char* text) : table_sort_key(std::string_view(text)) {}
-
-		[[nodiscard]] bool empty() const { return _kind == 0; }
-
-		// Numbers before text, so a column that mixes them keeps each kind together.
-		[[nodiscard]] int compare(const table_sort_key& other) const
-		{
-			if (_kind != other._kind) return _kind < other._kind ? -1 : 1;
-			if (_kind == 1) return _number < other._number ? -1 : (other._number < _number ? 1 : 0);
-			if (_kind == 2) return core::icmp_natural(_text, other._text);
-			return 0;
-		}
-	};
-
 	class table_element final : public element, public std::enable_shared_from_this<table_element>
 	{
 		struct cell
@@ -114,15 +69,11 @@ namespace ui
 			std::ranges::stable_sort(_rows, [column, ascending](const row& l, const row& r)
 			{
 				if (column < 0) return l.order < r.order;
-				const auto* const lk = column < static_cast<int>(l.keys.size()) && !l.keys[column].empty()
-				                           ? &l.keys[column]
-				                           : nullptr;
-				const auto* const rk = column < static_cast<int>(r.keys.size()) && !r.keys[column].empty()
-				                           ? &r.keys[column]
-				                           : nullptr;
-				if (!lk || !rk) return lk && !rk;
-				const auto c = lk->compare(*rk);
-				return ascending ? c < 0 : c > 0;
+				const auto key = [column](const row& of)
+				{
+					return column < static_cast<int>(of.keys.size()) ? &of.keys[column] : nullptr;
+				};
+				return table_sorts_before(key(l), key(r), ascending);
 			});
 		}
 
@@ -194,95 +145,18 @@ namespace ui
 			if (on_user_change) on_user_change(*this);
 		}
 
-		class divider_controller final : public controller
+		void user_changed()
 		{
-			std::shared_ptr<table_element> _table;
-			int _column;
-			table_layout::resize_gesture _drag;
+			if (const auto host = _host.lock()) user_changed(host);
+		}
 
-		public:
-			divider_controller(const element_host_ptr& host, const core::recti bounds,
-			                   std::shared_ptr<table_element> table, const int column) :
-				controller(host, bounds), _table(std::move(table)), _column(column)
-			{
-				_table->_active_divider = _column;
-				_host->invalidate(host_invalid::redraw);
-			}
-			~divider_controller() override
-			{
-				if (_drag.active()) escape();
-				_table->_active_divider = -1;
-				_host->invalidate(host_invalid::redraw);
-			}
-			platform::cursor cursor() const override { return platform::cursor::left_right; }
-			void on_mouse_left_button_down(const core::pointi point, platform::key_state) override
-			{
-				_drag.begin(_table->_columns, _column, point.x);
-			}
-			void on_mouse_move(const core::pointi point) override
-			{
-				if (_drag.update(_table->_columns, point.x)) _table->user_changed(_host);
-			}
-			void on_mouse_left_button_up(const core::pointi point, platform::key_state) override
-			{
-				on_mouse_move(point);
-				_drag.finish();
-			}
-			void on_mouse_left_button_double_click(core::pointi, platform::key_state) override
-			{
-				_drag.finish();
-				if (_table->_columns.fit(_column)) _table->user_changed(_host);
-			}
-			bool escape() override
-			{
-				if (!_drag.cancel(_table->_columns)) return false;
-				_table->user_changed(_host);
-				return true;
-			}
-		};
-
-		// A click sorts; a press taken back by Escape, or released off the heading, does not.
-		class heading_controller final : public controller
-		{
-			std::shared_ptr<table_element> _table;
-			int _column;
-			bool _tracking = false;
-
-		public:
-			heading_controller(const element_host_ptr& host, const core::recti bounds,
-			                   std::shared_ptr<table_element> table, const int column) :
-				controller(host, bounds), _table(std::move(table)), _column(column)
-			{
-			}
-			~heading_controller() override { escape(); }
-			platform::cursor cursor() const override { return platform::cursor::link; }
-			void on_mouse_left_button_down(core::pointi, platform::key_state) override
-			{
-				_tracking = true;
-				_table->_pressed_heading = _column;
-				_host->invalidate(host_invalid::redraw);
-			}
-			void on_mouse_left_button_up(const core::pointi point, platform::key_state) override
-			{
-				const auto clicked = _tracking && _bounds.contains(point);
-				escape();
-				if (clicked) _table->click_heading(_column, _host);
-			}
-			bool escape() override
-			{
-				if (!_tracking) return false;
-				_tracking = false;
-				_table->_pressed_heading = -1;
-				_host->invalidate(host_invalid::redraw);
-				return true;
-			}
-		};
-
-		void click_heading(const int column, const element_host_ptr& host)
+		void click_heading(const int column)
 		{
 			if (column < 0 || column >= static_cast<int>(_headings.size()) || !_headings[column].sortable) return;
-			sort(column, column == _sort_column ? !_sort_ascending : _headings[column].default_ascending);
-			user_changed(host);
+			const auto next = next_table_sort({_sort_column, _sort_ascending}, column,
+			                                  _headings[column].default_ascending);
+			sort(next.column, next.ascending);
+			user_changed();
 		}
 
 	public:
@@ -448,9 +322,8 @@ namespace ui
 			for (size_t i = 1; i < _rows.size(); i += 2)
 			{
 				const auto& r = _rows[i];
-				dc.draw_rounded_rect({panel.left, panel.top + scroll.y + r.y, panel.right,
-				                      panel.top + scroll.y + r.y + r.height},
-				                     core::color(0x000000, dc.colors.alpha / 11.11f), dc.padding1);
+				table_layout::draw_row_stripe(dc, {panel.left, panel.top + scroll.y + r.y, panel.right,
+				                                   panel.top + scroll.y + r.y + r.height});
 			}
 			render_children(dc, offset);
 			dc.restore_clip();
@@ -458,35 +331,21 @@ namespace ui
 			if (!band.is_empty())
 			{
 				const auto porch = core::round(4 * dc.scale_factor);
-				dc.draw_rounded_rect(band, core::color(0x000000, dc.colors.alpha * 0.2f), dc.padding1);
+				std::vector<table_heading_cell> cells;
+				cells.reserve(_headings.size());
 
 				for (int i = 0; i < static_cast<int>(_headings.size()); ++i)
 				{
 					const auto cell = heading_cell_bounds(i).offset(offset);
-					if (cell.is_empty()) continue;
-					if (i == _pressed_heading)
-						dc.draw_rect(cell, core::color(dc.colors.foreground, dc.colors.alpha * 0.12f));
-					const auto sorted = i == _sort_column;
-					const auto& h = _headings[i];
-					const auto color = core::color(dc.colors.foreground, dc.colors.alpha * (sorted ? 1.0f : 0.7f));
-					dc.draw_text(h.title, cell.inflate(-porch, 0), render::font_face::dialog,
-					             h.right_align ? render::text_style::single_line_far : render::text_style::single_line,
-					             color, {});
-					if (sorted) table_layout::draw_sort_mark(dc, cell, _sort_ascending, color);
+					cells.push_back({cell, cell.inflate(-porch, 0)});
 				}
 
-				// Faint, so the columns read as resizable, and plain while one is dragged.
-				const auto line = std::max(1, core::round(dc.scale_factor));
+				std::vector<core::recti> dividers;
 				for (int i = 0; i < static_cast<int>(_columns.widths().size()) - 1; ++i)
-				{
-					const auto divider = divider_bounds(i).offset(offset);
-					if (divider.height() <= 4) continue;
-					const auto active = i == _active_divider;
-					const auto width = active ? line * 2 : line;
-					const auto x = divider.center().x - width / 2;
-					dc.draw_rect({x, divider.top + 2, x + width, divider.bottom - 2},
-					             core::color(dc.colors.foreground, dc.colors.alpha * (active ? 0.9f : 0.3f)));
-				}
+					dividers.push_back(divider_bounds(i).offset(offset));
+
+				draw_table_headings(dc, band, _headings, cells, dividers, {_sort_column, _sort_ascending},
+				                    _pressed_heading, _active_divider);
 			}
 
 			dc.restore_clip();
@@ -546,13 +405,36 @@ namespace ui
 			{
 				const auto divider = divider_bounds(i).offset(offset);
 				if (ctx.occluded(divider))
-					return std::make_shared<divider_controller>(host, divider, shared_from_this(), i);
+				{
+					const auto self = shared_from_this();
+					const auto changed = [self]
+					{
+						self->user_changed();
+					};
+					const auto active = [self, i](const bool held)
+					{
+						self->_active_divider = held ? i : -1;
+					};
+					auto actions = column_divider_actions(_columns, i, changed, active);
+					return std::make_shared<table_divider_controller>(host, divider, std::move(actions));
+				}
 			}
 			for (int i = 0; i < static_cast<int>(_headings.size()); ++i)
 			{
 				const auto cell = heading_cell_bounds(i).offset(offset);
 				if (_headings[i].sortable && ctx.occluded(cell))
-					return std::make_shared<heading_controller>(host, cell, shared_from_this(), i);
+				{
+					const auto self = shared_from_this();
+					const auto pressed = [self, i](const bool down)
+					{
+						self->_pressed_heading = down ? i : -1;
+					};
+					const auto click = [self, i]
+					{
+						self->click_heading(i);
+					};
+					return std::make_shared<table_heading_controller>(host, cell, pressed, click);
+				}
 			}
 			if (heading_bounds().offset(offset).contains(loc)) return nullptr;
 

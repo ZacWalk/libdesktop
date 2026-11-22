@@ -24,7 +24,7 @@ namespace ui
 {
 	constexpr auto TIMER_DRAGSEL = 1001;
 
-	class doc_view : public text_view
+	class doc_view : public control_with_features<doc_view, text_view>
 	{
 	protected:
 		bool _drag_selection = false;
@@ -135,7 +135,7 @@ namespace ui
 		platform::cursor cursor_at(core::pointi point) const override;
 		core::recti caret_bounds() const override;
 		void blink() override;
-		void tick() override;
+		void on_control_tick();
 		void scale_changed() override;
 		void on_placed(render::measure_context& measure) override;
 

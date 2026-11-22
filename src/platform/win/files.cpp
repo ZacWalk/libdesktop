@@ -1603,15 +1603,27 @@ static platform::file_op_result perform_shell_file_operation(
 	return to_file_op_result(shell_result, shfo.fAnyOperationsAborted);
 }
 
-static FILEOP_FLAGS shell_delete_flags(const bool allow_undo)
+static FILEOP_FLAGS shell_delete_flags(const platform::delete_mode mode)
 {
-	return allow_undo ? static_cast<FILEOP_FLAGS>(FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_SILENT)
-	                  : static_cast<FILEOP_FLAGS>(FOF_NOCONFIRMATION | FOF_SILENT);
+	switch (mode)
+	{
+	case platform::delete_mode::recycle:
+		return static_cast<FILEOP_FLAGS>(FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_SILENT);
+	case platform::delete_mode::recycle_where_possible:
+		return static_cast<FILEOP_FLAGS>(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT);
+	case platform::delete_mode::permanent: break;
+	}
+	return static_cast<FILEOP_FLAGS>(FOF_NOCONFIRMATION | FOF_SILENT);
 }
 
 FILEOP_FLAGS platform::probe_shell_delete_flags(const bool allow_undo)
 {
-	return shell_delete_flags(allow_undo);
+	return shell_delete_flags(allow_undo ? delete_mode::recycle : delete_mode::permanent);
+}
+
+FILEOP_FLAGS platform::probe_shell_delete_flags(const delete_mode mode)
+{
+	return shell_delete_flags(mode);
 }
 
 using name_mapping_t = std::unordered_map<core::file_path, core::file_path, core::ihash, core::ieq>;
@@ -3743,7 +3755,7 @@ platform::shell_operation_probe platform::probe_shell_delete_operation(const she
 	constexpr wchar_t from[] = L"source\0";
 	shfo.pFrom = from;
 	shfo.wFunc = FO_DELETE;
-	shfo.fFlags = shell_delete_flags(allow_undo);
+	shfo.fFlags = shell_delete_flags(allow_undo ? delete_mode::recycle : delete_mode::permanent);
 
 	shell_operation_probe result;
 	result.flags = shfo.fFlags;
@@ -3777,7 +3789,7 @@ std::string platform::file_op_result::format_error(const std::string_view text, 
 }
 
 platform::file_op_result platform::delete_items(const std::vector<core::file_path>& files,
-                                                const std::vector<core::folder_path>& folders, const bool allow_undo)
+                                                const std::vector<core::folder_path>& folders, const delete_mode mode)
 {
 	const auto paths = all_file_system_paths(files, folders);
 
@@ -3785,7 +3797,7 @@ platform::file_op_result platform::delete_items(const std::vector<core::file_pat
 	shfo.hwnd = app_wnd();
 	shfo.pFrom = paths.c_str();
 	shfo.wFunc = FO_DELETE;
-	shfo.fFlags = shell_delete_flags(allow_undo);
+	shfo.fFlags = shell_delete_flags(mode);
 
 	return perform_shell_file_operation(shfo);
 }

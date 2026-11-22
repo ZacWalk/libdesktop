@@ -60,6 +60,35 @@ namespace ui
 
 		// Installs the palette. The platform layer calls this once at startup, before anything draws.
 		void install(const system_colors& system);
+
+		// How a row reads at a glance by what it does or what became of it: as it is; nothing - left as it is, or
+		// never reached; something made, copied or added; something replaced, moved or removed; and what a run did
+		// to it. Each is the palette's own colour, lightened or dimmed to read as text.
+		enum class tone
+		{
+			normal,
+			muted,
+			accent,
+			caution,
+			succeeded,
+			failed
+		};
+
+		// A tone's text colour. Normal answers 0, which leaves text the colour it would have been.
+		[[nodiscard]] inline core::color32 tone_text(const tone t)
+		{
+			switch (t)
+			{
+			case tone::muted: return core::darken(colors.view_text, 0.22f);
+			case tone::accent: return core::lighten(colors.dialog_selected_background, 0.55f);
+			case tone::caution: return core::lighten(colors.important_background, 0.55f);
+			case tone::succeeded: return core::lighten(colors.success_background, 0.55f);
+			case tone::failed: return core::lighten(colors.warning_background, 0.55f);
+			case tone::normal: break;
+			}
+
+			return 0;
+		}
 	}
 	// Exponential decay rate for alpha fades, per second. Chosen as -ln(1 - 0.333) * 60 so that a
 	// 60Hz frame reproduces exactly the fixed 0.333 per frame this replaced.

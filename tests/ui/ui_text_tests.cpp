@@ -7,6 +7,7 @@
 
 // Purpose: Headless tests for the portable text models, palette, and clipboard seam.
 
+#include "libdesktop/ui/table_headings.h"
 #include "libdesktop/ui/text/markdown.h"
 #include "libdesktop/ui/text/spell.h"
 #include "libdesktop/ui/text/table_layout.h"
@@ -156,6 +157,63 @@ namespace
 		assert_equal(50, columns.widths()[0], "Escape restores the original size");
 		assert_equal(false, drag.update(columns, 1000), "a release after cancellation does nothing");
 		assert_equal(false, drag.active(), "cancel releases the gesture");
+	}
+
+	// A cell's text too wide for its column ends in an ellipsis inside it, cut between characters; text that fits
+	// is as it is. The test context measures 8 to a character, the ellipsis among them.
+	void should_fit_cell_text_with_an_ellipsis()
+	{
+		ui::test::fake_measure_context mc;
+		namespace tl = ui::table_layout;
+		assert_equal_strict("IMG_0001.jpg", tl::fit_text(mc, "IMG_0001.jpg", 96), "a name that fits is as it is");
+		assert_equal_strict("IMG_0001.j\xE2\x80\xA6", tl::fit_text(mc, "IMG_0001.jpg", 95),
+		                    "one a pixel too wide keeps what fits beside the ellipsis");
+		assert_equal_strict("\xC3\x89t\xC3\xA9\xE2\x80\xA6",
+		                    tl::fit_text(mc, "\xC3\x89t\xC3\xA9 \xC3\xA0 Paris.jpg", 32), "and never half a character");
+		assert_equal_strict("", tl::fit_text(mc, "", 0), "nothing fits in nothing");
+	}
+
+	// A name of several words wraps at its spaces into as few lines as fit the width, and one with a word wider than
+	// the width does not wrap at all; its widest word is how narrow a column can be and still show it whole. The test
+	// context measures 8 to a character.
+	void should_wrap_a_name_at_its_words()
+	{
+		ui::test::fake_measure_context mc;
+		namespace tl = ui::table_layout;
+		const auto name = "Small or unclear faces"sv;
+		assert_equal(true, tl::wrap_words(mc, name, 64) == std::vector<std::string>{"Small or", "unclear", "faces"},
+		             "as many words to a line as fit");
+		assert_equal(true, tl::wrap_words(mc, name, 176) == std::vector<std::string>{std::string(name)},
+		             "a name that fits is one line");
+		assert_equal(true, tl::wrap_words(mc, name, 55).empty(), "a word wider than the width wraps nothing");
+		assert_equal(56, tl::widest_word(mc, name), "unclear is the widest word");
+		assert_equal(true, tl::wrap_words(mc, "  ", 64).empty() && tl::widest_word(mc, "") == 0,
+		             "spaces alone are no lines and no width");
+	}
+
+	// A click on a heading sorts by its column its own way, a second the other way, and a third gives the rows back
+	// their own order; another heading starts again from its own way. Keys sort keyless rows last either way.
+	void should_cycle_a_table_sort_from_its_headings()
+	{
+		const ui::table_sort none;
+		const auto first = ui::next_table_sort(none, 2, false);
+		assert_equal(true, first == ui::table_sort{2, false}, "a first click sorts the column its own way");
+		const auto second = ui::next_table_sort(first, 2, false);
+		assert_equal(true, second == ui::table_sort{2, true}, "a second the other way");
+		assert_equal(true, ui::next_table_sort(second, 2, false) == none, "and a third gives back the own order");
+		assert_equal(true, ui::next_table_sort(second, 0, true) == ui::table_sort{0, true},
+		             "another heading starts from its own way");
+
+		const ui::table_sort_key small(2);
+		const ui::table_sort_key large(10);
+		const ui::table_sort_key keyless;
+		assert_equal(true, ui::table_sorts_before(&small, &large, true), "numbers sort by value");
+		assert_equal(true, ui::table_sorts_before(&large, &small, false), "and the other way when descending");
+		assert_equal(true, ui::table_sorts_before(&small, &keyless, false), "a keyless row follows either way");
+		assert_equal(false, ui::table_sorts_before(&keyless, nullptr, true), "and two keyless rows tie");
+		const ui::table_sort_key img9("IMG_9");
+		const ui::table_sort_key img10("img_10");
+		assert_equal(true, ui::table_sorts_before(&img9, &img10, true), "text sorts as it is read");
 	}
 
 	void should_record_view_host_requests()
@@ -510,6 +568,9 @@ void register_ui_text_tests(test_registry& tests)
 	tests.add("Should classify and cap table columns"s, should_classify_and_cap_table_columns);
 	tests.add("Should resize shared table columns"s, should_resize_shared_table_columns);
 	tests.add("Should cancel table column capture"s, should_cancel_table_column_capture);
+	tests.add("Should fit cell text with an ellipsis"s, should_fit_cell_text_with_an_ellipsis);
+	tests.add("Should wrap a name at its words"s, should_wrap_a_name_at_its_words);
+	tests.add("Should cycle a table sort from its headings"s, should_cycle_a_table_sort_from_its_headings);
 	tests.add("Should measure and record headless drawing"s, should_measure_and_record_headless_drawing);
 	tests.add("Should record text host requests"s, should_record_view_host_requests);
 	tests.add("Should edit text and undo"s, should_edit_text_and_undo);

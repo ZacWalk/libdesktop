@@ -5,7 +5,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Purpose: Platform text, path, atomic-file and file-handle service tests.
+// Purpose: Platform text, path, atomic-file, file-handle and portable-device service tests.
 
 #include "libdesktop/platform.h"
 #include "test.h"
@@ -169,6 +169,27 @@ namespace
 		assert_equal(true, platform::file_attributes(destination).modified != 0, "modified timestamp");
 		platform::delete_file(destination);
 	}
+
+	// A device is reached by its id: one that names none lists nothing and copies nothing, leaving no file behind,
+	// whether the platform has portable devices or not.
+	void should_answer_for_a_portable_device_that_is_not_there()
+	{
+		for (const auto& device : platform::portable_devices())
+		{
+			assert_equal(false, device.id.empty(), "a connected device has an id");
+		}
+
+		constexpr auto nowhere = "not-a-device"sv;
+		const core::cancel_token token;
+		assert_equal(true, platform::portable_device_files(nowhere, {"DCIM"sv}, token).empty(), "nothing is listed");
+
+		const auto destination = platform::temp_file(".jpg");
+		platform::delete_file(destination);
+		const auto copied = platform::copy_from_portable_device(nowhere, {{"object", destination, 0, 0}}, token);
+		assert_equal(true, copied.stopped.failed(), "nothing is copied");
+		assert_equal(true, copied.copied.empty() && copied.unreadable.empty(), "or said to be");
+		assert_equal(false, platform::exists(destination), "and no file is left");
+	}
 }
 #ifdef _WIN32
 void should_round_trip_platform_web_requests()
@@ -238,6 +259,8 @@ void register_platform_services_tests(test_registry& tests)
 	tests.add("Should canonicalize contained paths"s, should_canonicalize_and_contain_paths);
 	tests.add("Should expose application data paths"s, should_expose_app_data_paths);
 	tests.add("Should write and read atomic files"s, should_write_and_read_atomically);
+	tests.add("Should answer for a portable device that is not there"s,
+	          should_answer_for_a_portable_device_that_is_not_there);
 #ifdef _WIN32
 	tests.add("Should round-trip platform web requests"s, should_round_trip_platform_web_requests);
 #endif

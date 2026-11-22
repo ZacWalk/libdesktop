@@ -193,6 +193,7 @@ namespace platform
 	std::wstring probe_shell_destination_w(core::folder_path target);
 	std::string probe_shell_destination_a(core::folder_path target);
 	FILEOP_FLAGS probe_shell_delete_flags(bool allow_undo);
+	FILEOP_FLAGS probe_shell_delete_flags(delete_mode mode);
 
 	// Shell and common-dialog APIs reject the \\?\ prefix that to_file_system_path adds for long
 	// paths, so they take the plain form and accept the MAX_PATH limit those APIs already impose.

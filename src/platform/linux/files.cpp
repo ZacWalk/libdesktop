@@ -11,15 +11,18 @@
 // part of it that maps to a real operation lives in platform_linux_desktop.cpp.
 
 #include "libdesktop/platform.h"
+#include "libdesktop/platform/storage.h"
 
 using namespace std::literals;
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <fstream>
 #include <linux/fs.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #ifndef RENAME_NOREPLACE
@@ -384,6 +387,27 @@ namespace
 
 // The file system takes the UTF-8 bytes as they are, so there is no extended form to add and
 // nothing to convert: both of these answer the string the path already holds.
+bool platform::storage_probe::seek_free(const core::folder_path folder)
+{
+	if (!folder.is_qualified()) return false;
+	struct stat st{};
+	if (::stat(to_file_system_path(folder).c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+
+	const auto [at, added] = _volumes.try_emplace(std::format("{}:{}", major(st.st_dev), minor(st.st_dev)), false);
+	if (added)
+	{
+		std::error_code ec;
+		auto device = std::filesystem::canonical(std::filesystem::path("/sys/dev/block") / at->first, ec);
+		if (ec) return false;
+		if (std::filesystem::exists(device / "partition", ec)) device = device.parent_path();
+		if (ec) return false;
+		std::ifstream rotational(device / "queue" / "rotational");
+		int flag = 1;
+		at->second = static_cast<bool>(rotational >> flag) && flag == 0;
+	}
+	return at->second;
+}
+
 platform::native_path platform::to_file_system_path(const core::file_path path)
 {
 	return path.str();
@@ -1143,9 +1167,37 @@ platform::drives platform::scan_drives()
 	return {};
 }
 
+// A phone on Linux is reached through MTP by libmtp or a GVFS mount, neither of which the backend calls, so there are
+// no portable devices to list, read or copy from.
+platform::portable_devices_t platform::portable_devices()
+{
+	return {};
+}
+
+std::vector<platform::portable_file_t> platform::portable_device_files(
+	const std::string_view /*device_id*/, const std::vector<std::string_view>& /*top_folders*/,
+	const core::cancel_token& /*token*/)
+{
+	return {};
+}
+
+platform::portable_copy_result platform::copy_from_portable_device(
+	const std::string_view /*device_id*/, const std::vector<portable_copy_t>& /*files*/,
+	const core::cancel_token& /*token*/, const std::function<void(size_t tried)>& /*progress*/)
+{
+	portable_copy_result result;
+	result.stopped = {file_op_result_code::FAILED, "Portable devices are not available on this platform."};
+	return result;
+}
+
 uint32_t platform::caret_blink_time()
 {
 	return 530;
+}
+
+uint32_t platform::process_id()
+{
+	return static_cast<uint32_t>(::getpid());
 }
 
 std::string platform::format_time(const core::date_t date)

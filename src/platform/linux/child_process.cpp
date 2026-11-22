@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/eventfd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -88,6 +89,7 @@ namespace platform
 		pid_t pid = -1;
 		pid_t process_group = -1;
 		int input = -1;
+		int cancel_fd = -1;
 		std::mutex input_mutex;
 		pipe_state output;
 		pipe_state error;
@@ -115,6 +117,7 @@ namespace platform
 				else if (state == pid) exit_status = status;
 			}
 			close_fd(input);
+			close_fd(cancel_fd);
 		}
 	};
 
@@ -167,6 +170,9 @@ namespace platform
 		for (const auto& value : environment) envp.push_back(const_cast<char*>(value.c_str()));
 		envp.push_back(nullptr);
 
+		auto result = std::make_shared<process>();
+		result->cancel_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+		if (result->cancel_fd < 0) return {};
 		int input_pipe[2] = {-1, -1};
 		int output_pipe[2] = {-1, -1};
 		int error_pipe[2] = {-1, -1};
@@ -246,7 +252,6 @@ namespace platform
 			return {};
 		}
 
-		auto result = std::make_shared<process>();
 		result->pid = child;
 		result->process_group = options.kill_descendants_on_close ? child : -1;
 		result->input = input_pipe[1];
@@ -256,28 +261,38 @@ namespace platform
 		return result;
 	}
 
+	static size_t read_pipe(const process& owner, pipe_state& pipe, char* const buffer, const size_t bytes)
+	{
+		std::lock_guard lock(pipe.mutex);
+		if (pipe.eof || pipe.fd < 0 || !buffer || !bytes) return 0;
+		// A grandchild can keep the write end alive after the child exits.
+		// Wake both readers on cancellation without waiting for pipe EOF.
+		pollfd events[] = {{pipe.fd, POLLIN, 0}, {owner.cancel_fd, POLLIN, 0}};
+		while (!owner.cancelled)
+		{
+			if (::poll(events, 2, -1) < 0)
+			{
+				if (errno == EINTR) continue;
+				break;
+			}
+			if (events[1].revents) return 0;
+			const auto count = ::read(pipe.fd, buffer, bytes);
+			if (count > 0) return static_cast<size_t>(count);
+			if (count < 0 && errno == EINTR) continue;
+			break;
+		}
+		pipe.eof = true;
+		return 0;
+	}
+
 	size_t process_read(const process_ptr& owner, char* const buffer, const size_t bytes)
 	{
-		if (!owner || !buffer || !bytes) return 0;
-		std::lock_guard lock(owner->output.mutex);
-		if (owner->output.eof || owner->output.fd < 0 || owner->cancelled) return 0;
-		ssize_t count = 0;
-		do count = ::read(owner->output.fd, buffer, bytes);
-		while (count < 0 && errno == EINTR);
-		if (count <= 0) owner->output.eof = true;
-		return count > 0 ? static_cast<size_t>(count) : 0;
+		return owner ? read_pipe(*owner, owner->output, buffer, bytes) : 0;
 	}
 
 	size_t process_read_err(const process_ptr& owner, char* const buffer, const size_t bytes)
 	{
-		if (!owner || !buffer || !bytes) return 0;
-		std::lock_guard lock(owner->error.mutex);
-		if (owner->error.eof || owner->error.fd < 0 || owner->cancelled) return 0;
-		ssize_t count = 0;
-		do count = ::read(owner->error.fd, buffer, bytes);
-		while (count < 0 && errno == EINTR);
-		if (count <= 0) owner->error.eof = true;
-		return count > 0 ? static_cast<size_t>(count) : 0;
+		return owner ? read_pipe(*owner, owner->error, buffer, bytes) : 0;
 	}
 
 	bool process_write(const process_ptr& owner, const std::string_view text)
@@ -322,7 +337,10 @@ namespace platform
 	void process_terminate(const process_ptr& owner)
 	{
 		if (!owner) return;
-		owner->cancelled = true;
+		if (!owner->cancelled.exchange(true))
+		{
+			while (::eventfd_write(owner->cancel_fd, 1) < 0 && errno == EINTR) {}
+		}
 		{
 			std::lock_guard lock(owner->lifecycle);
 			if (owner->pid > 0 && !owner->waited)

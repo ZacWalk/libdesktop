@@ -58,7 +58,10 @@ drives a `platform::app` on the UI thread:
    once it returns.
 4. The loop: the application's `main_loop()` where `owns_loop()` is true,
    otherwise run's own, which calls `idle()` and `frame_tick()`, reports
-   `folder_changed` and `system_event`, and runs what `run_ui` queued. A request
+   `folder_changed` and `system_event`, and runs what `run_ui` queued. Input
+   that keeps arriving - a drag, a held wheel - holds it on messages for a
+   frame's worth of time at most before `idle()` runs, so what the application
+   queued for the UI thread is not held for the whole gesture. A request
    to end the session, and in a `ui` application closing the main window, asks
    `can_exit()` first.
 5. `exit()`, then `final_exit()` and the shutdown hooks, the renderer's among
@@ -183,10 +186,29 @@ permission or sharing failure into a copy; and an operation given an
 `open_file_lock` token acts on the object it pins, or fails where the backend
 cannot. Take the token before checking anything about the path.
 
+`storage_probe` in `platform/storage.h` checks the volume backing a folder. A positive answer
+requires a local device that reports no seek penalty on Windows or non-rotating storage on Linux.
+A remote volume or a device that cannot report its medium does not qualify. Reuse a probe on a
+worker for one pass so changing a drive between passes does not leave an old answer in use.
+
 `platform::settings()` is the process's one store. A line break survives it as
 DLE and a letter (DLE itself as two), since a backslash could not escape values
 full of Windows paths. The crash guards record that a graphics subsystem was
 running, so the next launch can fall back.
+
+A phone or camera that a cable connects as a device rather than as a drive - on
+Windows a portable device, speaking MTP or PTP - is reached by the id
+`portable_devices` gives it, never by a path; a mass-storage device, which is a
+drive as well, is left to its path. `portable_device_files` walks only the
+folders named at the top of each of its storages, so listing a camera's `DCIM`
+does not walk the rest of a phone, and `copy_from_portable_device` copies with
+the device opened once, to destinations that must not exist yet, stamping each
+with the device's times - which a device keeps in its own wall-clock time. A
+file the device will not give up, such as one kept only in the cloud, is
+reported and passed over, and the copy stops only when cancelled or when what
+it writes cannot be. Each call opens the device and lets it go, so any thread
+may ask; a phone still locked, or asking how to connect, is listed but opens to
+nothing.
 
 ## Tasks
 
@@ -228,6 +250,19 @@ run drains the pool.
   Open with handler - which would open on the user's desktop, beyond the
   session, until the application allows it with `allow_agent_to_open`, as its
   client grants; each skipped is logged.
+- What the system puts up itself while a call into it waits - the shell's
+  confirmation, or an error such as a file another program holds - cannot be
+  skipped, since the call goes on only once it is answered. `system_prompts`
+  reads each - its title, text and buttons, as a screen reader reads them -
+  `system_prompt_shown` says cheaply whether one shows, and
+  `answer_system_prompt` presses a button by its text or cancels it, so an
+  agent session can show it to its client like the application's own dialogs.
+  On Linux the system puts up none.
+- `delete_items` takes a `delete_mode`: `recycle` lets Windows confirm before it
+  destroys what it cannot recycle; `recycle_where_possible`, for a delete the
+  application has already confirmed as permanent because `can_recycle` said so,
+  recycles what it can and destroys the rest without asking a second time; and
+  `permanent` destroys without asking.
 - A picture put on the clipboard on Windows is offered as a bitmap and a
   device-independent bitmap, made when a target asks, and - when its
   `clipboard_image` offers one - in the registered `PNG` format browsers, Office
@@ -273,6 +308,7 @@ Not implemented on Linux, and answered as failures or absences:
 - the web client and `is_online`; image decoding and compound previews;
 - the audio endpoint, sounds and streams, and movie writing;
 - the tray, the spell checker and instance signals;
+- portable devices, which MTP through libmtp or a GVFS mount would reach;
 - the Windows shell: opening a file or location in the desktop's handler
   (`open`) and starting a program by command line (`run`); associations, shell
   properties and tags, Explorer thumbnails, sharing and mail, taskbar progress,
@@ -294,7 +330,9 @@ recovery.
 application's and the stand-ins that answer unavailable among them - and, on
 Windows, web requests against a scripted server on 127.0.0.1 (`loopback_http`);
 `tests/platform/win/` adds the Windows backend's own, under a manifest like an
-application's (`tests/tests.manifest`). On Windows `libdesktop-platform-smoke`,
+application's (`tests/tests.manifest`) - among them a prompt of the system's class,
+put up cloaked and off the screen, read and answered as an agent session answers
+one. On Windows `libdesktop-platform-smoke`,
 under the same label, is a program declared with `libdesktop_add_app` that
 reads back its `EMBED` file, and `libdesktop-platform-ui-pump` runs it through
 `platform::run`, where a console mode's worker queues UI work and runs it with

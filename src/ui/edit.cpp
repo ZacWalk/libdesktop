@@ -229,7 +229,7 @@ namespace ui
 		}
 	};
 
-	class drawn_edit final : public edit
+	class drawn_edit final : public control_with_features<drawn_edit, edit>
 	{
 	public:
 		struct visual_line
@@ -1198,7 +1198,7 @@ namespace ui
 			if (!caret.is_empty()) invalidate(caret.inflate(1));
 		}
 
-		void tick() override
+		void on_control_tick()
 		{
 			auto check = _respell->exchange(false);
 

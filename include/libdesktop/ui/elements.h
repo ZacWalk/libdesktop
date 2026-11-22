@@ -15,6 +15,8 @@
 
 #include "libdesktop/ui.h"
 
+#include <span>
+
 namespace ui
 {
 	class controller;
@@ -151,6 +153,44 @@ namespace ui
 		}
 
 		return bg_clr.scale(text_over ? 1.22f : 1.44f).aa(0.9f);
+	}
+
+	// The looks the entries of every list, grid and strip are drawn in, so a state reads the same wherever it shows.
+	// What is selected is full while the pane holding it has the keyboard and muted while it has not, so a
+	// selection never reads as a hover; the pointer lightens it.
+	inline core::color selection_fill(const bool pane_active, const bool hover = false)
+	{
+		return handle_color(true, hover, false, pane_active, true);
+	}
+
+	// What the pointer is over, when it is not selected.
+	inline core::color hover_fill()
+	{
+		return handle_color(false, true, false, true, true);
+	}
+
+	// The band a drag from between entries draws over what it will take in.
+	inline core::color marquee_fill(const float alpha)
+	{
+		return core::color(ui::style::colors.dialog_selected_background, alpha * 0.5f);
+	}
+
+	// Where the keyboard is, as a focused control shows it: a ring round what it is on, drawn inside its bounds where
+	// there is no room outside them.
+	inline void draw_keyboard_ring(render::draw_context& dc, const core::recti bounds, const bool inside = false)
+	{
+		const auto width = std::max(1, core::round(2 * dc.scale_factor));
+		const auto c = core::color(ui::style::colors.dialog_selected_background, dc.colors.alpha);
+		if (inside) dc.draw_border(bounds.inflate(-width), bounds, c, c);
+		else dc.draw_border(bounds, bounds.inflate(width), c, c);
+	}
+
+	// What an area with nothing to show says in its place - a list not yet filled, a search that found nothing, a
+	// view still reading - in one look wherever it shows: faint, centred both ways, wrapping where it must.
+	inline void draw_empty_message(render::draw_context& dc, const core::recti bounds, const std::string_view message)
+	{
+		dc.draw_text(message, bounds, render::font_face::dialog, render::text_style::multiline_center,
+		             core::color(dc.colors.foreground, dc.colors.alpha * 0.6f), {});
 	}
 
 	// Every draggable splitter draws through this so the handle and its hover and drag highlights
@@ -454,6 +494,15 @@ namespace ui
 		int y = 0;
 	};
 
+	// A stretch of a scrolled list that names itself on the scroll bar - by a short text or an icon - from where it
+	// starts in the content. Runs come in order down the list, and one named as the run before it continues that run.
+	struct scroller_run
+	{
+		std::string_view text;
+		icon_index icon = {};
+		int top = 0;
+	};
+
 	struct scroll_anchor
 	{
 		element_ptr element;
@@ -463,6 +512,49 @@ namespace ui
 		bool valid = false;
 	};
 
+	// Where marks fall on a scroll bar: lines across it saying where things the content holds lie - what is selected,
+	// what is pointed at - however far they are scrolled from what shows. A mark sits where the thumb's centre is while
+	// the thing it marks, at a centre in the content's own coordinates along the scroll, is in the middle of the view,
+	// so it is under the thumb just while that thing shows. The lane is the track along the scroll and what a mark
+	// spans across it; the centres come in order, and marks that would touch are drawn as one.
+	[[nodiscard]] inline std::vector<core::recti> scroll_mark_bounds(const core::recti lane, const int thumb_length,
+	                                                                 const int view_extent, const int content_extent,
+	                                                                 const std::span<const int> centres,
+	                                                                 const int thickness, const bool horizontal)
+	{
+		std::vector<core::recti> marks;
+		if (content_extent <= view_extent || view_extent <= 0) return marks;
+
+		const auto start = horizontal ? lane.left : lane.top;
+		const auto end = horizontal ? lane.right : lane.bottom;
+		const auto thick = std::max(1, thickness);
+		const auto thumb = std::clamp(thumb_length, 0, end - start);
+		const auto travel = std::max(0, end - start - thumb);
+		const auto max_scroll = content_extent - view_extent;
+
+		for (const auto centre : centres)
+		{
+			const auto scrolled = centre - view_extent / 2;
+			const auto at = std::clamp(start + thumb / 2 + core::mul_div(scrolled, travel, max_scroll),
+			                           start + thick / 2, std::max(start + thick / 2, end - thick + thick / 2));
+			const auto mark = horizontal ? core::recti(at - thick / 2, lane.top, at - thick / 2 + thick, lane.bottom)
+			                             : core::recti(lane.left, at - thick / 2, lane.right, at - thick / 2 + thick);
+
+			if (!marks.empty() && (horizontal ? mark.left <= marks.back().right : mark.top <= marks.back().bottom))
+			{
+				auto& last = marks.back();
+				if (horizontal) last.right = std::max(last.right, mark.right);
+				else last.bottom = std::max(last.bottom, mark.bottom);
+			}
+			else
+			{
+				marks.push_back(mark);
+			}
+		}
+
+		return marks;
+	}
+
 	class scroller
 	{
 	public:
@@ -471,6 +563,10 @@ namespace ui
 		core::recti _client_bounds;
 		core::recti _scroll_bounds;
 		std::vector<scroller_section> _sections;
+		// Where marked things lie in the content, by their centres along the scroll, in order, and the colour the
+		// scroll bar marks them in.
+		std::vector<int> _mark_centres;
+		core::color32 _mark_color = 0;
 		std::function<void(hover_bubble&, core::pointi)> popup_func;
 		std::function<void()> changed_func;
 
@@ -499,6 +595,10 @@ namespace ui
 			return !_sections.empty() || _active ? 1 : core::mul_div(_scroll_bounds.width(), 2, 9);
 		}
 
+		// The shortest band drawn: shorter it cannot be read or aimed at, and drawn against the band above it, it reads
+		// as a second band overlapping it.
+		static constexpr int min_band_height = 8;
+
 		// Section bands in track-relative coordinates, in paint order.
 		template <class F> void for_each_band(F&& f) const
 		{
@@ -512,9 +612,6 @@ namespace ui
 			}
 
 			constexpr auto band_gap = 2;
-			// Matches the minimum the sections are generated against. A band below it cannot be read
-			// or aimed at, and drawn against the band above it it reads as a second overlapping band.
-			constexpr auto min_band_height = 8;
 
 			const auto count = _sections.size();
 			auto top = 0;
@@ -611,6 +708,67 @@ namespace ui
 
 		void sections(std::vector<scroller_section> section_offsets) { _sections = std::move(section_offsets); }
 
+		// Names the bands after the runs of the list scrolled, which ends at bottom: a run as long as a band can be is
+		// a band of its own, and runs too short to see or aim at fold into the band that follows, which the run filling
+		// most of it names - not the one that happens to end at its boundary, which can be a run of one item. Asked
+		// once the scroller is laid out, since how long a run shows hangs on the track.
+		void sections_from_runs(const std::span<const scroller_run> runs, const int bottom)
+		{
+			_sections.clear();
+			if (runs.empty()) return;
+
+			auto run_text = runs.front().text;
+			auto run_icon = runs.front().icon;
+			auto run_top = runs.front().top;
+			auto band_top = 0;
+			auto caption_text = run_text;
+			auto caption_icon = run_icon;
+			auto caption_height = 0;
+
+			const auto close_run = [&](const int run_bottom)
+			{
+				if (run_bottom - run_top > caption_height)
+				{
+					caption_height = run_bottom - run_top;
+					caption_text = run_text;
+					caption_icon = run_icon;
+				}
+			};
+
+			for (const auto& run : runs)
+			{
+				if (core::icmp(run_text, run.text) == 0 && run_icon == run.icon) continue;
+
+				close_run(run.top);
+				run_text = run.text;
+				run_icon = run.icon;
+				run_top = run.top;
+
+				// The band only starts again where a section was kept, so this measures the band as it is drawn.
+				if (logical_to_scrollbar_pos(run.top - band_top) > min_band_height)
+				{
+					_sections.push_back({std::string(caption_text), caption_icon, run.top});
+					band_top = run.top;
+					caption_height = 0;
+				}
+			}
+
+			close_run(bottom);
+
+			if (logical_to_scrollbar_pos(bottom - band_top) > min_band_height)
+			{
+				_sections.push_back({std::string(caption_text), caption_icon, bottom});
+			}
+		}
+
+		// Marks things the content holds on the scroll bar - what is selected, what is pointed at - by their centres
+		// along the scroll, in order, so one scrolled out of sight can still be found.
+		void marks(std::vector<int> centres, const core::color32 color)
+		{
+			_mark_centres = std::move(centres);
+			_mark_color = color;
+		}
+
 		const core::pointi scroll_offset() const { return _offset; }
 
 		const core::recti client_bounds() const { return _client_bounds; }
@@ -675,6 +833,7 @@ namespace ui
 			_client_bounds.clear();
 			_scroll_bounds.clear();
 			_sections.clear();
+			_mark_centres.clear();
 			popup_func = {};
 		}
 
@@ -1123,6 +1282,13 @@ namespace ui
 
 		void render_background(render::draw_context& dc, const core::pointi element_offset) const
 		{
+			render_background(dc, element_offset, calc_background_color(dc));
+		}
+
+		// The background in a colour the element chooses for a state of its own - a selection drawn for the pane it
+		// is in - with the same corners and repaint margin as its own.
+		void render_background(render::draw_context& dc, const core::pointi element_offset, const core::color bg) const
+		{
 			const auto pad = padding * dc.scale_factor;
 
 			// draw_rounded_rect grows its fill by round(0.8333 * (radius + 2) - radius), which is at most
@@ -1130,8 +1296,6 @@ namespace ui
 			const auto slack = std::max(pad.cx, pad.cy) + 2;
 			invalidate_slack = slack < unknown_invalidate_slack ? static_cast<uint8_t>(slack)
 			                                                    : unknown_invalidate_slack;
-
-			const auto bg = calc_background_color(dc);
 
 			if (bg.a > 0.0f)
 			{
@@ -1407,8 +1571,6 @@ namespace ui
 		{
 			kind = element_kind::frame;
 		}
-
-		virtual frame_ptr placed_frame() const { return child; }
 	};
 
 	using frame_element_ptr = std::shared_ptr<frame_element>;

@@ -21,7 +21,8 @@
 
 namespace ui
 {
-	// table_layout — Shared table rendering helpers used by markdown and CSV views.
+	// table_layout — Shared table helpers: the Markdown and CSV views' parsing and drawing, and the column sizing,
+	// cell fitting and row shading every table uses.
 	namespace table_layout
 	{
 		// Content widths and user widths share the same layout in document tables,
@@ -126,6 +127,28 @@ namespace ui
 			draw.draw_rect(clip, core::color(bg));
 			draw.draw_text(text, clip, font, render::text_style::single_line, core::color(fg),
 			               core::color(core::rgba(0, 0, 0, 0)));
+		}
+
+		// Text cut to a width and ended with an ellipsis where it is wider, as a file browser shows a name too long for
+		// its column: drawn whole it would be clipped with nothing to say so. Text that fits is as it is, and a
+		// character is never split.
+		[[nodiscard]] std::string fit_text(render::measure_context& mc, std::string_view text, int width,
+		                                   render::font_face font = render::font_face::dialog);
+
+		// Text broken into lines at its spaces, as many words to a line as fit the width, so a name of several words
+		// can stand in a column no wider than its widest word. Nothing where a word alone is wider than the width:
+		// such text is fitted to one line instead, ending in an ellipsis.
+		[[nodiscard]] std::vector<std::string> wrap_words(render::measure_context& mc, std::string_view text, int width,
+		                                                  render::font_face font = render::font_face::dialog);
+
+		// How wide the widest word of the text is: the narrowest a column can be and still show it whole, wrapped.
+		[[nodiscard]] int widest_word(render::measure_context& mc, std::string_view text,
+		                              render::font_face font = render::font_face::dialog);
+
+		// The shade every other row of a table is drawn on, so a row reads across from one column to the next.
+		inline void draw_row_stripe(render::draw_context& draw, const core::recti row)
+		{
+			draw.draw_rounded_rect(row, core::color(0x000000, draw.colors.alpha / 11.11f), draw.padding1);
 		}
 
 		// The mark on a sorted column's heading: a chevron at the top of its cell, pointing up for an ascending sort

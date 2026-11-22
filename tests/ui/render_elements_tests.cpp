@@ -5,7 +5,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Purpose: The element tree's suite: flex layout, the scroller's track, thumb and anchors, and the
+// Purpose: The element tree's suite: flex layout, the scroller's track, thumb, anchors and named bands, and the
 // controller an element host keeps - reused, escaped and bounded by the hit test that chose it. They
 // began as Diffractor's, which keeps its own copies of them.
 
@@ -14,6 +14,8 @@
 #include "libdesktop/ui/table_element.h"
 #include "libdesktop/ui/test_support.h"
 #include "test.h"
+
+#include <format>
 
 using namespace std::literals;
 
@@ -531,6 +533,69 @@ static void should_close_view_scroller_bands_over_track()
 	assert_equal(track_height, bands.back().second, "bands close off the track");
 }
 
+// A list's runs name the bands of its scroll bar: runs named alike are one band, a run too short to see folds into the
+// band that follows, which the run filling most of it names, and the last band ends where the list does. A name wider
+// than the bar ends in an ellipsis.
+static void should_name_scroll_bar_bands_after_a_lists_runs()
+{
+	ui::scroller scroller;
+	scroller.layout({100, 1000}, core::recti(0, 0, 100, 200), core::recti(60, 0, 100, 204));
+	const auto names = [&scroller]
+	{
+		std::string result;
+		for (const auto& s : scroller._sections) result += std::format("{}@{} ", s.text, s.y);
+		return result;
+	};
+
+	const std::vector<ui::scroller_run> runs{{"2024", {}, 0},   {"2024", {}, 300}, {"2023", {}, 500},
+	                                         {"2022", {}, 520}, {"2021", {}, 560}, {"2020", {}, 900}};
+	scroller.sections_from_runs(runs, 1000);
+	assert_equal_strict("2024@500 2022@560 2021@900 2020@1000 "s, names(),
+	                    "a year over two runs is one band, and a short year folds into the band named by the longest");
+
+	scroller.sections_from_runs({}, 1000);
+	assert_equal(true, scroller._sections.empty(), "a list with no runs has no named bands");
+
+	const auto name = "Suggested faces"sv;
+	const auto ellipsis = "\xE2\x80\xA6"sv;
+	scroller.sections({{std::string(name), icon_index{}, 1000}});
+	ui::test::fake_draw_context dc;
+	scroller.draw_scroll(dc);
+	std::string_view label;
+	for (const auto& t : dc.texts)
+	{
+		if (t.text.ends_with(ellipsis)) label = t.text;
+	}
+	assert_equal(true,
+	             label.size() > ellipsis.size() && name.starts_with(label.substr(0, label.size() - ellipsis.size())),
+	             "a name wider than the bar ends in an ellipsis");
+}
+
+// A band's name of several words wraps where the band is tall enough for every line, so a bar need only be as wide as
+// the widest word; a band with height for one line still ends the name in an ellipsis.
+static void should_wrap_scroll_bar_band_names_where_there_is_room()
+{
+	ui::scroller scroller;
+	// A bar whose bands are 80 across: room for "Suggested", at 8 a character, but not "Suggested faces".
+	scroller.layout({100, 1000}, core::recti(0, 0, 100, 200), core::recti(18, 0, 100, 204));
+	scroller.sections({{"Suggested faces", icon_index{}, 900}, {"Similar faces", icon_index{}, 1000}});
+	ui::test::fake_draw_context dc;
+	scroller.draw_scroll(dc);
+
+	std::vector<std::string> drawn;
+	for (const auto& t : dc.texts)
+		if (!t.text.empty()) drawn.push_back(t.text);
+	const auto has = [&drawn](const std::string_view text)
+	{
+		return std::ranges::find(drawn, text) != drawn.end();
+	};
+	assert_equal(true, has("Suggested") && has("faces"), "a tall band's name wraps at its words");
+	assert_equal(true,
+	             std::ranges::any_of(drawn, [](const std::string& t)
+	{ return t.starts_with("Simil") && t.ends_with("\xE2\x80\xA6"); }),
+	             "a band a line tall ends its name in an ellipsis");
+}
+
 static void should_survive_a_host_with_no_window()
 {
 	const auto host = std::make_shared<detached_test_host>();
@@ -830,6 +895,7 @@ static void should_keep_table_cells_in_the_element_tree()
 	table->render(dc, {});
 	assert_equal(true, dc.drawn_text().find("child") != std::string::npos,
 	             "table renders the children its tree exposes");
+	assert_equal(true, dc.drawn_text().find("Label") != std::string::npos, "and the headings over them");
 	table->clear();
 	table->add(std::vector<ui::element_ptr>(10, std::make_shared<flex_test_element>(core::sizei{30, 20})));
 	table->layout(mc, {0, 0, 300, 100});
@@ -908,6 +974,8 @@ static void should_sort_a_table_from_its_headings()
 	assert_equal(1, changes, "the owner is told");
 	click(1, {-1, -1});
 	assert_equal(true, in_order(order(), {0, 1, 2, 3}), "a second click sorts the other way, keyless rows still last");
+	click(1, {-1, -1});
+	assert_equal(-1, table->sort_column(), "a third click gives the rows back their own order");
 	click(0, {-1, -1});
 	assert_equal(true, table->sort_ascending() && in_order(order(), {1, 0, 2, 3}), "text sorts as it is read");
 
@@ -917,6 +985,16 @@ static void should_sort_a_table_from_its_headings()
 	ui::hit_test_context unsortable_ctx(unsortable, area);
 	assert_equal(true, table->controller_from_location(host, unsortable, {}, unsortable_ctx) == nullptr,
 	             "a heading that cannot sort is not a button");
+
+	click(0, {-1, -1});
+	assert_equal(true, !table->sort_ascending() && in_order(order(), {1, 2, 0, 3}),
+	             "a second click on the names sorts them from the end, keyless rows still last");
+	click(0, {-1, -1});
+	assert_equal(true, table->sort_column() == -1 && in_order(order(), {0, 1, 2, 3}),
+	             "and a third puts the rows back in the order they were added in");
+	click(0, {-1, -1});
+	assert_equal(true, table->sort_column() == 0 && table->sort_ascending(),
+	             "a fourth starts again from the column's own way");
 
 	table->clear();
 	table->add_row({b, name("2"), name("x")}, {"b", 2});
@@ -962,6 +1040,29 @@ static void should_widen_a_column_beside_a_filled_fixed_one()
 	table->layout(mc, area);
 	assert_equal(widths[1] + 60, table->column_widths()[1], "a column widens into the room the last one was given");
 	assert_equal(widths[2] - 60, table->column_widths()[2], "which the last column gives back");
+}
+
+// A mark on a scroll bar is under the thumb just while what it marks shows: where the thumb's centre is with the thing
+// in the middle of the view. Marks that would touch are one, a column's run across it and a strip's down it, and
+// content that fits its view has no scroll bar to mark.
+static void should_mark_where_things_lie_on_a_scroll_bar()
+{
+	// A track of 100 for a view of 100 over content of 1000: the thumb is 10 long and travels 90.
+	const std::vector<int> centres{50, 500, 505, 950};
+	const auto column = ui::scroll_mark_bounds({0, 0, 10, 100}, 10, 100, 1000, centres, 2, false);
+	assert_equal(3u, static_cast<unsigned>(column.size()), "marks that would touch are drawn as one");
+	assert_equal(true, column[0] == core::recti(0, 4, 10, 6), "the first thing is marked where the thumb starts");
+	assert_equal(49, column[1].top, "a thing in the middle of the content is marked in the middle of the track");
+	assert_equal(true, column[2] == core::recti(0, 94, 10, 96), "and the last where the thumb ends");
+
+	const auto thumb_top = core::mul_div(450, 90, 900);
+	assert_equal(true, column[1].top >= thumb_top && column[1].bottom <= thumb_top + 10,
+	             "a mark is under the thumb while what it marks is in view");
+
+	const auto strip = ui::scroll_mark_bounds({0, 0, 100, 10}, 10, 100, 1000, centres, 2, true);
+	assert_equal(true, !strip.empty() && strip[0] == core::recti(4, 0, 6, 10), "a strip's marks run down its track");
+	assert_equal(true, ui::scroll_mark_bounds({0, 0, 10, 100}, 10, 100, 100, centres, 2, false).empty(),
+	             "and content that fits has nothing to mark");
 }
 
 static void should_keep_a_scrolled_table_alive_during_capture()
@@ -1146,12 +1247,16 @@ void register_render_elements_tests(test_registry& tests)
 	tests.add("Should sort a table from its headings"s, should_sort_a_table_from_its_headings);
 	tests.add("Should widen a column beside a filled fixed one"s, should_widen_a_column_beside_a_filled_fixed_one);
 	tests.add("Should keep a scrolled table alive during capture"s, should_keep_a_scrolled_table_alive_during_capture);
+	tests.add("Should mark where things lie on a scroll bar"s, should_mark_where_things_lie_on_a_scroll_bar);
 	tests.add("Should layout flex elements"s, should_layout_flex_elements);
 	tests.add("Should preserve view scroller anchor across layout"s,
 	          should_preserve_view_scroller_anchor_across_layout);
 	tests.add("Should map the view scroller track to the list"s, should_map_the_view_scroller_track_to_the_list);
 	tests.add("Should drag view scroller thumb from grab point"s, should_drag_view_scroller_thumb_from_grab_point);
 	tests.add("Should close view scroller bands over track"s, should_close_view_scroller_bands_over_track);
+	tests.add("Should name scroll bar bands after a list's runs"s, should_name_scroll_bar_bands_after_a_lists_runs);
+	tests.add("Should wrap scroll bar band names where there is room"s,
+	          should_wrap_scroll_bar_band_names_where_there_is_room);
 	tests.add("Should survive a host with no window"s, should_survive_a_host_with_no_window);
 	tests.add("Should not perform a cancelled gesture on release"s, should_not_perform_a_cancelled_gesture_on_release);
 	tests.add("Should offer escape to an idle controller"s, should_offer_escape_to_an_idle_controller);

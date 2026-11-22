@@ -506,6 +506,17 @@ static void should_let_windows_confirm_recycle_that_would_destroy()
 	             "explicit permanent delete was already confirmed by the application");
 }
 
+// A delete the application has already confirmed as permanent - a network share Windows cannot recycle - is one
+// question, not two: Windows still recycles what it can, and destroys the rest without asking again.
+static void should_not_ask_again_for_a_delete_confirmed_as_permanent()
+{
+	const auto flags = platform::probe_shell_delete_flags(platform::delete_mode::recycle_where_possible);
+	assert_equal(true, (flags & FOF_ALLOWUNDO) != 0, "what Windows can recycle still goes to the Recycle Bin");
+	assert_equal(true, (flags & FOF_NOCONFIRMATION) != 0, "the rest was confirmed as permanent by the application");
+	assert_equal(false, (flags & FOF_WANTNUKEWARNING) != 0, "so Windows does not ask a second time");
+	assert_equal(true, (flags & FOF_SILENT) != 0, "and shows no progress of its own");
+}
+
 static void should_read_coherent_number_format_snapshots()
 {
 	platform::set_number_format_probe_snapshots(
@@ -1150,6 +1161,8 @@ void register_platform_system_win_tests(test_registry& tests)
 	          should_classify_an_aborted_shell_operation_as_cancelled);
 	tests.add("Should let Windows confirm recycle that would destroy"s,
 	          should_let_windows_confirm_recycle_that_would_destroy);
+	tests.add("Should not ask again for a delete confirmed as permanent"s,
+	          should_not_ask_again_for_a_delete_confirmed_as_permanent);
 	tests.add("Should read coherent number format snapshots"s, should_read_coherent_number_format_snapshots);
 	tests.add("Should reject unusable file names"s, should_reject_unusable_file_names);
 	tests.add("Should publish pasted bitmap after closing stage"s, should_publish_pasted_bitmap_after_closing_stage);

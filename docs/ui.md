@@ -20,12 +20,14 @@ Each header's comments are its reference; this is where to look.
 | Header | What it holds |
 |---|---|
 | `ui/fwd.h` | The opaque enums `icon_index`, `command_group` and `commands`, forward declarations, pointer aliases |
-| `ui/style.h` | The palette (`style::colors`) and the animation helpers |
+| `ui/style.h` | The palette (`style::colors`), the tones a row's text reads in, and the animation helpers |
 | `ui/command.h` | `command`, the styles of edits and toolbars, the spelling dictionary an edit is given, the chrome's glyphs |
 | `ui/frame.h` | `frame_host`, `frame_style`, `frame`, `create_app_frame`, the bubble, `null_frame`, saving and restoring the focus |
 | `ui/app.h` | `ui::app`, the UI's part of the application |
-| `ui/elements.h` | Elements, flex layout, hit testing and controllers, `element_host`, the scroller, frame elements, and text, link, icon, divider and padding elements |
+| `ui/elements.h` | Elements, flex layout, hit testing and controllers, `element_host`, the scroller and the named bands and marks on its bar, frame elements, the looks entries' states are drawn in, and text, link, icon, divider and padding elements |
 | `ui/table_element.h` | Element tables: ordinary tree-owned cells, shared column sizing, optional headings that sort the rows and resize the columns, and optional scrolling |
+| `ui/table_headings.h` | The band of headings any table draws over its rows: its look, the sort a click leaves, row sort keys, and the heading and divider controllers |
+| `ui/list_selection.h` | `list_selection`: which of a list's entries are selected, the keyboard's cursor and the anchor a range starts from, by the rules every list that selects follows; `is_drag` and `edge_scroll`: when a press becomes a drag and how fast a drag held at an end carries the list |
 | `ui/controls.h` | `control` and its kinds - buttons, edits, sliders, toolbars, date fields - the input manager, the drawn menu and bubble, and the window-free models they edit |
 | `ui/menu_bar.h` | `make_menu_bar` and `dispatch_accelerator` |
 | `ui/shell.h` | `shell`, the simple application, its `shell_options`, `key_input` and `step_clock`; `canvas_element`, `surface_element` and `render_to_surface` |
@@ -113,6 +115,10 @@ own. On Linux every pane is composed. Popups remain separate windows, and a
 dialog or popup of a window made `frame_style::offscreen` is offscreen too.
 `ui::no_frame()` stands in for a frame that does not exist.
 
+Hover bubbles measure against the work area of the display containing their anchor, including
+padding and shadow. If neither side fits, they try the other axis. Long text can use extra width
+before the popup clips content too large to fit on that display.
+
 - The application's window lays its host out as it is made, so the first paint
   after `platform::run` shows a laid-out tree. A dialog, a pane and a popup are
   laid out once placed (`window_bounds`, `position`) or asked (`layout()`),
@@ -163,6 +169,29 @@ between panels. `document_panel` uses the same chrome for all document views;
 its background remains visible independently of media-overlay opacity. Element
 padding is an outside porch, while flex-container padding is an inside inset.
 
+The entries of every list, grid and strip draw their states in the same looks:
+`selection_fill`, full while the pane holding the entry has the keyboard and
+muted while it has not, so a selection never reads as a hover; `hover_fill`;
+`marquee_fill` for the band a drag from between entries draws; and
+`draw_keyboard_ring` round what the keyboard is on, as a focused control shows
+it. An element drawing a state of its own passes its colour to
+`render_background`, which keeps the corners and repaint margin. An area with
+nothing to show says so with `draw_empty_message`: faint, centred and wrapped.
+A scroll bar marks where things its content holds lie - what is selected, what
+is pointed at - with `scroller::marks`, each where the thumb's centre is while
+that thing is in the middle of the view, so a mark is under the thumb just while
+what it marks shows; `scroll_mark_bounds` places them, so a strip that draws its
+own bar marks it alike. It names its list's runs - groups, years, the sections
+under a list's headings - in bands with `scroller::sections_from_runs`: runs
+named alike are one band, and a run too short to see or aim at folds into the
+band that follows, which the run filling most of it names. A name of several
+words wraps at its words where its band has the height for every line, so a bar
+need be no wider than its widest word (`table_layout::widest_word`); a name that
+cannot wrap ends in an ellipsis.
+A row's text
+reads in `style::tone_text`'s colours by what it does - muted, accent, caution,
+succeeded or failed - which are the palette's own.
+
 A hit test walks the tree and hands the pointer to a `ui::controller`, which
 the `element_host` keeps while the pointer stays inside the region the test
 says the answer holds for: `hit_test_context` cuts out of it everything tested
@@ -190,6 +219,13 @@ library and belong to no frame: whatever tree holds one is where it is shown. A
 control is laid out by flex like the rest of the tree, and measures and
 arranges itself with the context its layout is given, never through a frame,
 because it is laid out before a frame finds it.
+
+Measurement, drawing and ordinary input are virtual so applications can add
+their own controls. Optional system-key, caption-button and tick handlers are
+bound at compile time by `control_with_features`, and are only called on
+controls that supply them. The input manager still discovers those controls
+through the same tree. Checking and clicking a button are operations on
+`ui::button`, not on every control.
 
 Each frame's `ui::input_manager` knows which control has the keyboard, which
 the pointer is over and which holds it, finding them in the tree as it needs
@@ -300,11 +336,33 @@ Element tables keep them through empty row refreshes and can transfer their logi
 size snapshot to a replacement table before its first layout. An element table
 with headings draws them in a band pinned over its rows: a click on one sorts the
 rows by the key each row gives for its column - first the column's own way, then
-the other, rows without a key last - and the divider after one resizes its
+the other, rows without a key last - a third click gives the rows back the order
+they were added in, and the divider after one resizes its
 column, the filled last column giving back what filling gave it. A table without
 headings has neither, so its first row never reads as a heading.
 `on_user_change` tells an owner that rebuilds its table, so the replacement gets
-the same sizes and order.
+the same sizes and order. The band is `table_headings.h`'s - how it is drawn, the
+sort a click leaves (`next_table_sort`), the sort keys and the controllers a
+heading and a divider answer with - and an application's own row list draws and
+answers through it too, placing the cells over rows it keeps itself, so every
+headed table looks and sorts alike. `table_layout::fit_text` ends a cell's line
+too wide for it in an ellipsis rather than clipping it, `wrap_words` breaks a
+name into the lines its words fit, and `draw_row_stripe`
+shades every other row. A list whose entries are selected keeps them in a
+`list_selection`, by one set of rules: a click selects one alone, Ctrl toggles
+one, Shift takes the range from the anchor and Ctrl with Shift adds it; the keys
+move the cursor and select what it reaches, Shift extending the range, Ctrl
+moving the cursor alone and Ctrl+Space toggling the entry it is on. Entries
+taken together - those a rubber band touches, those under a heading - replace,
+join or toggle the selection through `choose`, and `rename` carries an entry
+that is known by a new key.
+`step_list_cursor` is where those keys take the cursor along a list laid out in
+a line: a step for its arrows, a page for Page Up and Page Down, and either end
+for Home and End. A press is a drag - a rubber band, a move - once `is_drag`
+says it has gone `drag_distance` pixels either way, the same everywhere, and
+`edge_scroll` carries a list along while a drag is held near either end: from
+nothing at the inner edge of a zone 48 pixels deep at 100% scale up to half the
+list's length a second at its very end, timed rather than counted.
 A view never opens a file, knows a path or
 names an application: loading and saving stay the application's.
 

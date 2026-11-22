@@ -69,12 +69,12 @@ namespace
 namespace ui
 {
 	doc_view::doc_view(view_host& host, const view_theme& th, view_context* context, text_clipboard* clipboard) :
-		text_view(host, th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
+		control_with_features(host, th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
 	{
 	}
 
 	doc_view::doc_view(const view_theme& th, view_context* context, text_clipboard* clipboard) :
-		text_view(th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
+		control_with_features(th, context, clipboard), _highlight(syntax::for_language(syntax::language::plain))
 	{
 	}
 
@@ -527,7 +527,7 @@ namespace ui
 		invalidate(caret_bounds());
 	}
 
-	void doc_view::tick()
+	void doc_view::on_control_tick()
 	{
 		if (_drag_selection && _doc) on_timer_drag_selection();
 	}

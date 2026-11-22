@@ -506,8 +506,27 @@ namespace platform
 	file_op_result move_file(const file_ptr& existing, core::file_path destination, bool fail_if_exists);
 	file_op_result delete_file(const file_ptr& existing);
 
+	// What a delete does with what it is given, once the user has agreed to it.
+	enum class delete_mode
+	{
+		// To the Recycle Bin. Where the system cannot recycle something it asks before destroying it, so a delete
+		// agreed to as one that can be undone never becomes permanent without asking.
+		recycle,
+		// To the Recycle Bin where the system can, and destroyed where it cannot, without asking again: for a delete
+		// the user has already agreed to as permanent, because can_recycle said it could not be recycled.
+		recycle_where_possible,
+		// Destroyed, without the Recycle Bin and without asking.
+		permanent,
+	};
+
 	file_op_result delete_items(const std::vector<core::file_path>& files,
-	                            const std::vector<core::folder_path>& folders, bool allow_undo);
+	                            const std::vector<core::folder_path>& folders, delete_mode mode);
+	// allow_undo is delete_mode::recycle, and without it delete_mode::permanent.
+	inline file_op_result delete_items(const std::vector<core::file_path>& files,
+	                                   const std::vector<core::folder_path>& folders, const bool allow_undo)
+	{
+		return delete_items(files, folders, allow_undo ? delete_mode::recycle : delete_mode::permanent);
+	}
 	// Returns true if deleting the given paths would move them to the Recycle Bin.
 	// Returns false when any path is on a location that bypasses the Recycle Bin
 	// (for example a UNC network path), causing a permanent, unrecoverable delete.
@@ -521,6 +540,68 @@ namespace platform
 	file_op_result move_or_copy(const std::vector<core::file_path>& files,
 	                            const std::vector<core::folder_path>& folders, core::folder_path target, bool is_move,
 	                            bool replace_existing = false);
+
+	// A phone or camera that a cable connects as a device rather than as a drive - on Windows a portable device,
+	// which speaks MTP or PTP. What it holds is reached through it, by the id it gives each object, not by a path.
+	struct portable_device_t
+	{
+		std::string id;
+		std::string name;
+	};
+
+	using portable_devices_t = std::vector<portable_device_t>;
+	// The portable devices connected now, less those that are drives as well and so reached by their paths. None on
+	// a platform without portable devices.
+	portable_devices_t portable_devices();
+
+	// A file a portable device holds.
+	struct portable_file_t
+	{
+		std::string id;
+		// Where the device keeps it, from its storage down, separated by the platform's separator:
+		// "Internal shared storage\DCIM\Camera".
+		std::string folder;
+		std::string name;
+		core::file_size size;
+		// In the units file_attributes_t carries; 0 where the device does not say.
+		uint64_t modified = 0;
+		uint64_t created = 0;
+	};
+
+	// The files at any depth under the folders named, looked for at the top of each of the device's storages, case
+	// aside: {"DCIM"} lists what a camera took without walking the rest of a phone. Empty when the device has gone, is
+	// locked, or the platform has none.
+	std::vector<portable_file_t> portable_device_files(std::string_view device_id,
+	                                                   const std::vector<std::string_view>& top_folders,
+	                                                   const core::cancel_token& token);
+
+	struct portable_copy_t
+	{
+		std::string id;
+		core::file_path destination;
+		// Stamped on the copy, in file_attributes_t's units; 0 leaves the time of the copy, or takes the other.
+		uint64_t modified = 0;
+		uint64_t created = 0;
+	};
+
+	struct portable_copy_result
+	{
+		// The copies made, in the order asked for.
+		core::file_paths copied;
+		// Each file the device would not give up - one kept only in the cloud, or still being written - by its index
+		// in what was asked for, with why. The rest are copied regardless.
+		std::vector<std::pair<size_t, std::string>> unreadable;
+		// Why the copy stopped short, when it did: cancelled, the device gone, or a copy that could not be written.
+		file_op_result stopped{file_op_result_code::OK};
+	};
+
+	// Copies files a device holds to destinations that must not exist yet, making the folders they need, with the
+	// device opened once for them all; what it wrote of a file it did not finish is removed. progress hears how many
+	// have been tried after each.
+	portable_copy_result copy_from_portable_device(std::string_view device_id,
+	                                               const std::vector<portable_copy_t>& files,
+	                                               const core::cancel_token& token,
+	                                               const std::function<void(size_t tried)>& progress = {});
 
 	file_op_result delete_file(core::file_path path);
 	file_op_result make_file_writable(core::file_path path);

@@ -5,7 +5,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Purpose: Table cell parsing, alignment classification, and width capping.
+// Purpose: Table cell parsing, alignment classification, width capping, and fitting a cell's text to its width, on one
+// line or wrapped at its words.
 
 // table_layout.cpp — the pure cell-parsing helpers behind the table views.
 //
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 
 namespace ui::table_layout
@@ -382,6 +384,109 @@ namespace ui::table_layout
 			const auto from_end = static_cast<int>(order.size() - j);
 			col_widths[order[j]] = base + (from_end <= extra ? 1 : 0);
 		}
+	}
+
+	std::string fit_text(render::measure_context& mc, const std::string_view text, const int width,
+	                     const render::font_face font)
+	{
+		constexpr auto unbounded = std::numeric_limits<int>::max() / 4;
+		const auto measure = [&mc, font](const std::string_view s)
+		{
+			return mc.measure_text(s, font, render::text_style::single_line, unbounded).cx;
+		};
+
+		if (text.empty() || measure(text) <= width) return std::string(text);
+
+		constexpr std::string_view ellipsis = "\xE2\x80\xA6";
+		const auto available = width - measure(ellipsis);
+		// The most characters that fit before the ellipsis: as many as `fits` always do, as many as `unfit` never.
+		auto fits = 0;
+		auto unfit = core::utf8_codepoint_count(text);
+
+		while (fits + 1 < unfit)
+		{
+			const auto mid = fits + (unfit - fits) / 2;
+			if (measure(text.substr(0, core::utf8_truncate(text, mid))) <= available) fits = mid;
+			else unfit = mid;
+		}
+
+		auto result = std::string(text.substr(0, core::utf8_truncate(text, fits)));
+		result += ellipsis;
+		return result;
+	}
+
+	namespace
+	{
+		// Each word of the text, in order: what lies between its spaces.
+		template <class F> void for_each_word(const std::string_view text, F&& f)
+		{
+			size_t pos = 0;
+			while (pos < text.size())
+			{
+				while (pos < text.size() && text[pos] == ' ') ++pos;
+				if (pos >= text.size()) break;
+				const auto end = std::min(text.find(' ', pos), text.size());
+				f(text.substr(pos, end - pos));
+				pos = end;
+			}
+		}
+	}
+
+	std::vector<std::string> wrap_words(render::measure_context& mc, const std::string_view text, const int width,
+	                                    const render::font_face font)
+	{
+		constexpr auto unbounded = std::numeric_limits<int>::max() / 4;
+		const auto measure = [&mc, font](const std::string_view s)
+		{
+			return mc.measure_text(s, font, render::text_style::single_line, unbounded).cx;
+		};
+
+		std::vector<std::string> lines;
+		std::string line;
+		auto fits = true;
+
+		for_each_word(text, [&](const std::string_view word)
+		{
+			if (!fits) return;
+			if (measure(word) > width)
+			{
+				fits = false;
+				return;
+			}
+
+			if (line.empty())
+			{
+				line = word;
+				return;
+			}
+
+			auto longer = line;
+			longer += ' ';
+			longer += word;
+
+			if (measure(longer) <= width)
+			{
+				line = std::move(longer);
+			}
+			else
+			{
+				lines.push_back(std::move(line));
+				line = word;
+			}
+		});
+
+		if (!fits) return {};
+		if (!line.empty()) lines.push_back(std::move(line));
+		return lines;
+	}
+
+	int widest_word(render::measure_context& mc, const std::string_view text, const render::font_face font)
+	{
+		constexpr auto unbounded = std::numeric_limits<int>::max() / 4;
+		auto widest = 0;
+		for_each_word(text, [&](const std::string_view word)
+		{ widest = std::max(widest, mc.measure_text(word, font, render::text_style::single_line, unbounded).cx); });
+		return widest;
 	}
 
 }

@@ -315,12 +315,10 @@ namespace ui
 		std::function<void(bool)> _changed;
 		bool _checked = false;
 		bool _default = false;
-		int _group = radio_group_default;
 		bool _pressed = false;
 		bool _pressed_inside = false;
 
-		drawn_button(const kind k, const bool is_default, const int group) :
-			_kind(k), _default(is_default), _group(group)
+		drawn_button(const kind k, const bool is_default, const int group) : _kind(k), _default(is_default)
 		{
 			traits.first_focus_candidate = true;
 			traits.push_button = k == kind::push;
@@ -352,16 +350,14 @@ namespace ui
 			invalidate();
 		}
 
-		bool is_checked() const override { return _checked; }
+		bool is_checked() const { return _checked; }
 
-		void check_from_group(const bool checked) override { set_checked(checked); }
-
-		void notify_changed() override
+		void notify_changed()
 		{
 			if (_changed) _changed(_checked);
 		}
 
-		void click() override
+		void click()
 		{
 			if (!enabled) return;
 			report_control_used(*this);
@@ -724,7 +720,7 @@ namespace ui
 	// Toolbar
 	///////////////////////////////////////////////////////////////////////////////////////////////////
 
-	class drawn_toolbar final : public toolbar
+	class drawn_toolbar final : public control_with_features<drawn_toolbar, toolbar>
 	{
 	public:
 		struct button_state
@@ -1142,7 +1138,7 @@ namespace ui
 			invalidate(button_rect(index));
 		}
 
-		int caption_button_at(const core::pointi loc) const override
+		int caption_button_at(const core::pointi loc) const
 		{
 			if (!enabled) return 0;
 
@@ -1158,12 +1154,12 @@ namespace ui
 			return 0;
 		}
 
-		bool has_caption_button(const int id) const override
+		bool has_caption_button(const int id) const
 		{
 			return std::ranges::any_of(_buttons, [id](const button_state& b) { return b.command && b.id == id; });
 		}
 
-		void invoke_caption(const int id) override
+		void invoke_caption(const int id)
 		{
 			for (size_t i = 0; i < _buttons.size(); ++i)
 			{
@@ -1829,9 +1825,24 @@ void ui::button::window_text(const std::string_view text)
 	static_cast<drawn_button*>(this)->window_text(text);
 }
 
+bool ui::button::is_checked() const
+{
+	return static_cast<const drawn_button*>(this)->is_checked();
+}
+
 void ui::button::set_checked(const bool checked)
 {
 	static_cast<drawn_button*>(this)->set_checked(checked);
+}
+
+void ui::button::click()
+{
+	static_cast<drawn_button*>(this)->click();
+}
+
+void ui::button::notify_changed()
+{
+	static_cast<drawn_button*>(this)->notify_changed();
 }
 
 int ui::trackbar::get_pos() const
@@ -2007,7 +2018,7 @@ std::vector<ui::input_manager::frame_placement> ui::input_manager::layout()
 		{
 			if (e.kind == element_kind::frame)
 			{
-				if (auto child = static_cast<frame_element&>(e).placed_frame())
+				if (auto child = static_cast<frame_element&>(e).child)
 				{
 					frames.push_back({std::move(child), e.bounds.offset(origin), visible && !e.bounds.is_empty()});
 				}
@@ -2247,26 +2258,30 @@ std::optional<platform::cursor> ui::input_manager::cursor(const core::pointi loc
 	return std::nullopt;
 }
 
+bool ui::is_tab_stop(const control& c, const std::vector<control_ptr>& controls)
+{
+	if (!c.is_visible() || !c.can_focus()) return false;
+	const auto group = c.traits.radio_group;
+	if (group < 0) return true;
+	const auto* const radio = dynamic_cast<const button*>(&c);
+	if (!radio || radio->is_checked()) return true;
+
+	return std::ranges::none_of(controls, [&c, group](const auto& other)
+	{
+		if (other.get() == &c || other->traits.radio_group != group) return false;
+		const auto* const member = dynamic_cast<const button*>(other.get());
+		return member && member->is_checked() && member->can_focus();
+	});
+}
+
 bool ui::input_manager::move_focus(const bool forward)
 {
 	const auto controls = find_controls(false);
 	const auto focused = _focused.lock();
 
-	// A radio group is one stop: entered at its checked button, left by Tab.
-	const auto is_stop = [&controls](const control& c)
-	{
-		if (!c.can_focus()) return false;
-		const auto group = c.traits.radio_group;
-		if (group < 0 || c.is_checked()) return true;
-
-		return std::ranges::none_of(controls, [&c, group](const auto& other) {
-			return other.get() != &c && other->traits.radio_group == group && other->is_checked() && other->can_focus();
-		});
-	};
-
 	std::vector<control*> stops;
 	for (const auto& c : controls)
-		if (is_stop(*c) || c == focused) stops.push_back(c.get());
+		if (is_tab_stop(*c, controls) || c == focused) stops.push_back(c.get());
 	if (stops.empty()) return false;
 
 	const auto current = std::ranges::find(stops, focused.get());
@@ -2282,7 +2297,7 @@ bool ui::input_manager::move_focus(const bool forward)
 		next = forward ? (index + 1) % stops.size() : (index + stops.size() - 1) % stops.size();
 	}
 
-	if (stops[next] == focused.get() && !is_stop(*stops[next])) return false;
+	if (stops[next] == focused.get() && !is_tab_stop(*stops[next], controls)) return false;
 	focus(stops[next], stops[next]->traits.typing);
 	return true;
 }
@@ -2295,7 +2310,7 @@ bool ui::input_manager::key_down(const char32_t key, const platform::key_state k
 
 	// A pending Alt tap has no focus of its own; notify the control so any other key cancels the tap.
 	if (const auto pending = _system_control.lock(); pending && !in_system_mode() && key != platform::keys::ALT)
-		(void)pending->on_system_key(key, keys, true);
+		(void)pending->_features->system_keys.key(*pending, key, keys, true);
 
 	if (focused && focused->can_focus())
 	{
@@ -2309,11 +2324,14 @@ bool ui::input_manager::key_down(const char32_t key, const platform::key_state k
 		     key == platform::keys::RIGHT))
 		{
 			const auto forward = key == platform::keys::DOWN || key == platform::keys::RIGHT;
-			std::vector<control_ptr> members;
+			std::vector<button_ptr> members;
 			for (const auto& c : find_controls(false))
-				if (c->traits.radio_group == group && c->can_focus()) members.push_back(c);
+			{
+				if (c->traits.radio_group != group || !c->can_focus()) continue;
+				if (auto b = std::dynamic_pointer_cast<button>(c)) members.push_back(std::move(b));
+			}
 
-			const auto current = std::ranges::find(members, focused);
+			const auto current = std::ranges::find_if(members, [&](const auto& b) { return b == focused; });
 
 			if (current != members.end() && members.size() > 1)
 			{
@@ -2342,10 +2360,11 @@ bool ui::input_manager::key_down(const char32_t key, const platform::key_state k
 	{
 		for (const auto& c : find_controls(false))
 		{
-			if (c->mnemonic == key && c->can_focus())
+			if (c->mnemonic != key || !c->can_focus()) continue;
+			if (auto* const b = dynamic_cast<button*>(c.get()))
 			{
-				if (!c->traits.push_button) focus(c.get(), false);
-				c->click();
+				if (!b->traits.push_button) focus(b, false);
+				b->click();
 				return true;
 			}
 		}
@@ -2357,9 +2376,10 @@ bool ui::input_manager::key_down(const char32_t key, const platform::key_state k
 		{
 			for (const auto& c : find_controls(false))
 			{
-				if (c->traits.default_button && c->enabled)
+				if (!c->traits.default_button || !c->enabled) continue;
+				if (auto* const b = dynamic_cast<button*>(c.get()))
 				{
-					c->click();
+					b->click();
 					return true;
 				}
 			}
@@ -2381,7 +2401,7 @@ bool ui::input_manager::system_key(const char32_t key, const platform::key_state
 	for (const auto& c : find_controls(false))
 	{
 		if (!c->enabled || !c->ancestors_enabled) continue;
-		if (c->on_system_key(key, keys, down))
+		if (const auto& system = c->_features->system_keys; system && system.key(*c, key, keys, down))
 		{
 			_system_control = c;
 			return true;
@@ -2394,18 +2414,23 @@ bool ui::input_manager::system_key(const char32_t key, const platform::key_state
 bool ui::input_manager::in_system_mode() const
 {
 	const auto c = _system_control.lock();
-	return c && c->is_visible() && c->in_system_mode();
+	return c && c->is_visible() && c->_features->system_keys.active(*c);
 }
 
 void ui::input_manager::cancel_system_mode()
 {
 	const auto active = _system_control.lock();
-	if (active && active->is_visible()) active->cancel_system_mode();
+	if (active && active->is_visible()) active->_features->system_keys.cancel(*active);
 
 	// A mouse-opened bar has not necessarily handled a system key yet, so it has no remembered owner.
 	if (_host)
+	{
 		for (const auto& c : find_controls(false))
-			if (c != active && c->is_visible() && c->in_system_mode()) c->cancel_system_mode();
+		{
+			const auto& system = c->_features->system_keys;
+			if (system && c != active && c->is_visible() && system.active(*c)) system.cancel(*c);
+		}
+	}
 
 	_system_control.reset();
 }
@@ -2458,7 +2483,8 @@ void ui::input_manager::blink()
 
 void ui::input_manager::tick()
 {
-	for (const auto& c : find_controls(false)) c->tick();
+	for (const auto& c : find_controls(false))
+		if (const auto update = c->_features->tick) update(*c);
 }
 
 void ui::input_manager::scale_changed()
@@ -2598,17 +2624,20 @@ void ui::input_manager::caret_moved(const control& c)
 	if (_caret_timer) _host->caret_timer(true, platform::caret_blink_time());
 }
 
-void ui::input_manager::pressed_radio(const control& pressed)
+void ui::input_manager::pressed_radio(const button& pressed)
 {
 	const auto group = pressed.traits.radio_group;
 	if (group < 0) return;
 
 	// Every member hears its new state, as each auto-radio button in a native group did.
-	std::vector<control_ptr> members;
+	std::vector<button_ptr> members;
 	for (const auto& c : find_controls(false))
-		if (c->traits.radio_group == group) members.push_back(c);
+	{
+		if (c->traits.radio_group != group) continue;
+		if (auto b = std::dynamic_pointer_cast<button>(c)) members.push_back(std::move(b));
+	}
 
-	for (const auto& c : members) c->check_from_group(c.get() == &pressed);
+	for (const auto& c : members) c->set_checked(c.get() == &pressed);
 	for (const auto& c : members) c->notify_changed();
 }
 
@@ -2627,7 +2656,8 @@ int ui::input_manager::caption_button_at(const core::pointi loc) const
 
 	for (const auto& c : find_controls(false))
 	{
-		if (const auto id = c->caption_button_at(loc - c->origin())) return id;
+		if (const auto& caption = c->_features->caption)
+			if (const auto id = caption.at(*c, loc - c->origin())) return id;
 	}
 
 	return 0;
@@ -2640,7 +2670,9 @@ void ui::input_manager::caption_hover(const int id)
 
 	for (const auto& c : find_controls(false))
 	{
-		if (c->has_caption_button(previous) || c->has_caption_button(id)) c->invalidate();
+		if (const auto& caption = c->_features->caption;
+		    caption && (caption.contains(*c, previous) || caption.contains(*c, id)))
+			c->invalidate();
 	}
 }
 
@@ -2649,7 +2681,9 @@ void ui::input_manager::caption_press(const int id)
 	if (_caption.press(id))
 	{
 		for (const auto& c : find_controls(false))
-			if (c->has_caption_button(id)) c->invalidate();
+		{
+			if (const auto& caption = c->_features->caption; caption && caption.contains(*c, id)) c->invalidate();
+		}
 	}
 }
 
@@ -2660,16 +2694,16 @@ void ui::input_manager::caption_release(const int id)
 
 	for (const auto& c : controls)
 	{
-		if (c->has_caption_button(id)) c->invalidate();
+		if (const auto& caption = c->_features->caption; caption && caption.contains(*c, id)) c->invalidate();
 	}
 
 	if (invoke_id == 0) return;
 
 	for (const auto& c : controls)
 	{
-		if (c->has_caption_button(invoke_id))
+		if (const auto& caption = c->_features->caption; caption && caption.contains(*c, invoke_id))
 		{
-			c->invoke_caption(invoke_id);
+			caption.invoke(*c, invoke_id);
 			return;
 		}
 	}
@@ -2684,7 +2718,9 @@ void ui::input_manager::caption_leave()
 	{
 		for (const auto& c : find_controls(false))
 		{
-			if (c->has_caption_button(hovered) || c->has_caption_button(pressed)) c->invalidate();
+			if (const auto& caption = c->_features->caption;
+			    caption && (caption.contains(*c, hovered) || caption.contains(*c, pressed)))
+				c->invalidate();
 		}
 	}
 }

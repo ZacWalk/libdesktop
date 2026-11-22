@@ -111,14 +111,14 @@ namespace
 	using controls_host_ptr = std::shared_ptr<controls_host>;
 
 	// A control that counts the ticks it is given.
-	class tick_probe final : public ui::control
+	class tick_probe final : public ui::control_with_features<tick_probe>
 	{
 	public:
 		int ticks = 0;
 
 		core::sizei measure_content(render::measure_context&, int) const override { return {10, 10}; }
 		void paint(render::draw_context&, bool) const override {}
-		void tick() override { ++ticks; }
+		void on_control_tick() { ++ticks; }
 	};
 
 	class frame_creation_check final : public ui::app, public std::enable_shared_from_this<frame_creation_check>

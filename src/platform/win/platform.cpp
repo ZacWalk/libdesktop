@@ -9,6 +9,7 @@
 // file system, threading, networking, and shell integration.
 
 #include "libdesktop/platform.h"
+#include "libdesktop/platform/storage.h"
 
 #include "libdesktop/platform/win32.h"
 #include "os.h"
@@ -492,6 +493,42 @@ platform::get_cached_file_properties_response platform::get_shell_thumbnail(cons
 	}
 
 	return result;
+}
+
+bool platform::storage_probe::seek_free(const core::folder_path folder)
+{
+	if (!folder.is_qualified()) return false;
+	const auto path = platform::to_file_system_path(folder);
+	if (path.starts_with(L"\\\\?\\UNC\\") || (path.starts_with(L"\\\\") && !path.starts_with(L"\\\\?\\")))
+		return false;
+
+	wchar_t mount[MAX_PATH] = {};
+	wchar_t volume[MAX_PATH] = {};
+	if (!GetVolumePathNameW(path.c_str(), mount, MAX_PATH) || GetDriveTypeW(mount) != DRIVE_FIXED ||
+	    !GetVolumeNameForVolumeMountPointW(mount, volume, MAX_PATH))
+		return false;
+
+	const auto [at, added] = _volumes.try_emplace(core::utf16_to_utf8(volume), false);
+	if (added)
+	{
+		std::wstring device(volume);
+		if (!device.ends_with(L'\\')) return false;
+		device.pop_back();
+		const auto handle = CreateFileW(device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+		                                OPEN_EXISTING, 0, nullptr);
+		if (handle == INVALID_HANDLE_VALUE) return false;
+		const core::scope_exit close([handle] { CloseHandle(handle); });
+
+		STORAGE_PROPERTY_QUERY query{};
+		query.PropertyId = StorageDeviceSeekPenaltyProperty;
+		query.QueryType = PropertyStandardQuery;
+		DEVICE_SEEK_PENALTY_DESCRIPTOR info{};
+		DWORD received = 0;
+		at->second = DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query), &info, sizeof(info),
+		                             &received, nullptr) &&
+		             received >= sizeof(info) && info.Size >= sizeof(info) && !info.IncursSeekPenalty;
+	}
+	return at->second;
 }
 
 platform::drives platform::scan_drives()

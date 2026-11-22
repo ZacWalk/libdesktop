@@ -49,7 +49,7 @@ namespace
 		return false;
 	}
 
-	class menu_bar_control final : public ui::control
+	class menu_bar_control final : public ui::control_with_features<menu_bar_control>
 	{
 		std::vector<ui::command_ptr> _menus;
 		int _selected = -1;
@@ -295,9 +295,9 @@ namespace
 			}
 		}
 
-		bool in_system_mode() const override { return _menu_mode || _menu_open; }
+		bool in_system_mode() const { return _menu_mode || _menu_open; }
 
-		void cancel_system_mode() override
+		void cancel_system_mode()
 		{
 			_alt_pressed = false;
 			_alt_used = true;
@@ -306,7 +306,7 @@ namespace
 			invalidate();
 		}
 
-		bool on_system_key(const char32_t key, const platform::key_state keys, const bool down) override
+		bool on_system_key(const char32_t key, const platform::key_state keys, const bool down)
 		{
 			if (first_title() < 0) return false;
 

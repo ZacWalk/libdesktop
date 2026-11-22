@@ -5,18 +5,21 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Purpose: Regression tests for list, hexadecimal, and CSV view controls
+// Purpose: Regression tests for list, hexadecimal, and CSV view controls, and the selection rules lists share
 
 #include "libdesktop/ui/views/list_view.h"
 #include "libdesktop/ui/views/hex_view.h"
 #include "libdesktop/ui/views/csv_view.h"
+#include "libdesktop/ui/list_selection.h"
 #include "libdesktop/ui/text/text_buffer.h"
 #include "libdesktop/ui/test_support.h"
 #include "test.h"
 
+#include <algorithm>
 #include <format>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -463,10 +466,132 @@ namespace
 		view.on_focus(false, false);
 		assert_equal(width, view.table().col_widths[0], "focus loss cancels a captured CSV divider");
 	}
+
+	// Every list selects by one set of rules: a click selects one alone, Ctrl toggles one, Shift takes the range
+	// from the anchor and Ctrl with Shift adds it; the keys move the cursor alike, Ctrl moving it alone. A sort keeps
+	// what is selected, since entries are named by key, and a range follows the order shown.
+	void should_select_a_list_by_the_common_rules()
+	{
+		ui::list_selection<int> selection;
+		std::vector<int> order{10, 11, 12, 13, 14};
+		const auto selected = [&]
+		{
+			std::string result;
+			for (const auto key : selection.selected_in(order)) result += std::format("{},", key);
+			return result;
+		};
+
+		selection.click(11, false, false, order);
+		assert_equal_strict("11,", selected(), "a click selects one alone");
+		selection.click(13, false, true, order);
+		assert_equal_strict("11,12,13,", selected(), "Shift takes the range from the anchor");
+		selection.click(10, false, true, order);
+		assert_equal_strict("10,11,", selected(), "a second Shift click takes another range from the same anchor");
+		selection.click(13, true, false, order);
+		assert_equal_strict("10,11,13,", selected(), "Ctrl adds one");
+		selection.click(14, true, true, order);
+		assert_equal_strict("10,11,13,14,", selected(), "and Ctrl with Shift adds the range from where Ctrl left it");
+		selection.click(11, true, false, order);
+		assert_equal_strict("10,13,14,", selected(), "Ctrl takes a selected one away");
+		assert_equal(11, *selection.cursor(), "the cursor follows each click");
+
+		selection.move_to(12, false, false, order);
+		assert_equal_strict("12,", selected(), "the keys select what the cursor reaches");
+		selection.move_to(14, false, true, order);
+		assert_equal_strict("12,13,14,", selected(), "and Shift extends from the anchor");
+		selection.move_to(10, true, false, order);
+		assert_equal_strict("12,13,14,", selected(), "Ctrl moves the cursor alone");
+		selection.toggle_cursor();
+		assert_equal_strict("10,12,13,14,", selected(), "and Ctrl+Space toggles where it is");
+
+		std::ranges::reverse(order);
+		selection.click(12, false, false, order);
+		selection.click(10, false, true, order);
+		assert_equal_strict("12,11,10,", selected(), "a range follows the order the list shows");
+
+		order = {12, 13};
+		selection.retain(order);
+		assert_equal_strict("12,", selected(), "what the list no longer shows is let go");
+		assert_equal(false, selection.cursor().has_value(), "the cursor with it");
+		selection.select_all(order);
+		assert_equal_strict("12,13,", selected(), "select all takes what the list shows");
+
+		using choice = ui::list_selection<int>::choice;
+		order = {10, 11, 12, 13, 14};
+		const std::vector<int> band{11, 12};
+		selection.choose(band, choice::replace);
+		assert_equal_strict("11,12,", selected(), "entries taken together become the selection");
+		assert_equal(11, *selection.cursor(), "the cursor going to the first of them");
+		selection.choose(std::vector<int>{12, 14}, choice::toggle);
+		assert_equal_strict("11,14,", selected(), "or each goes in or out of it");
+		selection.choose(band, choice::add);
+		assert_equal_strict("11,12,14,", selected(), "or they join it");
+		selection.choose({}, choice::replace);
+		assert_equal_strict("11,12,14,", selected(), "and taking none changes nothing");
+		selection.rename(12, 20);
+		order = {10, 11, 20, 13, 14};
+		assert_equal_strict("11,20,14,", selected(), "an entry known by a new key stays selected");
+
+		selection.clear();
+		assert_equal(true, selection.empty() && !selection.anchor(), "and clear lets everything go");
+	}
+
+	// The keys move a cursor along a list alike wherever it is: a step for the arrows that run along it, a page for
+	// Page Up and Page Down, the ends for Home and End, and from no entry the first; other keys move nothing.
+	void should_step_a_list_cursor_by_the_common_keys()
+	{
+		namespace keys = platform::keys;
+		assert_equal(0, ui::step_list_cursor(-1, 10, keys::DOWN, 4, false),
+		             "from no entry the keys start at the first");
+		assert_equal(9, ui::step_list_cursor(-1, 10, keys::END, 4, false), "and End at the last");
+		assert_equal(3, ui::step_list_cursor(2, 10, keys::DOWN, 4, false), "Down steps down a column");
+		assert_equal(-1, ui::step_list_cursor(2, 10, keys::RIGHT, 4, false), "where Right does nothing");
+		assert_equal(1, ui::step_list_cursor(2, 10, keys::LEFT, 4, true), "Left steps back along a row");
+		assert_equal(6, ui::step_list_cursor(2, 10, keys::NEXT, 4, true), "Page Down goes a page on");
+		assert_equal(0, ui::step_list_cursor(2, 10, keys::PRIOR, 4, true), "and Page Up no further than the first");
+		assert_equal(9, ui::step_list_cursor(9, 10, keys::DOWN, 4, false), "nor Down past the last");
+		assert_equal(0, ui::step_list_cursor(5, 10, keys::HOME, 4, false), "Home goes to the first");
+		assert_equal(-1, ui::step_list_cursor(5, 0, keys::HOME, 4, false), "and an empty list has nowhere to go");
+	}
+
+	// A press becomes a drag the same few pixels out whichever way it goes, and a drag held near an end carries the
+	// list along at one pace: from when the clock starts, faster the deeper into the zone, half the list's length a
+	// second at the very end and past it, the part of a pixel a slow step falls short by carried to the next.
+	void should_drag_and_carry_a_list_at_one_pace()
+	{
+		const core::pointi press{100, 100};
+		assert_equal(false, ui::is_drag(press, {103, 97}), "a shaky click stays a click");
+		assert_equal(true, ui::is_drag(press, {104, 100}), "a few pixels across is a drag");
+		assert_equal(true, ui::is_drag(press, {100, 96}), "and as far up");
+
+		// A list 800 pixels long at 100% scale: a zone 48 pixels deep at each end, 400 pixels a second at the very end.
+		assert_equal(48, ui::edge_scroll::zone(800, 1.0), "the zone at each end");
+		assert_equal(25, ui::edge_scroll::zone(100, 2.0), "but no more than a quarter of a short list");
+
+		ui::edge_scroll carry;
+		assert_equal(0, carry.step(800, 0, 800, 1.0, 1000), "the first step in a zone starts the clock");
+		assert_equal(40, carry.step(800, 0, 800, 1.0, 1100), "a tenth of a second at the very end carries 40 pixels");
+		assert_equal(40, carry.step(900, 0, 800, 1.0, 1200), "as it does past the end");
+		assert_equal(20, carry.step(776, 0, 800, 1.0, 1300), "half as far into the zone, half as fast");
+		assert_equal(100, carry.step(800, 0, 800, 1.0, 60000), "a stall carries no more than a quarter second's worth");
+		assert_equal(0, carry.step(400, 0, 800, 1.0, 60100), "out of the zones nothing moves");
+		assert_equal(0, carry.step(0, 0, 800, 1.0, 60200), "and the clock starts again in a zone rather than leaping");
+		assert_equal(-40, carry.step(0, 0, 800, 1.0, 60300), "the zone at the start carries back");
+
+		carry.reset();
+		uint64_t now = 0;
+		auto travelled = carry.step(753, 0, 800, 1.0, now);
+		for (auto i = 0; i < 7; ++i) travelled += carry.step(753, 0, 800, 1.0, now += 100);
+		assert_equal(5, travelled, "the part of a pixel each slow step falls short by is carried to the next");
+	}
 }
 
 void register_ui_list_view_tests(test_registry& tests)
 {
+	tests.add(std::string("Should drag and carry a list at one pace"), should_drag_and_carry_a_list_at_one_pace);
+	tests.add(std::string("Should step a list cursor by the common keys"),
+	          should_step_a_list_cursor_by_the_common_keys);
+	tests.add(std::string("Should select a list by the common rules"), should_select_a_list_by_the_common_rules);
 	tests.add(std::string("Should resize list columns without sorting"), should_resize_list_columns_without_sorting);
 	tests.add(std::string("Should resize CSV table columns"), should_resize_csv_table_columns);
 	tests.add(std::string("Should lay out and hit-test list rows"), should_layout_and_hit_test_rows);

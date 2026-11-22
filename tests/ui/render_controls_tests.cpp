@@ -2630,7 +2630,7 @@ namespace
 }
 
 // A bubble opens above what it points at, or to its left, and on the other side where the work area has
-// no room; its arrow points at the anchor, and only its shadow may hang off the work area.
+// no room; its arrow points at the anchor, and even its shadow stays inside the work area.
 static void should_place_a_bubble_beside_what_it_points_at()
 {
 	const core::recti work{0, 0, 1000, 800};
@@ -2653,7 +2653,13 @@ static void should_place_a_bubble_beside_what_it_points_at()
 	assert_equal(40, right.bounds.left, "to its right where there is no room on the left");
 
 	const auto edge = ui::place_bubble({100, 40}, {980, 400, 1000, 420}, -1, false, work);
-	assert_equal(work.right + 16, edge.bounds.right, "pulled back inside the work area, but for its shadow");
+	assert_equal(work.right, edge.bounds.right, "the whole popup, including its shadow, fits");
+
+	const core::recti secondary{-1280, -240, -780, 100};
+	const auto oversized = ui::place_bubble({2400, 1300}, {-810, 75, -780, 105}, -1, true, secondary);
+	assert_equal(true, oversized.bounds == secondary, "oversized content stays on the anchor's monitor");
+	const auto across = ui::place_bubble({100, 40}, {100, 150, 410, 180}, -1, true, {0, 0, 500, 400});
+	assert_equal(150, across.bounds.bottom, "uses the room above rather than covering the anchor");
 }
 
 // The bubble draws in a layered popup the window layer makes once, shown where place_bubble puts it with
@@ -2676,6 +2682,12 @@ static void should_show_a_bubble_in_its_popup_and_hide_it()
 
 	bubble->show(content, {100, 400, 140, 420}, -1, 300, false);
 	assert_equal(1, host->popups_made, "showing it again moves the same popup");
+
+	host->work = {-300, 0, -100, 120};
+	content->extent = {1000, 800};
+	bubble->show(content, {-150, 30, -130, 50}, -1, 600, true);
+	assert_equal(true, host->popup->bounds == host->work && content->laid_out == core::recti(26, 22, 174, 98),
+	             "fixed-size content gets the available space instead of being centred offscreen");
 
 	bubble->hide();
 	assert_equal(false, bubble->is_visible(), "hiding it hides the popup");

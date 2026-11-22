@@ -363,10 +363,10 @@ std::function<void(core::folder_path)> platform::test_linux_before_claim_folder_
 std::function<void(core::file_path)> platform::test_linux_before_copy_folder_file_path;
 
 platform::file_op_result platform::delete_items(const std::vector<core::file_path>& files,
-                                                const std::vector<core::folder_path>& folders, bool)
+                                                const std::vector<core::folder_path>& folders, delete_mode)
 {
-	// The undo flag is not honoured because can_recycle already answered false, so every caller has
-	// been told this delete is permanent before asking for it.
+	// The mode is not honoured because can_recycle already answered false, so every caller has been told this
+	// delete is permanent before asking for it.
 	for (const auto& file : files)
 	{
 		if (const auto result = delete_file(file); result.failed()) return result;

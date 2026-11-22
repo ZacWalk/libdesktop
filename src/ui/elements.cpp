@@ -10,6 +10,7 @@
 
 #include "libdesktop/ui.h"
 #include "libdesktop/ui/controls.h"
+#include "libdesktop/ui/text/table_layout.h"
 
 namespace ui
 {
@@ -293,10 +294,46 @@ namespace ui
 				}
 				else if (!so->text.empty() && band_bottom - band_top > text_line_height)
 				{
-					dc.draw_text(so->text, rr, render::font_face::dialog, render::text_style::single_line_center,
-					             label_color, {});
+					// A name of several words wraps where the band has the height for every line, so the bar need be no
+					// wider than its widest word; one that cannot ends in an ellipsis, as a cell too narrow for its text
+					// does, rather than being cut with nothing to say so.
+					const auto lines = table_layout::wrap_words(dc, so->text, rr.width(), render::font_face::dialog);
+					const auto lines_height = static_cast<int>(lines.size()) * text_line_height;
+
+					if (lines.size() > 1 && lines_height < band_bottom - band_top)
+					{
+						auto top = rr.top + (rr.height() - lines_height) / 2;
+						for (const auto& line : lines)
+						{
+							dc.draw_text(line, core::recti(rr.left, top, rr.right, top + text_line_height),
+							             render::font_face::dialog, render::text_style::single_line_center, label_color,
+							             {});
+							top += text_line_height;
+						}
+					}
+					else
+					{
+						dc.draw_text(table_layout::fit_text(dc, so->text, rr.width(), render::font_face::dialog), rr,
+						             render::font_face::dialog, render::text_style::single_line_center, label_color,
+						             {});
+					}
 				}
 			});
+
+			// The marks over the thumb and the bands, so one under the thumb still shows.
+			if (!_mark_centres.empty())
+			{
+				const auto thumb_length = core::mul_div(sb.height(), _client_bounds.height(), _scroll_extent.cy);
+				const auto thickness = std::max(2, core::round(2 * dc.scale_factor));
+				const auto color = core::color(_mark_color, dc.colors.alpha);
+
+				for (const auto& mark :
+				     scroll_mark_bounds({left, sb.top, right, sb.bottom}, thumb_length, _client_bounds.height(),
+				                        _scroll_extent.cy, _mark_centres, thickness, false))
+				{
+					dc.draw_rect(mark, color);
+				}
+			}
 		}
 	}
 

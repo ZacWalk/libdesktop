@@ -1,6 +1,7 @@
 // libdesktop-platform's suite: the application-facing services.
 
 #include "libdesktop/platform.h"
+#include "libdesktop/platform/storage.h"
 #include "test.h"
 #include "platform/test_support.h"
 
@@ -65,6 +66,17 @@ static void should_report_file_presence()
 	assert_equal(false, platform::file_attributes_t{}.exists(), "unqueried attributes do not exist");
 	assert_equal(false, platform::file_attributes_t{}.confirmed_missing(),
 	             "unqueried attributes are not confirmed missing");
+}
+
+static void should_not_guess_the_storage_behind_a_virtual_folder()
+{
+	platform::storage_probe storage;
+	assert_equal(false, storage.seek_free(core::folder_path("Computer")),
+	             "a virtual folder does not mean the boot volume");
+#ifdef _WIN32
+	assert_equal(false, storage.seek_free(core::folder_path(R"(\\example.invalid\photos)")),
+	             "a network path cannot establish that its storage is seek-free");
+#endif
 }
 
 static void should_map_files()
@@ -398,6 +410,7 @@ void register_platform_shell_tests(test_registry& tests);
 #ifdef _WIN32
 void register_platform_system_win_tests(test_registry& tests);
 void register_platform_render_win_tests(test_registry& tests);
+void register_platform_prompt_win_tests(test_registry& tests);
 void register_os_tests(test_registry& tests);
 #endif
 
@@ -405,6 +418,8 @@ void register_platform_system_tests(test_registry& tests)
 {
 	tests.add("Should name files after the application"s, should_name_files_after_the_application);
 	tests.add("Should report file presence"s, should_report_file_presence);
+	tests.add("Should not guess the storage behind a virtual folder"s,
+	          should_not_guess_the_storage_behind_a_virtual_folder);
 	tests.add("Should map files"s, should_map_files);
 	tests.add("Should save a blob without truncating the destination"s,
 	          should_save_a_blob_without_truncating_the_destination);
@@ -420,6 +435,7 @@ void register_platform_system_tests(test_registry& tests)
 #ifdef _WIN32
 	register_platform_system_win_tests(tests);
 	register_platform_render_win_tests(tests);
+	register_platform_prompt_win_tests(tests);
 #else
 	tests.add("Should allow the caller to own copy fallback"s, should_allow_the_caller_to_own_copy_fallback);
 #endif

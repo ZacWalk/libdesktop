@@ -48,6 +48,12 @@ namespace
 	constexpr DWORD folder_watch_filter = FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_LAST_WRITE |
 	                                      FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
 
+	// How long a loop that runs the application's idle work spends on messages before it does: a frame's worth.
+	// Input that keeps arriving - a drag, a held wheel - would otherwise hold it on messages for as long as the
+	// gesture lasts, each paint long enough for the next movement to be waiting, and everything the application
+	// queued for the UI thread meanwhile - a picture decoded, a map tile arrived - would wait for the gesture to end.
+	constexpr int64_t message_budget_us = 16'000;
+
 	// A watched folder read with ReadDirectoryChangesW rather than a change notification, which says only
 	// that something under the folder changed, so a change in a watched subtree names the subfolder it was
 	// in. The read's event joins the loop's waits. The read writes into the buffer and OVERLAPPED until it
@@ -505,8 +511,11 @@ namespace
 		DispatchMessageW(&message);
 	}
 
-	void pump_messages(const std::function<bool(MSG&)>& filter)
+	// Dispatches what is waiting until the queue is empty or, given a budget, until that long has passed. What a
+	// budget leaves is taken up on the caller's next pass, which a wait with MWMO_INPUTAVAILABLE starts at once.
+	void pump_messages(const std::function<bool(MSG&)>& filter, const int64_t budget_us = 0)
 	{
+		const auto started_us = budget_us ? core::now_us() : 0;
 		MSG message{};
 		while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
 		{
@@ -515,11 +524,13 @@ namespace
 				quit_code = static_cast<int>(message.wParam);
 				platform::is_closing = true;
 				if (current_state) current_state->closed = true;
-				continue;
 			}
-			if (dispatch_platform_message(message)) continue;
-			if (filter && filter(message)) continue;
-			dispatch_message(message);
+			else if (!dispatch_platform_message(message) && !(filter && filter(message)))
+			{
+				dispatch_message(message);
+			}
+
+			if (budget_us && core::now_us() - started_us >= budget_us) break;
 		}
 	}
 
@@ -558,7 +569,7 @@ namespace
 			}
 
 			const auto result = MsgWaitForMultipleObjectsEx(static_cast<DWORD>(handles.size()), handles.data(), wait_ms,
-			                                                QS_ALLINPUT, MWMO_ALERTABLE);
+			                                                QS_ALLINPUT, MWMO_ALERTABLE | MWMO_INPUTAVAILABLE);
 			if (result == WAIT_TIMEOUT || result == WAIT_FAILED) return wait_timeout;
 			if (result != WAIT_IO_COMPLETION && result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + handles.size())
 			{
@@ -576,8 +587,8 @@ namespace
 
 			// Input and queued UI work are drained after every wake, not only when the message queue won.
 			// A frame timer that is ready continuously must not starve paint, sent messages, or a worker
-			// completion that is ending this wait.
-			if (!platform::is_closing) pump_messages(filter);
+			// completion that is ending this wait. Nor may input that keeps arriving starve the idle work.
+			if (!platform::is_closing) pump_messages(filter, message_budget_us);
 			if (!platform::is_closing &&
 			    WaitForSingleObject(static_cast<HANDLE>(current_state->idle_event._h), 0) == WAIT_OBJECT_0)
 				if (current_state->app) current_state->app->idle();
@@ -849,12 +860,14 @@ namespace
 			current_state->rebuild_events();
 			const auto count = static_cast<DWORD>(current_state->event_handles.size());
 			const auto result = MsgWaitForMultipleObjectsEx(count, current_state->event_handles.data(), INFINITE,
-			                                                QS_ALLINPUT, MWMO_ALERTABLE);
+			                                                QS_ALLINPUT, MWMO_ALERTABLE | MWMO_INPUTAVAILABLE);
 			if (result == WAIT_FAILED) return -1;
 			if (result != WAIT_IO_COMPLETION && result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + count)
 				dispatch_app_event(static_cast<size_t>(result - WAIT_OBJECT_0));
-			// Drain input after every wake. A frame timer that wins repeatedly must not starve messages.
-			if (!platform::is_closing) pump_messages([](MSG& message) { return pre_translate(message); });
+			// Drain input after every wake. A frame timer that wins repeatedly must not starve messages, nor
+			// input that keeps arriving the idle work.
+			if (!platform::is_closing)
+				pump_messages([](MSG& message) { return pre_translate(message); }, message_budget_us);
 			if (!platform::is_closing && current_state->app) current_state->app->idle();
 		}
 		return quit_code;
@@ -943,13 +956,16 @@ namespace
 			}
 			const auto count = static_cast<DWORD>(current_state->event_handles.size());
 			const auto result = MsgWaitForMultipleObjectsEx(count, current_state->event_handles.data(), wait_ms,
-			                                                QS_ALLINPUT, MWMO_ALERTABLE);
+			                                                QS_ALLINPUT, MWMO_ALERTABLE | MWMO_INPUTAVAILABLE);
 			if (result == WAIT_TIMEOUT || result == WAIT_FAILED) return false;
 			if (result != WAIT_IO_COMPLETION && result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + count)
 				dispatch_app_event(static_cast<size_t>(result - WAIT_OBJECT_0));
 
+			// Within the same budget as the main loop, so a drag inside a popup does not hold the idle work either.
+			const auto started_us = core::now_us();
 			MSG message{};
-			while (!platform::is_closing && !done() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+			while (!platform::is_closing && !done() && core::now_us() - started_us < message_budget_us &&
+			       PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
 			{
 				if (message.message == WM_QUIT)
 				{
